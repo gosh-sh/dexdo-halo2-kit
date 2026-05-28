@@ -1,0 +1,46 @@
+{
+  "description": "L2 test case: 2 chain step(s), block height 1904, W=8",
+  "sk_u_hex": "f56b7fabe4dfdc78c9c13effd3ff4299b8605865d3d8127f6b57c547aaf79c2e",
+  "ephemeral_pubkey_hex": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b0",
+  "event_boc_base64": "te6ccgEBAgEAnQABn+AAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIcAAAAAAAAO7WnjLyxgAQCQY4DCGvhDZilZO/tTHGey83w7cbw6qL5GKIuV0Hi2oJu4UmYFAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAF0h26AAAAAAC",
+  "events_proof_siblings_hex": [],
+  "events_proof_position": 0,
+  "account_dapp_id_hex": "0000000000000000000000000000000000000000000000000000000000000004",
+  "account_id_hex": "1010101010101010101010101010101010101010101010101010101010101010",
+  "block_id_hex": "b6fee70b776849a8d581effaceb93e87937ba01d698fbfc04571ecf3bf3125da",
+  "envelope_hash_hex": "e63bcb61a4d816c99b816370e15937b061ea8094c692bb5c6c4296469efa7a40",
+  "block_proof_siblings_hex": [
+    "f9fa08a3985aaa6210a29609a45384d292f25dc6ab46fd8ec6dc013c4aa10527",
+    "07de55450995fbd945a47b25173d18c5dd87fccd145bc8f8d5badcf7d4f1d723",
+    "33f1d7ecba1f435478fd6e4819c449ec74b42b07ff718caccbd1a0d99956aa04",
+    "2089324a8d7811297cc8ce567fe034861b626a9875e5b7ad85fbddc1e86baa17"
+  ],
+  "block_proof_position": 2,
+  "num_active_chain_steps": 2,
+  "dense_chain": [
+    {
+      "active": true,
+      "siblings_hex": [
+        "d455e82d2774859658b108e2a6604b791cdd880b5dc50106fb428fe8b0b4f220",
+        "e94857624e3b38715bd1da63453c3c24bc2846243156cc90c7fe50bf2aa75504",
+        "d55592d40d6f734e7565de2a81c0c130ce355ea2904aaa288932d6476c58ad27",
+        "43ab05966c77d751a0765d6ed56c5e20e98f3982d345344b2d9748f062c42d19"
+      ],
+      "position": 8,
+      "leaf_hex": "b5db798d98800ae276759c6ccde9897be0861d13dcb194de6a840ce8e08d2a00"
+    },
+    {
+      "active": true,
+      "siblings_hex": [
+        "e0269c567f8ef6a66884796480e520f98849a73dfc7733db586f3e5df8f7bc25",
+        "3f3faddbfae25acdc990ee909ea68acd17e9c4f71f3a1e4d5ccee144cec65b08",
+        "da6382d49b4f86cccdff9241f19d3f6031aa4e63fb79d52818791d1911522e1e",
+        "9394bf45fbf16f2499c237cc041da15e8de5562bf8710c63ba83d647adc20b18"
+      ],
+      "position": 7,
+      "leaf_hex": "a93f706b54e62a55994c80f14370493be530d68a4e233cfccc8982abefd44d23"
+    }
+  ],
+  "final_layer_historical_hash_root_hex": "752070cbb5719d11826354645dc511215f0016f032a06148667910eaed608310",
+  "final_layer_number": 3
+}

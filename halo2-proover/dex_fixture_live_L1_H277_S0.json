@@ -1,0 +1,35 @@
+{
+  "description": "L1 test case: 1 chain step(s), block height 277, W=8",
+  "sk_u_hex": "3da8283007a9f636655978a92d6b381076ad2900a69df7232bf9c42274f1f711",
+  "ephemeral_pubkey_hex": "b1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b0",
+  "event_boc_base64": "te6ccgEBAgEAnQABn+AAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIcAAAAAAAACN2njN7RgAQCQY4DCGlNkTAXOEeJ2vsKp8MLnrwDzAojTTrCDmE+z1zWhohIOAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAF0h26AAAAAAC",
+  "events_proof_siblings_hex": [],
+  "events_proof_position": 0,
+  "account_dapp_id_hex": "0000000000000000000000000000000000000000000000000000000000000004",
+  "account_id_hex": "1010101010101010101010101010101010101010101010101010101010101010",
+  "block_id_hex": "24f855b4d8b792986c5d535c90085e7f6beb8efc7cba59f0830335544b4b3c1f",
+  "envelope_hash_hex": "3463d7ccd71a3e018b09b11ddd724fcf5dcfee5e66fe1e175e7d256b586927b6",
+  "block_proof_siblings_hex": [
+    "58b4d2aabd4edc278ef703569cb084a43e9daaf29b3007dc841e42947a3fcc0c",
+    "a03039d48dee003ca391532f66d7548c65a04ede12542aafd048176b000db402",
+    "6c2887890375dd6db01ec2c995ca9b218fc3703df3b8bb78627478b3549a7620",
+    "be5f2c6fed1c1cd13810472b9f969d7faba4c7391e9cb7a22dde67eef473ca20"
+  ],
+  "block_proof_position": 7,
+  "num_active_chain_steps": 1,
+  "dense_chain": [
+    {
+      "active": true,
+      "siblings_hex": [
+        "16225565c4dc4929726fd6562691ee66d9c685beb1d0bf7b1e71ad34982a2601",
+        "82a4e01d7caf3d68cc524f99e80c5f93dc418c7457e51ffd5e3110a26a501730",
+        "2bdb716004b92e45787108c9ffcf107df7ca6da76f38270ab27b076ab5a8070c",
+        "32e10db58e7f85271ce2a5ef2842c56eb49cbe293cafc3c5394237b9d024141b"
+      ],
+      "position": 4,
+      "leaf_hex": "aac4ab2e44fab527eed103eb2eab14d49cdca5a9fab5e88db4e56cde8356be05"
+    }
+  ],
+  "final_layer_historical_hash_root_hex": "a628cb256c7c61bd649422755bfd0167d915e57d0329bcb576ac8c4c948c991f",
+  "final_layer_number": 2
+}

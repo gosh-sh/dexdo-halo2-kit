@@ -1,0 +1,30 @@
+[package]
+name = "dex-halo2-circuit"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+gosh-sha256-chip = { git = "https://github.com/gosh-sh/gosh-halo2-crypto-lib", branch = "main" }
+gosh-dense-balanced-tree = { git = "https://github.com/gosh-sh/gosh-halo2-crypto-lib", branch = "main" }
+halo2-ecc = { git = "https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381", branch = "main", default-features = false, features = ["halo2-axiom"] }
+halo2-base = { git = "https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381", branch = "main", default-features = false, features = ["halo2-axiom"] }
+tvm_types = { git = "https://github.com/tvmlabs/tvm-sdk", package = "tvm_types" }
+tvm_block = { git = "https://github.com/tvmlabs/tvm-sdk", package = "tvm_block" }
+failure = "0.1"
+
+sha2 = "0.10"
+hex = "0.4.3"
+rand = "0.8"
+
+itertools = "0.11"
+rand_core = { version = "0.6", default-features = false, features = ["getrandom"] }
+
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+
+pse-poseidon = { git = "https://github.com/axiom-crypto/pse-poseidon.git" }
+
+[dev-dependencies]
+dense-balanced-tree = { git = "https://github.com/gosh-sh/dense-balanced-tree" }
+halo2-base = { git = "https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381", branch = "main", default-features = false, features = ["halo2-axiom", "test-utils"] }

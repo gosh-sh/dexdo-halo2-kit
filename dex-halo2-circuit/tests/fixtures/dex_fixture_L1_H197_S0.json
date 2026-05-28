@@ -1,0 +1,32 @@
+{
+  "description": "L1 test case: 1 chain step(s), block height 197, W=8",
+  "sk_u_hex": "5b8319acb34dc789c284c6977e835622994458d8a9500693ebe17861adb1ec07",
+  "event_boc_base64": "te6ccgEBAgEAnQABn+AAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIcAAAAAAAABl2ngIN1gAQCQY4DCGnQJ9L0+O/yjUNbEyhcl6s/44npaEV4pMr6Hmfsiu+0RAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAF0h26AAAAAAC",
+  "events_proof_siblings_hex": [],
+  "events_proof_position": 0,
+  "account_dapp_id_hex": "0000000000000000000000000000000000000000000000000000000000000004",
+  "account_id_hex": "1010101010101010101010101010101010101010101010101010101010101010",
+  "block_id_hex": "dda5449f3560c9662f56054c225bc5b8d0d3752173981f4047444b14003e7cec",
+  "envelope_hash_hex": "a3c3758a860878832f62c1b3a5019b06449d4dd8d22c133820e13e3429a362bc",
+  "block_proof_siblings_hex": [
+    "ecd7cbab8fe418125d6e120f26cdf8380a340cbafb6d2928ef31103981639d2d",
+    "3181df4fa9410189bdd64560d90232e22a221da12028dfa4624a03418fba7d10",
+    "f419f1ff4ae602522e95c1e85361db07bd779005cd04583afeb1ce45515d9402",
+    "7148c325416f06935eb1d810a8c3bc83de2daf94c5f724c969e7b9057d674413"
+  ],
+  "block_proof_position": 7,
+  "num_active_chain_steps": 1,
+  "dense_chain": [
+    {
+      "active": true,
+      "siblings_hex": [
+        "7cb98d072d8a00b485134af0994c8677e436b167ddc166c3e94695b97b425b27",
+        "a8bf218729bfc45145b7c0fd3237aac0ab863d8d98b151c6f9b6f8fbeae1e706",
+        "6fac19da57c73c99fc64c6001eb05d5044f07407eebd93452556bda49fa4062c",
+        "9863528e2f5450cc513595366139e6399e9fafce822a71163b7e5b10ae70741f"
+      ],
+      "position": 2,
+      "leaf_hex": "adb205d66f793c5b0de30ea296e4a565da3197726e8423eb25e4efb9405a2f26"
+    }
+  ]
+}

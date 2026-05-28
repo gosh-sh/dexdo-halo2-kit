@@ -1,0 +1,45 @@
+{
+  "description": "L2 test case: 2 chain step(s), block height 626, W=8",
+  "sk_u_hex": "94a439865998a4e0758c752ca9ebc33028f6cfc46f970911ad4fa718392d4022",
+  "event_boc_base64": "te6ccgEBAgEAnQABn+AAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIcAAAAAAAAE8WnjTCVgAQCQY4DCGqOaXchkho25oobGUXcq3bNsIPJFfDruHkG7bA0H9TMVAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAF0h26AAAAAAC",
+  "events_proof_siblings_hex": [],
+  "events_proof_position": 0,
+  "account_dapp_id_hex": "0000000000000000000000000000000000000000000000000000000000000004",
+  "account_id_hex": "1010101010101010101010101010101010101010101010101010101010101010",
+  "block_id_hex": "383d7966ce4614574bb0f623d7cf38424260098ef411a4c7647c30c39310ca83",
+  "envelope_hash_hex": "12b8e7cd6c3af5bd5dd6cd0068af7140a4ea4f26f499970f046fb4d6822732bf",
+  "block_proof_siblings_hex": [
+    "2b3ced146699091b0dad5cedfd714d7c1b4c18a030f2021d091291a1e25da706",
+    "dff84c956bc586d57434625b601901aebf9bf76e49a2596998445cfb213d241a",
+    "e85265f803aed5df865f23244bc6d9312fab7407957672c4e1fa7fc12695e91f",
+    "fc6b36cc24c1c539da120c71212c73710b9328cf6990c2fc6fc0654cafbe4007"
+  ],
+  "block_proof_position": 4,
+  "num_active_chain_steps": 2,
+  "dense_chain": [
+    {
+      "active": true,
+      "siblings_hex": [
+        "862e9420fdfbb098c67616168ee927f1ee2989b4b91d686bff385ee70d930512",
+        "e94857624e3b38715bd1da63453c3c24bc2846243156cc90c7fe50bf2aa75504",
+        "d55592d40d6f734e7565de2a81c0c130ce355ea2904aaa288932d6476c58ad27",
+        "b2baeb77863edd0499c0cca291db60513c4c49342ac0aa83237b921a8f820101"
+      ],
+      "position": 8,
+      "leaf_hex": "1783c02d0b04d10f1dd1f510db0c25f133cecbe182db198b703ae82e46ccce22"
+    },
+    {
+      "active": true,
+      "siblings_hex": [
+        "8d36b10ccdba6339a4c9cf2302c81c6f5327e80f1354f7c6420f5ed61c609d28",
+        "bca5ff7b94c62eb1af2c32cdb84754e194729d4ff59ac2a2a63b4c6fd762952e",
+        "c472f956e0ed8a9fd7536d6a908de1e3dcea56080cf5f39596e265ff0a7cb923",
+        "1967f130203f081d950540934a5264225454e4f0e6c32013d89df46783e12910"
+      ],
+      "position": 3,
+      "leaf_hex": "948fc30d366cfe9706f8c5fb8b63736f76a5b9f7a02bf96d3eaf59c1ed7fec1e"
+    }
+  ],
+  "final_layer_historical_hash_root_hex": "ba661c398c4d0afac87429ad17ff80a075a1829a087e424362c0123ec9ba8909",
+  "final_layer_number": 3
+}

@@ -1,0 +1,35 @@
+{
+  "description": "L1 test case: 1 chain step(s), block height 47076, W=8",
+  "sk_u_hex": "b3563148f34e899885228929d94c815b177f3dc4d416d2cb8222d9263ad7f02d",
+  "ephemeral_pubkey_hex": "dc76f65b6326e51f5eaffe285f28ac498be21f7aa9ce7688a6aa034598eb8781",
+  "event_boc_base64": "te6ccgEBAgEAnQABn+AAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIcAAAAAAAFv8WoCpbRgAQCQeeMDHLvxiGF+Gd6reYySo2/7k0plnacKMhytPQrWPIfBv54vAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAF0h26AAAAAAC",
+  "events_proof_siblings_hex": [],
+  "events_proof_position": 0,
+  "account_dapp_id_hex": "0000000000000000000000000000000000000000000000000000000000000004",
+  "account_id_hex": "1010101010101010101010101010101010101010101010101010101010101010",
+  "block_id_hex": "a5d1ab321a018efd28708d557017a662a1124d6524de644f0a4ef6332704e80b",
+  "envelope_hash_hex": "ee2f974f6e86e4a972dc72663804bc0c69f8b15da2fbfae548bb64dcccf4aacb",
+  "block_proof_siblings_hex": [
+    "4f61158050cb53edda4939a0791ff30da3ade1b196f254f82668691f8c1fee20",
+    "a5ed84f9f5c1a293269c8467f2a43eca9a5341744a20bc5496c21f41184c860d",
+    "a061caae64a8adf67cffdfb5eac7b1f0dfb8b685f7822eb6a64890cef165fd14",
+    "1f101574123d5482b64896f009b55712368f236b18bc4bb66fc6340244707f04"
+  ],
+  "block_proof_position": 6,
+  "num_active_chain_steps": 1,
+  "dense_chain": [
+    {
+      "active": true,
+      "siblings_hex": [
+        "fe05ac9540d850dd1ea2beff98e286d052f80bf85f8cf118e5dc80430064222f",
+        "6fdcbc81449d800f53f3ef220a281d28773b10317b7cacc4bdd8ecbad5506821",
+        "38ebfd17c95fa5c5d1ee78662fd0105c23348c9e0085e4d30cd28aa04e093a19",
+        "12d4872dadce4b00b3ee2c9cf277970311e42371eb96c565cd04ea1edd788a1a"
+      ],
+      "position": 6,
+      "leaf_hex": "e65fb155cb888f20e856a7467add9f2f5b985723a71ab2c1c393a398acf7e40c"
+    }
+  ],
+  "final_layer_historical_hash_root_hex": "d76ad8a4efe844136ddf4c3ccb1be79bfc51e5fd4e77b2b908eae3624d4bff23",
+  "final_layer_number": 2
+}

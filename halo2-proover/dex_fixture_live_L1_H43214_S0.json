@@ -1,0 +1,35 @@
+{
+  "description": "L1 test case: 1 chain step(s), block height 43214, W=8",
+  "sk_u_hex": "c2ba2fcd7fd8ff6891627ea9c845674ab51556f74614cb19a04894232d797318",
+  "ephemeral_pubkey_hex": "a5c06cd5228bf250513d22330bb9aad2d5f83a914d441ff8afd02fda17bf933b",
+  "event_boc_base64": "te6ccgEBAgEAnQABn+AAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIcAAAAAAAFRt2oCoLNgAQCQeeMDHE83Wcqni4aiD5SZjz7ppdrTHCdm5G2UZtZTTZeiuO4XAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAF0h26AAAAAAC",
+  "events_proof_siblings_hex": [],
+  "events_proof_position": 0,
+  "account_dapp_id_hex": "0000000000000000000000000000000000000000000000000000000000000004",
+  "account_id_hex": "1010101010101010101010101010101010101010101010101010101010101010",
+  "block_id_hex": "f675c4ac1b14eb3f9100775507e21ec6e5f6d01040df72adaf3d892c12795d21",
+  "envelope_hash_hex": "7a51469d96e6c0f1f2dcf68555cc628e29d0a86f67c22c5cb8b9a0115ef0fdc9",
+  "block_proof_siblings_hex": [
+    "4ee1dada76c18f2972d7468bf27b178b13f50df7bef6bd8213595aebc3485327",
+    "e94857624e3b38715bd1da63453c3c24bc2846243156cc90c7fe50bf2aa75504",
+    "d55592d40d6f734e7565de2a81c0c130ce355ea2904aaa288932d6476c58ad27",
+    "5fe4e1823c0c3c857d11f965a622ac657d0eb76f908b691cbcc5216822c37a02"
+  ],
+  "block_proof_position": 8,
+  "num_active_chain_steps": 1,
+  "dense_chain": [
+    {
+      "active": true,
+      "siblings_hex": [
+        "06e49cc8eca40a31d6779c23b3b2489162ee35273c163100890aefaf838a8424",
+        "8b2563797b9abd8a4c0cf228d9ad4580c9b65fbac2d932c3d9e86ab66c818911",
+        "7307fd3d2235c6cc2c28114e98a16bac631c90e86efd6834d950661b3f01f405",
+        "87062c5d5d92bac5f8ea1ef2627326cc762e1cc8ec9394e110fd500581134b21"
+      ],
+      "position": 3,
+      "leaf_hex": "a7eeb51a309d80589c2a14096a53136bc696660b3d462c167322dea813aed82c"
+    }
+  ],
+  "final_layer_historical_hash_root_hex": "3e4d2da0da2c11f20ac9e3a79c586c6cd9609994b28403c769fee620e3b71724",
+  "final_layer_number": 2
+}
