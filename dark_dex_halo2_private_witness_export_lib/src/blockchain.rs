@@ -70,6 +70,48 @@ fn extract_boc(block_obj: &Value) -> anyhow::Result<String> {
         .ok_or_else(|| anyhow::format_err!("Failed to parse boc field"))
 }
 
+fn extract_boc_and_block_id(block_obj: &Value) -> anyhow::Result<(String, Option<[u8; 32]>)> {
+    let obj = block_obj
+        .as_object()
+        .ok_or_else(|| anyhow::format_err!("block is not an object"))?;
+    let boc = obj
+        .get("boc")
+        .ok_or_else(|| anyhow::format_err!("boc key not found"))?
+        .as_str()
+        .map(|s| s.to_string().replace("\"", ""))
+        .ok_or_else(|| anyhow::format_err!("Failed to parse boc field"))?;
+    let block_id = obj
+        .get("block_id")
+        .and_then(|v| v.as_str())
+        .map(|s| -> anyhow::Result<[u8; 32]> {
+            let mut buf = [0u8; 32];
+            hex::decode_to_slice(s, &mut buf)
+                .map_err(|e| anyhow::format_err!("Failed to decode block_id hex {s}: {e}"))?;
+            Ok(buf)
+        })
+        .transpose()?;
+    Ok((boc, block_id))
+}
+
+/// Resolve the block_id used as the L1 leaf input. The producer commits the
+/// canonical `block_id` returned by GQL to the on-chain Poseidon root; falling
+/// back to `envelope.data().identifier()` happens only for legacy pre-migration
+/// rows where GQL returns null.
+pub fn block_id_for_leaf(
+    envelope: &Envelope<AckiNackiBlock>,
+    canonical: Option<[u8; 32]>,
+) -> [u8; 32] {
+    match canonical {
+        Some(id) => id,
+        None => {
+            tracing::warn!(
+                "Canonical block_id missing from GQL (legacy row?), falling back to recomputed merkle_block_id()"
+            );
+            *envelope.data().identifier().as_array()
+        }
+    }
+}
+
 fn pad_thread_id(thread_id: ThreadIdentifier) -> String {
     // new API expects a 68-char zero-padded thread id
     let raw = format!("{:x}", thread_id);
@@ -80,25 +122,41 @@ pub async fn query_block_by_id(
     context: TvmClient,
     block_id: &str,
 ) -> anyhow::Result<Envelope<AckiNackiBlock>> {
-    let q = format!(r#"{{ blockchain {{ block(hash: "{block_id}") {{ boc }} }} }}"#,);
+    let (block, _) = query_block_with_canonical_id_by_id(context, block_id).await?;
+    Ok(block)
+}
+
+pub async fn query_block_with_canonical_id_by_id(
+    context: TvmClient,
+    block_id: &str,
+) -> anyhow::Result<(Envelope<AckiNackiBlock>, Option<[u8; 32]>)> {
+    let q = format!(r#"{{ blockchain {{ block(hash: "{block_id}") {{ boc block_id }} }} }}"#);
     let data = gql_query(&context, &q).await?;
     let block_obj =
         data.get("blockchain").and_then(|b| b.get("block")).cloned().unwrap_or(Value::Null);
     if block_obj.is_null() {
         anyhow::bail!("block with id {block_id} not found");
     }
-    let encoded = extract_boc(&block_obj)?;
-    decode_envelope(&encoded)
+    let (encoded, canonical_id) = extract_boc_and_block_id(&block_obj)?;
+    Ok((decode_envelope(&encoded)?, canonical_id))
 }
 
 pub async fn query_block_by_height(
     context: TvmClient,
     block_height: BlockHeight,
 ) -> anyhow::Result<Envelope<AckiNackiBlock>> {
+    let (block, _) = query_block_with_canonical_id_by_height(context, block_height).await?;
+    Ok(block)
+}
+
+pub async fn query_block_with_canonical_id_by_height(
+    context: TvmClient,
+    block_height: BlockHeight,
+) -> anyhow::Result<(Envelope<AckiNackiBlock>, Option<[u8; 32]>)> {
     let tid = pad_thread_id(*block_height.thread_identifier());
     let h = block_height.height();
     let q = format!(
-        r#"{{ blockchain {{ blockByHeight(thread_id: "{tid}", height: {h}) {{ boc }} }} }}"#,
+        r#"{{ blockchain {{ blockByHeight(thread_id: "{tid}", height: {h}) {{ boc block_id }} }} }}"#,
     );
     let data = gql_query(&context, &q).await?;
     let block_obj =
@@ -106,8 +164,8 @@ pub async fn query_block_by_height(
     if block_obj.is_null() {
         anyhow::bail!("block at height {h} (thread {tid}) not found");
     }
-    let encoded = extract_boc(&block_obj)?;
-    decode_envelope(&encoded)
+    let (encoded, canonical_id) = extract_boc_and_block_id(&block_obj)?;
+    Ok((decode_envelope(&encoded)?, canonical_id))
 }
 
 pub async fn query_block_with_event(
@@ -238,15 +296,15 @@ pub async fn get_layer_0_data(
     let mut leaf_hashes = Vec::with_capacity(HISTORY_PROOF_WINDOW_SIZE);
     let mut height = window_start;
     for _ in 0..HISTORY_PROOF_WINDOW_SIZE {
-        let block = query_block_by_height(
+        let (block, canonical_id) = query_block_with_canonical_id_by_height(
             context.clone(),
             BlockHeight::builder().height(height).thread_identifier(thread_identifier).build(),
         )
         .await?;
-        let block_id = block.data().identifier();
+        let block_id_bytes = block_id_for_leaf(&block, canonical_id);
         let env_hash = envelope_hash(&block);
         let ext_out_root = *block.data().common_section().tracked_ext_out_messages_root();
-        let leaf_hash = compute_block_leaf_hash(block_id.as_array(), &env_hash.0, &ext_out_root);
+        let leaf_hash = compute_block_leaf_hash(&block_id_bytes, &env_hash.0, &ext_out_root);
         leaf_hashes.push(leaf_hash);
         height += 1;
     }
