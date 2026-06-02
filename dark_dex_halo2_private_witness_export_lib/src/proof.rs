@@ -1,14 +1,15 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
-use node_block_client::history_proof::compute_ext_message_leaf_hash;
-use node_block_client::history_proof::dense_merkle_proof;
-use node_block_client::history_proof::dense_merkle_root;
-use node_block_client::history_proof::dense_merkle_verify;
-use node_block_client::history_proof::PoseidonHasher;
-use node_block_client::AccountRouting;
 use serde::Deserialize;
 use serde::Serialize;
 use typed_builder::TypedBuilder;
+
+use crate::poseidon::compute_ext_message_leaf_hash;
+use crate::poseidon::dense_merkle_proof;
+use crate::poseidon::dense_merkle_root;
+use crate::poseidon::dense_merkle_verify;
+use crate::poseidon::PoseidonHasher;
+use crate::types::AccountRouting;
 
 #[derive(Serialize, Deserialize, TypedBuilder)]
 pub struct ProofData {
@@ -85,7 +86,7 @@ pub fn verify_dense_proof(
 /// `compute_ext_out_messages_root`), locates the target message, and returns
 /// `(root, leaf_hash, position, proof_path)`.
 pub fn generate_ext_message_proof(
-    tracked_ext_out_messages: &HashMap<AccountRouting, Vec<[u8; 32]>>,
+    tracked_ext_out_messages: &BTreeMap<AccountRouting, Vec<[u8; 32]>>,
     target_account_routing: &AccountRouting,
     target_message_hash: &[u8; 32],
 ) -> anyhow::Result<([u8; 32], [u8; 32], usize, Vec<[u8; 32]>)> {

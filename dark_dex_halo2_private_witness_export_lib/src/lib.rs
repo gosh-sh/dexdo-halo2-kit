@@ -5,18 +5,16 @@
 //! Library entry point: [`make_private_witness_and_public_data`], driven by
 //! the [`ExportParams`] struct.
 
-pub mod block;
 pub mod blockchain;
+pub mod poseidon;
 pub mod proof;
+pub mod types;
 
 use anyhow::ensure;
-use node_block_client::envelope_hash;
-use node_block_client::history_proof::compute_block_leaf_hash;
-use node_block_client::history_proof::HISTORY_PROOF_WINDOW_SIZE;
-use node_block_client::BLSSignedEnvelope;
-use node_block_client::BlockHeight;
-use node_block_client::ThreadIdentifier;
 use serde::Serialize;
+
+use crate::poseidon::HISTORY_PROOF_WINDOW_SIZE;
+use crate::types::ThreadIdentifier;
 
 use crate::blockchain::create_client;
 use crate::blockchain::get_layer_0_data;
@@ -111,30 +109,25 @@ pub async fn make_private_witness_and_public_data(
         }
         (None, Some(h)) => {
             tracing::info!("Querying block at height {}...", h);
-            query_block_by_height(
-                client.clone(),
-                BlockHeight::builder().height(*h).thread_identifier(thread_id).build(),
-            )
-            .await?
+            query_block_by_height(client.clone(), thread_id, *h).await?
         }
         (None, None) => {
             anyhow::bail!("Either block_id or block_height must be specified");
         }
     };
 
-    let block_height = *block.data().common_section().block_height().height();
+    let block_height = block.height;
     tracing::info!("Got block at height {}", block_height);
 
-    let last_block_height =
-        *query_latest_block_height(client.clone(), thread_id).await?.height();
+    let last_block_height = query_latest_block_height(client.clone(), thread_id).await?;
     tracing::info!("Latest block height: {}", last_block_height);
 
     // --- ext_out_message proof ---
-    let ext_messages = block.data().common_section().tracked_ext_out_messages();
-    let ext_root = *block.data().common_section().tracked_ext_out_messages_root();
+    let ext_messages = &block.tracked_ext_out_messages;
+    let ext_root = block.tracked_ext_out_messages_root;
     tracing::info!("Block has {} tracked account(s) with ext messages", ext_messages.len());
     tracing::info!("Block ext_out_messages_root: {}", hex::encode(ext_root));
-    tracing::info!("Block ID: {}", hex::encode(block.data().identifier().as_array()));
+    tracing::info!("Block ID: {}", hex::encode(block.block_id));
     for (routing, msgs) in ext_messages.iter() {
         tracing::info!("  Account routing: {}, messages: {}", routing, msgs.len());
         for msg in msgs {
@@ -176,9 +169,9 @@ pub async fn make_private_witness_and_public_data(
     );
 
     // --- block proof (L0) ---
-    let block_id_bytes = *block.data().identifier().as_array();
-    let env_hash_bytes = envelope_hash(&block).0;
-    let block_leaf = compute_block_leaf_hash(&block_id_bytes, &env_hash_bytes, &ext_root);
+    let block_id_bytes = block.block_id;
+    let env_hash_bytes = block.envelope_hash;
+    let block_leaf = block.block_leaf_hash();
 
     let target_pos_in_window = (block_height % HISTORY_PROOF_WINDOW_SIZE as u64) as usize;
 
