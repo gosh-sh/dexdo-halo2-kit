@@ -21,6 +21,7 @@ private.
 | [`dex-halo2-circuit/`](dex-halo2-circuit) | The halo2 circuit (`DarkDexCircuitNew`) that constrains BOC decoding, Poseidon sk-commit, external-message Merkle proof, block Merkle proof, and the dense chain of historical-hash roots. |
 | [`halo2-proover/`](halo2-proover) | Standalone prover. Takes a fixture JSON, runs KZG setup / keygen (with on-disk caches), and emits the proof bytes + public-input bytes ready for the `ZKHALO2VERIFY` TVM instruction. |
 | [`dark_dex_halo2_private_witness_export_lib/`](dark_dex_halo2_private_witness_export_lib) | Library + `dex_data_exporter` CLI. Talks to a running Acki Nacki node, walks the layer-0 cycle and layer-N history proofs, and produces the fixture JSON consumed by `halo2-proover`. |
+| [`sk-commit-tool/`](sk-commit-tool) | Tiny CLI that takes a 32-byte `sk_u` hex and prints its Poseidon commitment `poseidon(sk_u, 0)` — the same `sk_u_commit` the circuit binds in `deposit_identifier_hash`. |
 
 ## End-to-end flow
 
