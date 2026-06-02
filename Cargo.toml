@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["dex-halo2-circuit", "halo2-proover", "dark_dex_halo2_private_witness_export_lib"]
+members = ["dex-halo2-circuit", "halo2-proover", "dark_dex_halo2_private_witness_export_lib", "sk-commit-tool"]
 
 # Ensure all transitive dependencies use the same halo2-base from git.
 [patch.crates-io]

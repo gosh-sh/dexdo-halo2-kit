@@ -1,0 +1,9 @@
+[package]
+name = "sk-commit-tool"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hex = "0.4.3"
+halo2-base = { git = "https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381", branch = "main", default-features = false, features = ["halo2-axiom"] }
+dex-halo2-circuit = { path = "../dex-halo2-circuit" }
