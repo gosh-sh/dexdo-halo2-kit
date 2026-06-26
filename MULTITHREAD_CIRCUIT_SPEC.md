@@ -19,7 +19,9 @@ require(
 
 Therefore the DEX circuit does **not** anchor against a single fixed layer. It anchors against `#L<N>(M)` for some `(N, M)` chosen by the prover, subject only to the node still retaining that root in `GlobalHistoricalData[N]`. The prover normally targets the smallest N (N=1, cheapest in-circuit) and falls back to higher N if the layer-1 root containing the event has aged out (see `generate_vouchers_with_live_event_proving.py`).
 
-Multi-thread refinement: in the multi-thread design `GlobalHistoricalData` is maintained for thread 0 only. Events in thread t ≠ 0 must therefore be chained to a thread-0 batch hash via cross-thread reference edges before they can be anchored against `GlobalHistoricalData[N]`.
+**Anonymity is the primary purpose of this anchoring.** The DEX circuit must hide the concrete block in which the user's voucher-generation event happened — both the block's id / height (which would identify a small anonymity set) and, in the multi-thread case, the thread `t` of that block. The verifier learns only the pair `(finalLayerHistoricalHashRoot, layerNumber)`, which subsumes a full batch (N=1) or higher-layer aggregate (N>1) of recent thread-0 history; the witness — concrete block id, thread id, layer-1 batch path, and all cross-thread chain hops — stays inside the proof and is never revealed. This is also why anchoring at a higher layer N (a larger anonymity set) is sometimes preferable even when a layer-1 anchor is still available.
+
+Multi-thread refinement: in the multi-thread design `GlobalHistoricalData` is maintained for thread 0 only. Events in thread t ≠ 0 must therefore be chained to a thread-0 batch hash via cross-thread reference edges before they can be anchored against `GlobalHistoricalData[N]`. The thread id `t` itself is part of the hidden witness — the verifier cannot distinguish proofs originating in thread 0 from proofs originating in any other thread.
 
 The canonical multi-thread design lives on the `poseidon_dex` branch of `acki-nacki`. All field names and helpers below refer to that branch.
 
