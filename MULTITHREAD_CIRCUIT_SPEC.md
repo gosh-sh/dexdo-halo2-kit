@@ -27,7 +27,7 @@ The canonical multi-thread design lives on the `poseidon_dex` branch of `acki-na
 
 ## 0. Terminology
 
-Adopted from `History proofs proposal-2.docx` and the `poseidon_dex` implementation. Use these terms consistently throughout this document.
+Adopted from `History proofs proposal.docx` and the `poseidon_dex` implementation. Use these terms consistently throughout this document.
 
 | Term | Meaning |
 |------|---------|
