@@ -42,8 +42,6 @@ Adopted from `History proofs proposal.docx` and the `poseidon_dex` implementatio
 | **`finalLayerHistoricalHashRoot`** | Instance 1 of the DEX proof; the layer-N batch hash the prover anchors against. |
 | **`layerNumber`** | Contract argument naming the layer N that `finalLayerHistoricalHashRoot` belongs to. |
 
-The per-layer batch tree is a **Poseidon dense Merkle** of width BWS = 128. Layer-1 leaves are `block_leaf` values, with the previous batch's `#L1(M−1)` prepended at index 0. All hashes in `block_merkle_leaves` slots L0 / L2 / L3 / L7 are Poseidon.
-
 ---
 
 ## 1. block_id construction (recap)
@@ -60,7 +58,11 @@ Every block has `block_id = root of an 8-leaf SHA-256 Merkle tree`. The 8 leaves
              L0  L1   L2  L3    L4  L5   L6  L7
 ```
 
-Combine rule at every level: `SHA-256(left_32B || right_32B)`. Seven SHA-256 invocations total.
+Combine rule at every level of the outer tree: `SHA-256(left_32B || right_32B)`. Seven SHA-256 invocations total to fold 8 leaves into `block_id`.
+
+Note the distinction between **leaf construction** and **outer combine**:
+- The 8 leaf values themselves are produced by different hash functions depending on the slot (see "Leaves at a glance" below). Slots L0, L2, L3, L7 use Poseidon to derive the leaf value; L1, L5, L6 use SHA-256; L4 is the TVM block hash.
+- The outer Merkle tree that combines those 8 leaves into `block_id` is always SHA-256.
 
 ### Leaves at a glance
 
@@ -197,7 +199,9 @@ Source for the dense-tree builder: `dense_merkle_tree` / `dense_merkle_root` at 
 
 ## 2. Per-thread layer-N batch tree
 
-(To be filled in — covers `block_leaf = Poseidon96(...)`, layer-1 BWS=128 dense Poseidon Merkle of `block_leaf` values with `#L1(M−1)` prepended at index 0, recursive layer-N construction over BWS consecutive layer-(N−1) hashes.)
+The per-layer batch tree is a **Poseidon dense Merkle** of width BWS = 128. Layer-1 leaves are `block_leaf` values; layer-(N+1) leaves are the BWS preceding layer-N batch hashes. At every layer, the previous batch's root (`#L<N>(M−1)`) is prepended at index 0 so successive batches form a chain.
+
+(Remaining details to be filled in — `block_leaf = Poseidon96(...)` construction, full layer-N recursion, prepend-prev-root rule, dense-Merkle combine rule.)
 
 ---
 
