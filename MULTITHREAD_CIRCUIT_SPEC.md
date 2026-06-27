@@ -166,7 +166,7 @@ proof_block_refs[0]      = parent_block_id           (same thread as this block)
 proof_block_refs[1..1+n] = refs[0..n]                (other threads, CommonSection declaration order)
 ```
 
-There is no hard upper bound on `n` in the protocol code. The circuit-side bound `MAX_PROOF_BLOCK_REFS` is chosen as a power of 2 (initially 8).
+There is no hard upper bound on `n` in the protocol code. The circuit-side bound `MAX_PROOF_BLOCK_REFS` is **256**, chosen as a power of 2.
 
 Each leaf is a tagged Poseidon hash:
 
@@ -186,7 +186,7 @@ L7 is then the **Poseidon dense-Merkle root** of `leaf[0..len]`:
 
 - Tree width is padded to the next power of 2 with literal `[0u8; 32]` leaves (NOT zero-tagged).
 - Combine rule: `Poseidon(left_32B || right_32B)`.
-- Depth: `ceil(log2(len))`. With `MAX_PROOF_BLOCK_REFS = 8`, depth ≤ 3 (and `len = 1 + n` where `n` is the number of refs).
+- Depth: `ceil(log2(len))`. With `MAX_PROOF_BLOCK_REFS = 256`, depth ≤ 8 (and `len = 1 + n` where `n` is the number of refs).
 
 Source for the dense-tree builder: `dense_merkle_tree` / `dense_merkle_root` at `node/libs/history-proof/src/lib.rs:51-78`.
 
@@ -751,7 +751,7 @@ The phone proves and submits all 5 snarks. If the user uses a relayer to broadca
 | BWS | 128 | `HISTORY_PROOF_WINDOW_SIZE` (canonical) |
 | Layer-1 batch tree depth | 8 (130 leaves padded to 256) | `HistoryBlockData::calculate_root_hash` |
 | L7 outer SHA-256 depth | 3 (8-leaf block-id tree) | `block_merkle_leaves` |
-| `MAX_PROOF_BLOCK_REFS` (L7 inner depth bound) | **8** (= 256 leaves padded, depth 8) | Protocol cap reported by team |
+| `MAX_PROOF_BLOCK_REFS` (L7 inner depth bound) | **256** leaves padded, depth 8 | Protocol cap reported by team |
 | `H` (hops per `MultiHopProof`) | **5** | Phone budget at K=16 |
 | `N_BUNDLE` (fixed proofs per claim) | **4** + 1 DexFinalProof = 5 | Anonymity uniformity |
 | `L_MAX` (max real chain length) | **20** (= H × N_BUNDLE) | Multi-proof design target |
