@@ -417,22 +417,30 @@ To chain `MultiHopProof` snarks together on-chain without revealing real block_i
 salted_id := Poseidon( salt , block_id )    // one Poseidon, 64 bytes input, 32 bytes out
 ```
 
-`salt` is a voucher-scoped per-user secret derived from the existing voucher secret seed:
+`salt` is a voucher-scoped per-user secret derived from the existing voucher secret seed (called `sk_u` in code):
 
 ```
-salt = Poseidon( DOMAIN_TAG , voucher_secret_seed )
+salt = Poseidon( [ DOMAIN_TAG_FR , sk_u ] )
 
-DOMAIN_TAG = b"dex-multithread-salt-v1"   (24 bytes, fixed)
+DOMAIN_TAG_BYTES = b"acki-nacki:voucher-hop-salt:v1"   (30 bytes, fixed)
+DOMAIN_TAG_FR    = bytes_to_fr( DOMAIN_TAG_BYTES zero-padded to 32 LE bytes )
 ```
 
-`salt` is a **private witness** in every proof of the bundle. The voucher-scoping ensures that two vouchers from the same user produce uncorrelated salted ids (different `voucher_secret_seed`s).
+`salt` is a **private witness** in every proof of the bundle. The voucher-scoping ensures that two vouchers from the same user produce uncorrelated salted ids (different `sk_u`s).
+
+> **Canonical convention.** The constants and Poseidon shape above are the
+> ones enforced by Phase 2 (`gosh-referenced-block-hop`) and Phase 3 of
+> `DarkDexCircuitNew` (see `dex-halo2-circuit/src/salt.rs`). `RootPN.sol`
+> equality-checks `salt_commitment` across all 5 snarks of a bundle, so any
+> divergence between this spec and `salt.rs` breaks the orchestrator. If they
+> ever drift, **`salt.rs` is the source of truth.**
 
 #### Per-`MultiHopProof` public inputs (3)
 
 ```
-inst[0] = salted_start = Poseidon( salt , B_0.block_id )
-inst[1] = salted_end   = Poseidon( salt , B_H.block_id )
-inst[2] = salt_commitment = Poseidon( DOMAIN_TAG, salt )      // binds the salt across snarks
+inst[0] = salted_start = Poseidon( [ salt , B_0.block_id ] )
+inst[1] = salted_end   = Poseidon( [ salt , B_H.block_id ] )
+inst[2] = salt_commitment = Poseidon( [ salt ] )              // 1-input commitment; binds the salt across snarks
 ```
 
 Inside the circuit:
@@ -536,11 +544,11 @@ witnesses:
 
 constraints:
   1. salt_commitment_check:
-        salt_commitment_pub == Poseidon(DOMAIN_TAG, salt)
-        salt == Poseidon(DOMAIN_TAG, voucher_secret_seed)
+        salt_commitment_pub == Poseidon([salt])                          // 1-input
+        salt == Poseidon([DOMAIN_TAG_FR, voucher_secret_seed])           // 2-input, sk_u = voucher_secret_seed
   2. salted_endpoint_check:
-        salted_start_pub == Poseidon(salt, hop_current_block_id[0])
-        salted_end_pub   == Poseidon(salt, hop_next_block_id[H-1])
+        salted_start_pub == Poseidon([salt, hop_current_block_id[0]])
+        salted_end_pub   == Poseidon([salt, hop_next_block_id[H-1]])
   3. for each hop h in 0..H:
         when is_active[h]: full hop constraints of §4.2
         when !is_active[h]: hop_next_block_id[h] == hop_current_block_id[h]
@@ -574,10 +582,10 @@ new constraints (over today's K=14 DEX):
   4. Thread-t batch path:
         block_leaf(X) -- depth-8 Poseidon dense-Merkle path --> L1_M_X
   5. Salt and salted endpoints:
-        salt == Poseidon(DOMAIN_TAG, voucher_secret_seed)
-        salt_commitment_pub == Poseidon(DOMAIN_TAG, salt)
-        salted_C_start_pub  == Poseidon(salt, C.block_id)
-        salted_Y_end_pub    == Poseidon(salt, Y.block_id)
+        salt == Poseidon([DOMAIN_TAG_FR, voucher_secret_seed])           // sk_u = voucher_secret_seed
+        salt_commitment_pub == Poseidon([salt])                          // 1-input
+        salted_C_start_pub  == Poseidon([salt, C.block_id])
+        salted_Y_end_pub    == Poseidon([salt, Y.block_id])
   6. existing single-thread logic unchanged:
         block_leaf(Y), thread-0 dense-Merkle path to #L1(M_Y), dense chain to finalLayerHistoricalHashRoot,
         depositIdentifierHash binding, ECDSA / voucher fields, layerNumber semantics.
@@ -602,7 +610,7 @@ If a worst-case anonymity guarantee is not required, `N_BUNDLE` can be made dyna
 ### 6.9 Public-input vectors recap
 
 ```
-DexFinalProof (8 fields):
+DexFinalProof (8 fields, full multi-thread design — Phase 4+):
   [0] depositIdentifierHash
   [1] finalLayerHistoricalHashRoot       ← consumed by gosh.check_layer_hash(.,layerNumber)
   [2] voucherNominalFr
@@ -617,6 +625,23 @@ MultiHopProof (3 fields):
   [1] salted_end
   [2] salt_commitment
 ```
+
+> **Phase 3 status (2026-06-28).** `DarkDexCircuitNew` currently exposes
+> **7** instances (no separate `salted_Y_end`/`salted_C_start` split yet):
+>
+> ```
+> [0] poseidon_commitment   (= depositIdentifierHash analogue)
+> [1] final_root            (= finalLayerHistoricalHashRoot)
+> [2] voucherNominalFr
+> [3] tokenTypeFr
+> [4] ephemeralPubkey
+> [5] salt_commitment       = Poseidon([Poseidon([DOMAIN_TAG_FR, sk_u])])
+> [6] event_salted_block_id = Poseidon([salt, bytes_to_fr(block_id)])
+> ```
+>
+> The Phase 4+ extension splits the single `event_salted_block_id` into the
+> `salted_C_start` / `salted_Y_end` pair once C-extraction lands. Today's
+> on-chain encoding: **7 × 32 = 224 B** per `DexFinalProof` instance vec.
 
 ### 6.10 Verifying-key set
 
@@ -738,7 +763,7 @@ The phone proves and submits all 5 snarks. If the user uses a relayer to broadca
 
 ### 9.6 Hash strength sufficiency
 
-`Poseidon(salt, block_id)` collision resistance and pseudo-randomness over the BN254 scalar field are sufficient for the salting purpose (BN254 ≈ 254-bit field, ≈ 127-bit collision security). For voucher-scoping uniqueness, the salt domain is `Poseidon(DOMAIN_TAG, voucher_secret_seed)` where `voucher_secret_seed` already has full collision security in the existing DEX. No primitive change needed.
+`Poseidon([salt, block_id])` collision resistance and pseudo-randomness over the BN254 scalar field are sufficient for the salting purpose (BN254 ≈ 254-bit field, ≈ 127-bit collision security). For voucher-scoping uniqueness, the salt domain is `Poseidon([DOMAIN_TAG_FR, voucher_secret_seed])` where `voucher_secret_seed` already has full collision security in the existing DEX. No primitive change needed.
 
 ---
 
@@ -758,7 +783,7 @@ The phone proves and submits all 5 snarks. If the user uses a relayer to broadca
 | `MAX_CHAIN_LEN` (thread-0 dense chain) | **11** (unchanged) | `gosh-dense-balanced-tree` |
 | `MultiHopProof` K | **16** | Cell-budget sizing |
 | `DexFinalProof` K | **15** | Cell-budget sizing |
-| `DOMAIN_TAG` | `b"dex-multithread-salt-v1"` | Per-version domain separation |
+| `DOMAIN_TAG_BYTES` | `b"acki-nacki:voucher-hop-salt:v1"` (30 B) | Per-version domain separation; **canonical from Phase 2 (`gosh-referenced-block-hop`)**, vendored in `dex-halo2-circuit/src/salt.rs` |
 | SHA-256 chip | `gosh-sha256-chip` (unchanged) | Existing dependency |
 | On-chain verifier | per-snark Halo2 KZG verification | No aggregation |
 | Public-input layout (`DexFinalProof`) | existing 5 + `salted_C_start` + `salted_Y_end` + `salt_commitment` | Preserves contract compatibility |

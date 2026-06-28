@@ -25,6 +25,7 @@ use std::cell::RefCell;
 
 use crate::boc_helper::*;
 use crate::poseidon::*;
+use crate::salt::domain_tag_hop_salt_fr;
 use gosh_dense_balanced_tree::{
     bytes_to_fr, compute_root_native, dense_merkle_root_circuit,
     dense_merkle_root_circuit_padded, fr_to_bytes, poseidon_hash_native,
@@ -427,7 +428,14 @@ impl Circuit<Fr> for DarkDexCircuitNew {
             let mut builder = self.base_circuit_builder.borrow_mut();
             let range = builder.range_chip();
 
-            let (final_hasher_result, final_root, voucher_nominal, token_type) = {
+            let (
+                final_hasher_result,
+                final_root,
+                voucher_nominal,
+                token_type,
+                salt_commitment,
+                event_salted_block_id,
+            ) = {
                 let gate = range.gate();
                 let ctx = builder.pool(0).main();
                 let sha256_chip = Sha256Chip::new(&range);
@@ -574,6 +582,21 @@ impl Circuit<Fr> for DarkDexCircuitNew {
                 let inputs = [voucher_nominal, token_type, sk_u_assigned, sk_u_commit];
                 let final_hasher_result = hasher.hash_fix_len_array(ctx, gate, &inputs);
 
+                // === Phase 3: salt and salt_commitment ===
+                // salt = Poseidon([DOMAIN_TAG_HOP_SALT_FR, sk_u])
+                // salt_commitment = Poseidon([salt])
+                //
+                // The DexFinalProof's salt_commitment public input must equal
+                // every MultiHopProof's salt_commitment in the same bundle —
+                // RootPN.sol enforces this on-chain.
+                let domain_tag_fr_const = ctx.load_constant(domain_tag_hop_salt_fr());
+                let salt_assigned = hasher.hash_fix_len_array(
+                    ctx, gate, &[domain_tag_fr_const, sk_u_assigned],
+                );
+                let salt_commitment = hasher.hash_fix_len_array(
+                    ctx, gate, &[salt_assigned],
+                );
+
                 // === a. Pack SHA-256 output to repr_hash_fr ===
                 // root_hash_bytes are 32 BE bytes from Sha256Chip.
                 // Pack into repr_hash_fr using LE byte-order weights (same encoding
@@ -632,6 +655,14 @@ impl Circuit<Fr> for DarkDexCircuitNew {
                 // === d. Compute block_leaf in-circuit ===
                 let block_id_fr = ctx.load_witness(bytes_to_fr(&self.block_id));
                 let envelope_hash_fr = ctx.load_witness(bytes_to_fr(&self.envelope_hash_bytes));
+
+                // === Phase 3: event_salted_block_id ===
+                // event_salted_block_id = Poseidon([salt, block_id_fr])
+                // Used by the orchestrator to splice the DexFinalProof's chain
+                // head onto the L7 hop chain produced by the MultiHopProofs.
+                let event_salted_block_id = hasher.hash_fix_len_array(
+                    ctx, gate, &[salt_assigned, block_id_fr],
+                );
                 // When the events proof has 0 levels, the padded circuit returns
                 // the leaf unchanged. The native computation must match.
                 let ext_out_root_bytes = if self.merkle_proof_siblings.is_empty() {
@@ -670,7 +701,14 @@ impl Circuit<Fr> for DarkDexCircuitNew {
                     ctx, &range, &hasher, root_1, &self.dense_chain, num_active,
                 );
 
-                (final_hasher_result, final_root, voucher_nominal, token_type)
+                (
+                    final_hasher_result,
+                    final_root,
+                    voucher_nominal,
+                    token_type,
+                    salt_commitment,
+                    event_salted_block_id,
+                )
             };
 
             // Instance 4: ephemeral_pubkey, witnessed by the prover and
@@ -687,6 +725,11 @@ impl Circuit<Fr> for DarkDexCircuitNew {
             builder.assigned_instances[0].push(voucher_nominal);
             builder.assigned_instances[0].push(token_type);
             builder.assigned_instances[0].push(eph);
+            // Phase 3: salt-derived publics (binds this DexFinalProof to its
+            // bundle's MultiHopProofs via salt_commitment, and exposes the
+            // event block id under the same salt for chain-head splicing).
+            builder.assigned_instances[0].push(salt_commitment);
+            builder.assigned_instances[0].push(event_salted_block_id);
         }
 
         // Synthesize base circuit builder to materialize virtual constraints.
@@ -701,6 +744,9 @@ impl Circuit<Fr> for DarkDexCircuitNew {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::salt::{
+        compute_salt_commitment_native, compute_salt_native, compute_salted_block_id_native,
+    };
     use crate::test_helpers::*;
     use dense_balanced_tree::PoseidonHasher as DensePoseidonHasher;
     use halo2_base::halo2_proofs::dev::MockProver;
@@ -755,11 +801,24 @@ mod tests {
                 params.clone(),
             );
 
+            // Phase 3: derive salt-based publics for this voucher.
+            let salt = compute_salt_native(v.sk_u);
+            let salt_commitment = compute_salt_commitment_native(salt);
+            let event_salted_block_id = compute_salted_block_id_native(salt, &tw.block_id);
+
             println!("Running MockProver...");
             let prover = MockProver::<Fr>::run(
                 K,
                 &circuit,
-                vec![vec![v.expected_poseidon_hash, final_root_fr, v.voucher_nominal_val, v.token_type_val, ephemeral_pubkey]],
+                vec![vec![
+                    v.expected_poseidon_hash,
+                    final_root_fr,
+                    v.voucher_nominal_val,
+                    v.token_type_val,
+                    ephemeral_pubkey,
+                    salt_commitment,
+                    event_salted_block_id,
+                ]],
             )
             .unwrap();
             prover.assert_satisfied();
@@ -810,11 +869,25 @@ mod tests {
                 params.clone(),
             );
 
+            // Phase 3: salt-based publics (constant across the T-loop, but
+            // recomputed each iteration for clarity).
+            let salt = compute_salt_native(v.sk_u);
+            let salt_commitment = compute_salt_commitment_native(salt);
+            let event_salted_block_id = compute_salted_block_id_native(salt, &tw.block_id);
+
             println!("Running MockProver for T={}...", t);
             let prover = MockProver::<Fr>::run(
                 K,
                 &circuit,
-                vec![vec![v.expected_poseidon_hash, final_root_fr, v.voucher_nominal_val, v.token_type_val, ephemeral_pubkey]],
+                vec![vec![
+                    v.expected_poseidon_hash,
+                    final_root_fr,
+                    v.voucher_nominal_val,
+                    v.token_type_val,
+                    ephemeral_pubkey,
+                    salt_commitment,
+                    event_salted_block_id,
+                ]],
             )
             .unwrap();
             prover.assert_satisfied();
@@ -911,8 +984,21 @@ mod tests {
                 break_points.clone(),
             );
 
+            // Phase 3 salt publics.
+            let salt = compute_salt_native(v.sk_u);
+            let salt_commitment = compute_salt_commitment_native(salt);
+            let event_salted_block_id = compute_salted_block_id_native(salt, &tw.block_id);
+
             let start = Instant::now();
-            let instance_fr = vec![v.expected_poseidon_hash, final_root_fr, v.voucher_nominal_val, v.token_type_val, ephemeral_pubkey];
+            let instance_fr = vec![
+                v.expected_poseidon_hash,
+                final_root_fr,
+                v.voucher_nominal_val,
+                v.token_type_val,
+                ephemeral_pubkey,
+                salt_commitment,
+                event_salted_block_id,
+            ];
             let proof_bytes =
                 gen_proof_with_instances(&srs, &pk, prover_circuit, &[&instance_fr]);
             let prove_ms = start.elapsed().as_millis();
@@ -1062,14 +1148,21 @@ mod tests {
                 break_points.clone(),
             );
 
+            // Phase 3 salt publics.
+            let salt = compute_salt_native(v.sk_u);
+            let salt_commitment = compute_salt_commitment_native(salt);
+            let event_salted_block_id = compute_salted_block_id_native(salt, &tw.block_id);
+
             let instance_fr = vec![
                 v.expected_poseidon_hash,
                 final_root_fr,
                 v.voucher_nominal_val,
                 v.token_type_val,
                 ephemeral_pubkey,
+                salt_commitment,
+                event_salted_block_id,
             ];
-            assert_eq!(instance_fr.len(), 5);
+            assert_eq!(instance_fr.len(), 7);
 
             println!("\n[L{}] proving...", chain_len);
             let start = Instant::now();
@@ -1082,12 +1175,13 @@ mod tests {
             );
             check_proof_with_instances(&srs, pk.get_vk(), &proof_bytes, &[&instance_fr], true);
 
-            // 5 Fr × 32 bytes LE = 160 B; tvm-sdk decodes via Fr::from_bytes_le (byte-exact symmetric).
-            let mut instances_bytes: Vec<u8> = Vec::with_capacity(5 * 32);
+            // Phase 3: 7 Fr × 32 bytes LE = 224 B (was 160 B before salt publics);
+            // tvm-sdk decodes via Fr::from_bytes_le (byte-exact symmetric).
+            let mut instances_bytes: Vec<u8> = Vec::with_capacity(7 * 32);
             for fr in &instance_fr {
                 instances_bytes.extend_from_slice(fr.to_repr().as_ref());
             }
-            assert_eq!(instances_bytes.len(), 160);
+            assert_eq!(instances_bytes.len(), 224);
 
             let proof_path = out_dir.join(format!("dark_dex_w128_L{}_proof.bin", chain_len));
             let instances_path = out_dir.join(format!("dark_dex_w128_L{}_instances.bin", chain_len));
@@ -1264,8 +1358,21 @@ mod tests {
                 break_points,
             );
 
+            // Phase 3 salt publics.
+            let salt = compute_salt_native(v.sk_u);
+            let salt_commitment = compute_salt_commitment_native(salt);
+            let event_salted_block_id = compute_salted_block_id_native(salt, &tw.block_id);
+
             let start = Instant::now();
-            let instance_fr = vec![v.expected_poseidon_hash, final_root_fr, v.voucher_nominal_val, v.token_type_val, ephemeral_pubkey];
+            let instance_fr = vec![
+                v.expected_poseidon_hash,
+                final_root_fr,
+                v.voucher_nominal_val,
+                v.token_type_val,
+                ephemeral_pubkey,
+                salt_commitment,
+                event_salted_block_id,
+            ];
             let proof_bytes =
                 gen_proof_with_instances(&srs, &pk, prover_circuit, &[&instance_fr]);
             let prove_ms = start.elapsed().as_millis();
@@ -1362,11 +1469,24 @@ mod tests {
                 params.clone(),
             );
 
+            // Phase 3 salt publics.
+            let salt = compute_salt_native(v.sk_u);
+            let salt_commitment = compute_salt_commitment_native(salt);
+            let event_salted_block_id = compute_salted_block_id_native(salt, &tw.block_id);
+
             println!("Running MockProver...");
             let prover = MockProver::<Fr>::run(
                 K,
                 &circuit,
-                vec![vec![v.expected_poseidon_hash, final_root_fr, v.voucher_nominal_val, v.token_type_val, ephemeral_pubkey]],
+                vec![vec![
+                    v.expected_poseidon_hash,
+                    final_root_fr,
+                    v.voucher_nominal_val,
+                    v.token_type_val,
+                    ephemeral_pubkey,
+                    salt_commitment,
+                    event_salted_block_id,
+                ]],
             )
             .unwrap();
             prover.assert_satisfied();

@@ -1,6 +1,9 @@
 use gosh_dark_dex_halo2_new_circuit::boc_helper::{serialize_cells_tree_root_first, BocFlattenData};
 use gosh_dark_dex_halo2_new_circuit::dark_dex_circuit_new::DarkDexCircuitNew;
 use gosh_dark_dex_halo2_new_circuit::poseidon::poseidon_hash;
+use gosh_dark_dex_halo2_new_circuit::salt::{
+    compute_salt_commitment_native, compute_salt_native, compute_salted_block_id_native,
+};
 
 use gosh_dense_balanced_tree::{
     bytes_to_fr, compute_root_native, fr_to_bytes, preprocess_dense_proof, DenseChainLink,
@@ -71,6 +74,10 @@ pub struct ProofOutput {
     pub voucher_nominal: String,
     pub token_type: String,
     pub ephemeral_pubkey: String,
+    /// Phase 3: see `InstanceValues::salt_commitment`.
+    pub salt_commitment: String,
+    /// Phase 3: see `InstanceValues::event_salted_block_id`.
+    pub event_salted_block_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,6 +87,13 @@ pub struct InstanceValues {
     pub voucher_nominal: String,
     pub token_type: String,
     pub ephemeral_pubkey: String,
+    /// Phase 3: `Poseidon([Poseidon([DOMAIN_TAG_HOP_SALT_FR, sk_u])])`.
+    /// Must equal `salt_commitment` of every MultiHopProof in the same bundle.
+    pub salt_commitment: String,
+    /// Phase 3: `Poseidon([salt, bytes_to_fr(block_id)])`.
+    /// Used by the orchestrator to splice this DexFinalProof onto the
+    /// MultiHopProof chain via its `head_salted_block_id`.
+    pub event_salted_block_id: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +211,8 @@ fn instances_to_values(instances: &[Fr]) -> InstanceValues {
         voucher_nominal: hex::encode(instances[2].to_repr()),
         token_type: hex::encode(instances[3].to_repr()),
         ephemeral_pubkey: hex::encode(instances[4].to_repr()),
+        salt_commitment: hex::encode(instances[5].to_repr()),
+        event_salted_block_id: hex::encode(instances[6].to_repr()),
     }
 }
 
@@ -394,12 +410,20 @@ fn compute_instances(parsed: &ParsedFixture) -> Vec<Fr> {
         current
     };
 
+    // Phase 3: salt-derived publics (must match the in-circuit derivation in
+    // `DarkDexCircuitNew::synthesize`).
+    let salt = compute_salt_native(parsed.sk_u);
+    let salt_commitment = compute_salt_commitment_native(salt);
+    let event_salted_block_id = compute_salted_block_id_native(salt, &parsed.block_id);
+
     vec![
         poseidon_commitment,
         final_root,
         voucher_nominal_val,
         token_type_val,
         ephemeral_pubkey_val,
+        salt_commitment,
+        event_salted_block_id,
     ]
 }
 
@@ -578,7 +602,8 @@ impl Prover {
         // Build output
         // 5 public instance Fr elements concatenated as LE bytes (5×32=160B)
         // for direct use by the TVM ZKHALO2VERIFY on-chain verifier
-        let mut pub_inputs_bytes = Vec::with_capacity(160);
+        // Phase 3: 7 instances × 32 bytes LE = 224 B (was 160 B before salt publics).
+        let mut pub_inputs_bytes = Vec::with_capacity(224);
         for inst in &instances {
             pub_inputs_bytes.extend_from_slice(&inst.to_repr());
         }
@@ -592,6 +617,8 @@ impl Prover {
             voucher_nominal: values.voucher_nominal,
             token_type: values.token_type,
             ephemeral_pubkey: values.ephemeral_pubkey,
+            salt_commitment: values.salt_commitment,
+            event_salted_block_id: values.event_salted_block_id,
         })
     }
 }
@@ -600,9 +627,12 @@ impl Prover {
 // Stateless public API
 // ---------------------------------------------------------------------------
 
-/// Compute the 5 public instance values without generating a proof.
+/// Compute the 7 public instance values without generating a proof.
 ///
 /// Fast (milliseconds). No SRS or PK needed.
+///
+/// Phase 3: includes `salt_commitment` and `event_salted_block_id` derived
+/// from the voucher secret `sk_u` and the event block id.
 pub fn compute_instances_from_json(fixture_json: &str) -> Result<InstanceValues, ProverError> {
     let json: DexFixtureJson = serde_json::from_str(fixture_json)
         .map_err(|e| ProverError::Fixture(format!("JSON parse: {e}")))?;
@@ -646,6 +676,12 @@ mod tests {
         assert!(!values.voucher_nominal.is_empty());
         assert!(!values.token_type.is_empty());
         assert!(!values.ephemeral_pubkey.is_empty());
+        // Phase 3 publics.
+        assert!(!values.salt_commitment.is_empty());
+        assert!(!values.event_salted_block_id.is_empty());
+        // Both salt fields are hex-encoded 32-byte Fr ⇒ 64 hex chars.
+        assert_eq!(values.salt_commitment.len(), 64);
+        assert_eq!(values.event_salted_block_id.len(), 64);
     }
 
     #[test]

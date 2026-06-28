@@ -14,9 +14,12 @@
 //! cargo test --release test_real_data_real_prover -- --nocapture
 //! ```
 
-use gosh_dark_dex_halo2_new_circuit::boc_helper::{serialize_cells_tree_root_first, BocFlattenData};
-use gosh_dark_dex_halo2_new_circuit::dark_dex_circuit_new::DarkDexCircuitNew;
-use gosh_dark_dex_halo2_new_circuit::poseidon::poseidon_hash;
+use dex_halo2_circuit::boc_helper::{serialize_cells_tree_root_first, BocFlattenData};
+use dex_halo2_circuit::dark_dex_circuit_new::DarkDexCircuitNew;
+use dex_halo2_circuit::poseidon::poseidon_hash;
+use dex_halo2_circuit::salt::{
+    compute_salt_commitment_native, compute_salt_native, compute_salted_block_id_native,
+};
 
 use gosh_dense_balanced_tree::{
     bytes_to_fr, compute_root_native, fr_to_bytes, preprocess_dense_proof,
@@ -359,6 +362,22 @@ fn compute_instances(parsed: &ParsedFixture) -> Vec<Fr> {
     vec![poseidon_commitment, final_root, voucher_nominal_val, token_type_val]
 }
 
+/// Append the 3 trailing public inputs to the instance vector (Phase 3):
+///   [4] ephemeral_pubkey
+///   [5] salt_commitment       = Poseidon([Poseidon([DOMAIN_TAG_HOP_SALT_FR, sk_u])])
+///   [6] event_salted_block_id = Poseidon([salt, bytes_to_fr(block_id)])
+fn append_trailing_publics(
+    instances: &mut Vec<Fr>,
+    ephemeral_pubkey: Fr,
+    sk_u: Fr,
+    block_id: &[u8; 32],
+) {
+    let salt = compute_salt_native(sk_u);
+    instances.push(ephemeral_pubkey);
+    instances.push(compute_salt_commitment_native(salt));
+    instances.push(compute_salted_block_id_native(salt, block_id));
+}
+
 /// Native poseidon_hash_96: hash 3 × 32-byte inputs with 31-byte chunking.
 /// Must match the circuit's `poseidon_hash_96_native`.
 fn poseidon_hash_96_native(a: &[u8; 32], b: &[u8; 32], c: &[u8; 32]) -> [u8; 32] {
@@ -408,7 +427,7 @@ fn test_real_data_mock_prover() {
         let parsed = parse_fixture(&json);
         let ephemeral_pubkey = Fr::from(0xDEADu64);
         let mut instances = compute_instances(&parsed);
-        instances.push(ephemeral_pubkey);
+        append_trailing_publics(&mut instances, ephemeral_pubkey, parsed.sk_u, &parsed.block_id);
 
         println!(
             "  Expected instances: poseidon={}, final_root={}",
@@ -528,7 +547,7 @@ fn test_real_data_real_prover() {
 
         let parsed = parse_fixture(&json);
         let mut instances = compute_instances(&parsed);
-        instances.push(ephemeral_pubkey);
+        append_trailing_publics(&mut instances, ephemeral_pubkey, parsed.sk_u, &parsed.block_id);
 
         let prover_circuit = DarkDexCircuitNew::new_for_proving(
             parsed.sk_u,
@@ -793,7 +812,7 @@ fn test_focused_l1_h197() {
 
     let ephemeral_pubkey = Fr::from(0xDEADu64);
     let mut instances = compute_instances(&parsed);
-    instances.push(ephemeral_pubkey);
+    append_trailing_publics(&mut instances, ephemeral_pubkey, parsed.sk_u, &parsed.block_id);
     println!("Instance 0 (poseidon): {}", hex::encode(instances[0].to_repr()));
     println!("Instance 1 (final_root): {}", hex::encode(instances[1].to_repr()));
 
@@ -854,7 +873,7 @@ fn test_focused_l0_h197() {
 
     let ephemeral_pubkey = Fr::from(0xDEADu64);
     let mut instances = compute_instances(&parsed);
-    instances.push(ephemeral_pubkey);
+    append_trailing_publics(&mut instances, ephemeral_pubkey, parsed.sk_u, &parsed.block_id);
     println!("Instance 0 (poseidon): {}", hex::encode(instances[0].to_repr()));
     println!("Instance 1 (final_root): {}", hex::encode(instances[1].to_repr()));
 
@@ -904,7 +923,7 @@ fn test_focused_l0_h197() {
 ///
 /// Writes (for N ∈ {num_active_chain_steps} = {0, 1, 2}):
 ///   {TVM_SDK_EXPORT_DIR}/dark_dex_w8_L{N}_proof.bin
-///   {TVM_SDK_EXPORT_DIR}/dark_dex_w8_L{N}_instances.bin   (5 × 32 bytes, LE Fr)
+///   {TVM_SDK_EXPORT_DIR}/dark_dex_w8_L{N}_instances.bin   (7 × 32 bytes, LE Fr)
 ///
 /// The live H626 fixture is skipped (different historical window).
 #[test]
@@ -972,8 +991,8 @@ fn test_export_tvm_sdk_data() {
         assert!(n_steps <= 2, "unexpected chain step count {} for fixture {}", n_steps, filename);
 
         let mut instances = compute_instances(&parsed);
-        instances.push(ephemeral_pubkey);
-        assert_eq!(instances.len(), 5);
+        append_trailing_publics(&mut instances, ephemeral_pubkey, parsed.sk_u, &parsed.block_id);
+        assert_eq!(instances.len(), 7);
 
         let prover_circuit = DarkDexCircuitNew::new_for_proving(
             parsed.sk_u,
@@ -998,14 +1017,14 @@ fn test_export_tvm_sdk_data() {
         println!("[{}] proof = {} bytes; sanity-verifying...", filename, proof_bytes.len());
         check_proof_with_instances(&srs, pk.get_vk(), &proof_bytes, &[&instances], true);
 
-        // Serialize each Fr instance as 32 bytes LE (`Fr::to_repr()`), 5 × 32 = 160 B total.
+        // Serialize each Fr instance as 32 bytes LE (`Fr::to_repr()`), 7 × 32 = 224 B total.
         // The tvm-sdk verifier (`tvm_vm/src/executor/zk_halo2.rs:97-121`) decodes this via
         // `Fr::from_bytes_le()` on the non-u64-shaped path, which is byte-exact symmetric.
-        let mut instances_bytes: Vec<u8> = Vec::with_capacity(5 * 32);
+        let mut instances_bytes: Vec<u8> = Vec::with_capacity(7 * 32);
         for fr in &instances {
             instances_bytes.extend_from_slice(fr.to_repr().as_ref());
         }
-        assert_eq!(instances_bytes.len(), 160);
+        assert_eq!(instances_bytes.len(), 224);
 
         let proof_path = out_dir.join(format!("dark_dex_w8_L{}_proof.bin", n_steps));
         let instances_path = out_dir.join(format!("dark_dex_w8_L{}_instances.bin", n_steps));
@@ -1049,7 +1068,7 @@ fn test_focused_l2_h197() {
 
     let ephemeral_pubkey = Fr::from(0xDEADu64);
     let mut instances = compute_instances(&parsed);
-    instances.push(ephemeral_pubkey);
+    append_trailing_publics(&mut instances, ephemeral_pubkey, parsed.sk_u, &parsed.block_id);
     println!("Instance 0 (poseidon): {}", hex::encode(instances[0].to_repr()));
     println!("Instance 1 (final_root): {}", hex::encode(instances[1].to_repr()));
 
