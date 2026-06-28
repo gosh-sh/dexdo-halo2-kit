@@ -450,3 +450,310 @@ pub fn synth_chain(seed: u64, k_hops: usize) -> SynthChain {
         block_ids,
     }
 }
+
+// ---------------------------------------------------------------------------
+// Variable-`n_bundle` variants for stress tests beyond `L_MAX = 20`.
+//
+// Spec §10.2 Open Question #1 explicitly contemplates raising `N_BUNDLE` past
+// the locked design target of 4 if real testnet chain-length distributions
+// demand longer chains (50, 100, even 300 hops). The circuit and on-chain
+// verifier loop over snarks, so per-snark logic is unchanged — only the
+// bundle width (and total proving wall-time) grows.
+//
+// These `_n` variants take `n_bundle` as a runtime argument and return a
+// `Vec` instead of a fixed-size array, so they can drive bundles of any
+// width without touching the locked `N_BUNDLE = 4` constant.
+// ---------------------------------------------------------------------------
+
+/// Like `synth_chain` but parameterized by `n_bundle` (number of MultiHop
+/// snarks per bundle). Total hop capacity is `n_bundle * H_HOPS_PER_PROOF`.
+pub fn synth_chain_n(seed: u64, k_hops: usize, n_bundle: usize) -> SynthChain {
+    use rand::rngs::StdRng;
+    use rand::SeedableRng;
+
+    assert!(n_bundle >= 1, "n_bundle must be >= 1");
+    let total_slots = n_bundle * H_HOPS_PER_PROOF;
+    assert!(
+        k_hops <= total_slots,
+        "k_hops {k_hops} exceeds bundle capacity {total_slots}"
+    );
+
+    let mut rng = StdRng::seed_from_u64(seed);
+
+    let mut sk_u_bytes = [0u8; 32];
+    rng.fill(&mut sk_u_bytes);
+    sk_u_bytes[31] = 0;
+    let sk_u = bytes_to_fr(&sk_u_bytes);
+
+    let salt = compute_salt_native(sk_u);
+    let salt_commitment = compute_salt_commitment_native(salt);
+
+    let num_blocks = k_hops + 1;
+    let mut block_ids = Vec::with_capacity(num_blocks.max(1));
+    for _ in 0..num_blocks.max(1) {
+        let mut id = [0u8; 32];
+        rng.fill(&mut id);
+        block_ids.push(id);
+    }
+
+    let salted_head: Vec<Fr> = block_ids
+        .iter()
+        .map(|b| compute_salted_block_id_native(salt, b))
+        .collect();
+    let bundle_head_salted = salted_head[0];
+
+    let mut hops = Vec::with_capacity(total_slots);
+
+    for i in 0..k_hops {
+        let parent_id = block_ids[i];
+
+        let proof_block_refs: Vec<[u8; 32]> = vec![parent_id];
+        let l7 = proof_block_refs_root_native(&proof_block_refs);
+
+        let mut leaves = [[0u8; 32]; BLOCK_MERKLE_LEAF_COUNT];
+        for (j, slot) in leaves.iter_mut().enumerate().take(7) {
+            // Use modulo-256 sentinel so loop never overflows for large
+            // `k_hops` (e.g. 300 hops).
+            *slot = [(0x10u16.wrapping_add(i as u16) & 0xFF) as u8; 32];
+            slot[0] = j as u8;
+        }
+        leaves[7] = l7;
+
+        let computed_block_id = block_merkle_root(&leaves);
+        block_ids[i + 1] = computed_block_id;
+
+        let salted_end = compute_salted_block_id_native(salt, &computed_block_id);
+
+        let block_merkle_leaf_proof_l7 = block_merkle_leaf_proof(&leaves, 7);
+        let proof_block_ref_inner_path = proof_block_ref_inner_path_native(&proof_block_refs, 0);
+
+        let salted_start = if i == 0 {
+            bundle_head_salted
+        } else {
+            compute_salted_block_id_native(salt, &block_ids[i])
+        };
+
+        hops.push(HopWitness {
+            is_active: true,
+            block: BlockWitness {
+                block_id: computed_block_id,
+                block_merkle_tree_leaves: leaves,
+                proof_block_refs,
+            },
+            block_merkle_leaf_proof_l7,
+            ref_index: 0,
+            proof_block_ref_inner_path,
+            salted_start,
+            salted_end,
+        });
+    }
+
+    let final_terminal_salted = if k_hops == 0 {
+        bundle_head_salted
+    } else {
+        hops[k_hops - 1].salted_end
+    };
+
+    while hops.len() < total_slots {
+        let zero_leaves = [[0u8; 32]; BLOCK_MERKLE_LEAF_COUNT];
+        let zero_l7_proof = [[0u8; 32]; BLOCK_MERKLE_DEPTH];
+        let zero_inner_path = [[0u8; 32]; MAX_PROOF_BLOCK_REFS_DEPTH];
+        hops.push(HopWitness {
+            is_active: false,
+            block: BlockWitness {
+                block_id: [0u8; 32],
+                block_merkle_tree_leaves: zero_leaves,
+                proof_block_refs: Vec::new(),
+            },
+            block_merkle_leaf_proof_l7: zero_l7_proof,
+            ref_index: 0,
+            proof_block_ref_inner_path: zero_inner_path,
+            salted_start: final_terminal_salted,
+            salted_end: final_terminal_salted,
+        });
+    }
+
+    SynthChain {
+        sk_u,
+        salt,
+        salt_commitment,
+        hops,
+        bundle_head_salted,
+        block_ids,
+    }
+}
+
+/// Vec-returning splitter for arbitrary `n_bundle`. The returned `Vec` has
+/// length `n_bundle`; each `MultiHopProofWitness` still holds the locked
+/// `H_HOPS_PER_PROOF` hops.
+pub fn split_into_bundle_snarks_n(
+    chain: &SynthChain,
+    n_bundle: usize,
+) -> Vec<MultiHopProofWitness> {
+    assert_eq!(
+        chain.hops.len(),
+        n_bundle * H_HOPS_PER_PROOF,
+        "chain hop count {} does not match n_bundle ({}) * H ({})",
+        chain.hops.len(),
+        n_bundle,
+        H_HOPS_PER_PROOF,
+    );
+    let mut snarks: Vec<MultiHopProofWitness> = Vec::with_capacity(n_bundle);
+    for snark_idx in 0..n_bundle {
+        let mut snark_hops: Vec<HopWitness> = Vec::with_capacity(H_HOPS_PER_PROOF);
+        for h in 0..H_HOPS_PER_PROOF {
+            let global = snark_idx * H_HOPS_PER_PROOF + h;
+            snark_hops.push(chain.hops[global].clone());
+        }
+        let arr: [HopWitness; H_HOPS_PER_PROOF] = snark_hops
+            .try_into()
+            .unwrap_or_else(|v: Vec<HopWitness>| panic!("hop slot count {}", v.len()));
+        snarks.push(MultiHopProofWitness {
+            hops: arr,
+            salt_commitment: chain.salt_commitment,
+        });
+    }
+    snarks
+}
+
+/// Split a `synth_chain` output into `N_BUNDLE` `MultiHopProofWitness` snarks,
+/// each carrying `H_HOPS_PER_PROOF` consecutive hops.
+pub fn split_into_bundle_snarks(chain: &SynthChain) -> [MultiHopProofWitness; N_BUNDLE] {
+    let mut snarks: Vec<MultiHopProofWitness> = Vec::with_capacity(N_BUNDLE);
+    for snark_idx in 0..N_BUNDLE {
+        let mut snark_hops: Vec<HopWitness> = Vec::with_capacity(H_HOPS_PER_PROOF);
+        for h in 0..H_HOPS_PER_PROOF {
+            let global = snark_idx * H_HOPS_PER_PROOF + h;
+            snark_hops.push(chain.hops[global].clone());
+        }
+        let arr: [HopWitness; H_HOPS_PER_PROOF] = snark_hops
+            .try_into()
+            .unwrap_or_else(|v: Vec<HopWitness>| panic!("hop slot count {}", v.len()));
+        snarks.push(MultiHopProofWitness {
+            hops: arr,
+            salt_commitment: chain.salt_commitment,
+        });
+    }
+    snarks
+        .try_into()
+        .unwrap_or_else(|v: Vec<MultiHopProofWitness>| panic!("snark count {}", v.len()))
+}
+
+#[cfg(test)]
+mod synth_chain_tests {
+    use super::*;
+    use crate::multi_hop_witness::{
+        verify_block_merkle_leaf_proof, verify_proof_block_ref_inner_path, ref_leaf_hash_native,
+    };
+
+    /// k_hops=0: degenerate inactive chain. All endpoints equal head.
+    #[test]
+    fn synth_chain_k0_all_inactive() {
+        let c = synth_chain(0xC0FFEE, 0);
+        assert_eq!(c.hops.len(), N_BUNDLE * H_HOPS_PER_PROOF);
+        for h in &c.hops {
+            assert!(!h.is_active);
+            assert_eq!(h.salted_start, c.bundle_head_salted);
+            assert_eq!(h.salted_end, c.bundle_head_salted);
+        }
+    }
+
+    /// k_hops=5: one full active snark + 3 inactive snarks. Verify hop
+    /// continuity, SHA-256 L7 openings, and Poseidon ref-tree openings.
+    #[test]
+    fn synth_chain_k5_continuity_and_openings() {
+        let c = synth_chain(0xBADBABE, 5);
+
+        // Continuity: hops[0].start == head; hops[i].end == hops[i+1].start.
+        assert_eq!(c.hops[0].salted_start, c.bundle_head_salted);
+        for i in 0..N_BUNDLE * H_HOPS_PER_PROOF - 1 {
+            assert_eq!(
+                c.hops[i].salted_end,
+                c.hops[i + 1].salted_start,
+                "continuity broken between hop {i} and hop {}",
+                i + 1
+            );
+        }
+
+        // For the 5 active hops: verify SHA-256 L7 proof + Poseidon ref opening.
+        for i in 0..5 {
+            let h = &c.hops[i];
+            assert!(h.is_active);
+
+            // L7 SHA-256 opening against block_id.
+            assert!(
+                verify_block_merkle_leaf_proof(
+                    &h.block.block_id,
+                    &h.block.block_merkle_tree_leaves[7],
+                    7,
+                    &h.block_merkle_leaf_proof_l7,
+                ),
+                "hop {i} L7 proof should verify"
+            );
+
+            // Ref-tree opening: leaf is `ref_leaf_hash_native(0, parent_id)`
+            // and root is L7.
+            let parent = h.block.proof_block_refs[h.ref_index];
+            let leaf = ref_leaf_hash_native(h.ref_index, &parent);
+            assert!(
+                verify_proof_block_ref_inner_path(
+                    &h.block.block_merkle_tree_leaves[7],
+                    &leaf,
+                    h.ref_index,
+                    &h.proof_block_ref_inner_path,
+                ),
+                "hop {i} ref-tree opening should verify"
+            );
+        }
+
+        // Inactive hops sit at terminal.
+        let terminal = c.hops[4].salted_end;
+        for i in 5..N_BUNDLE * H_HOPS_PER_PROOF {
+            assert!(!c.hops[i].is_active);
+            assert_eq!(c.hops[i].salted_start, terminal);
+            assert_eq!(c.hops[i].salted_end, terminal);
+        }
+    }
+
+    /// Splitting a K=5 chain into 4 snarks: snark 0 has all active hops,
+    /// snarks 1..3 fully inactive, all share salt_commitment.
+    #[test]
+    fn split_into_4_snarks_active_distribution() {
+        let c = synth_chain(0xDEADBEEF, 5);
+        let snarks = split_into_bundle_snarks(&c);
+
+        for snark in &snarks {
+            assert_eq!(snark.salt_commitment, c.salt_commitment);
+            assert_eq!(snark.hops.len(), H_HOPS_PER_PROOF);
+        }
+
+        // Snark 0: all 5 hops active.
+        for h in &snarks[0].hops {
+            assert!(h.is_active);
+        }
+        // Snarks 1..3: all inactive.
+        for s in &snarks[1..] {
+            for h in &s.hops {
+                assert!(!h.is_active);
+            }
+        }
+    }
+
+    /// K=20 (max capacity): every hop active, single salt_commitment across
+    /// all 4 snarks, chain endpoints chain end-to-end.
+    #[test]
+    fn synth_chain_k20_max_capacity() {
+        let c = synth_chain(0x12345, 20);
+        for h in &c.hops {
+            assert!(h.is_active);
+        }
+        // Strict continuity along the full 20-hop chain.
+        for i in 0..19 {
+            assert_eq!(c.hops[i].salted_end, c.hops[i + 1].salted_start);
+        }
+        let snarks = split_into_bundle_snarks(&c);
+        for s in &snarks {
+            assert_eq!(s.salt_commitment, c.salt_commitment);
+        }
+    }
+}
