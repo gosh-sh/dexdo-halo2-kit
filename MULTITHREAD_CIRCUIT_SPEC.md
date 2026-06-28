@@ -337,15 +337,15 @@ When `is_active == 0`: the hop is a no-op, constrained to `next_block_id == curr
 
 ### 4.4 The full L7 walk
 
-A chain of K hops `[hop_0, hop_1, ..., hop_{K-1}]` collectively proves a path:
+A chain of L hops `[hop_0, hop_1, ..., hop_{L-1}]` collectively proves a path:
 
 ```
-C  =  B_0  →  B_1  →  B_2  →  ...  →  B_K  =  Y
+C  =  B_0  →  B_1  →  B_2  →  ...  →  B_L  =  Y
        ^                                          ^
        thread t, layer-1 key block                thread 0
 ```
 
-with the gluing constraint `hop_i.next_block_id == hop_{i+1}.current_block_id` for all i. K is the chain length, bounded in this design by `L_MAX = 20` (see §6.5).
+with the gluing constraint `hop_i.next_block_id == hop_{i+1}.current_block_id` for all i. L is the chain length (hops), bounded in this design by `L_MAX = 20` (see §6.5). The symbol L is used throughout to avoid clashing with the halo2 circuit parameter K (rows = 2^K).
 
 Reference off-chain implementation: `helpers/proof_helper/src/gql_proof.rs` on the `poseidon_dex` branch. The in-circuit hop logic mirrors `verify_proof_block_ref_proof` (Poseidon inner) + `verify_block_merkle_leaf_proof` for slot 7 (SHA outer).
 
@@ -367,7 +367,7 @@ P  (331-byte L0 preimage of C)
 L0(C)
    ↓ (SHA-256 depth-3 path opening leaf 0 of C's 8-leaf block-id tree)
 C.block_id
-   ↓ (L7 walk: K hops, K ∈ [0, L_MAX])
+   ↓ (L7 walk: L hops, L ∈ [0, L_MAX])
 Y.block_id                                    (Y is in thread 0)
    ↓ (Poseidon96, identical to thread-t side step 1)
 block_leaf(Y)
@@ -382,7 +382,7 @@ Two crucial properties:
 - **C is uniquely determined by X**: C is the next layer-1 key block of thread t after X's batch. The witness commits the prover to exactly that C; the circuit verifies it.
 - **Y's event content is opaque**: Y's `envelope_hash` and `tracked_ext_out_messages_root` are unconstrained witnesses. Y's only role is to provide a thread-0 anchor; the event-binding has already been done on the thread-t side via X.
 
-When `t == 0` (single-thread case), the L7 walk has `K = 0` active hops and C-extraction is a no-op — the proof collapses to a thread-0 block_leaf binding directly. See §6.3 for the uniformity construction that keeps the public-input layout indistinguishable between single-thread and multi-thread proofs.
+When `t == 0` (single-thread case), the L7 walk has `L = 0` active hops and C-extraction is a no-op — the proof collapses to a thread-0 block_leaf binding directly. See §6.3 for the uniformity construction that keeps the public-input layout indistinguishable between single-thread and multi-thread proofs.
 
 ---
 
@@ -404,7 +404,7 @@ The design uses **three** Halo2 circuit definitions and produces a variable numb
 | Circuit | Role | K | Snarks per voucher claim |
 |---|---|---|---|
 | `HopCircuit` | (helper, not submitted directly) — single hop primitive of §4.2. Used as a building block inside `MultiHopProof`. | n/a | 0 |
-| `MultiHopProof` | A chain segment of up to `H = 5` hops, with `is_active` selectors per hop, exposing salted endpoints. | **16** | `N = ceil(K / H)`, padded to ≥ 1 |
+| `MultiHopProof` | A chain segment of up to `H = 5` hops, with `is_active` selectors per hop, exposing salted endpoints. | **16** | `N = ceil(L / H)`, padded to ≥ 1 |
 | `DexFinalProof` | Voucher binding + C extraction + thread-0 anchor. Exposes existing 5 public inputs + 2 salted endpoints. | **15** | 1 |
 
 `HopCircuit` is included as a Rust module / Halo2 gadget inside `MultiHopProof` rather than producing standalone snarks of its own. There is no on-chain artifact corresponding to a single hop.
@@ -521,9 +521,9 @@ To prevent the verifier from distinguishing thread-0 events from thread-t events
 
 Cases:
 
-- **t == 0** (event in thread 0): true chain length K = 0. All 4 `MultiHopProof`s are submitted with `is_active = 0` everywhere. Each is constrained to `salted_start == salted_end`. The DexFinalProof has `salted_C_start == salted_Y_end` (i.e. C == Y, since "C" is then just X's own block).
-- **t ≠ 0, K ≤ 5**: 1 `MultiHopProof` has up to 5 active hops; the remaining 3 are fully inactive (start == end at each).
-- **K up to 20**: up to 4 partially-or-fully active proofs.
+- **t == 0** (event in thread 0): true chain length L = 0. All 4 `MultiHopProof`s are submitted with `is_active = 0` everywhere. Each is constrained to `salted_start == salted_end`. The DexFinalProof has `salted_C_start == salted_Y_end` (i.e. C == Y, since "C" is then just X's own block).
+- **t ≠ 0, L ≤ 5**: 1 `MultiHopProof` has up to 5 active hops; the remaining 3 are fully inactive (start == end at each).
+- **L up to 20**: up to 4 partially-or-fully active proofs.
 
 The verifier cannot tell from the public inputs whether any individual `MultiHopProof` is active or inactive — `salted_start == salted_end` is just one possible combination of two pseudo-random-looking field values.
 
@@ -595,7 +595,7 @@ Cell budget: today's DEX at K=14 sits roughly at ≈ 1.7 M cells (5 SHA blocks p
 
 ### 6.8 Bundle size and proving time on phone
 
-| True chain length K | Active `MultiHopProof`s | Inactive `MultiHopProof`s | Total snarks submitted | Phone proving time (estim.) |
+| True chain length L | Active `MultiHopProof`s | Inactive `MultiHopProof`s | Total snarks submitted | Phone proving time (estim.) |
 |---|---|---|---|---|
 | 0 (event in thread 0) | 0 | 4 | 5 | ≈ 14–18 min |
 | 1–5 | 1 | 3 | 5 | ≈ 14–18 min |
@@ -603,7 +603,7 @@ Cell budget: today's DEX at K=14 sits roughly at ≈ 1.7 M cells (5 SHA blocks p
 | 11–15 | 3 | 1 | 5 | ≈ 14–18 min |
 | 16–20 | 4 | 0 | 5 | ≈ 14–18 min |
 
-Wall time is constant in K — every claim submits the same fixed 5 snarks (1 DexFinalProof + 4 MultiHopProofs). This is required for uniformity (§6.5). The trade-off: phones always pay the worst-case proving time, but the verifier never learns the true chain length.
+Wall time is constant in L — every claim submits the same fixed 5 snarks (1 DexFinalProof + 4 MultiHopProofs). This is required for uniformity (§6.5). The trade-off: phones always pay the worst-case proving time, but the verifier never learns the true chain length.
 
 If a worst-case anonymity guarantee is not required, `N_BUNDLE` can be made dynamic and we save proving time at the cost of a small chain-length leak (§9).
 
@@ -653,7 +653,7 @@ Three distinct VKs total: `VK_DexFinal`, `VK_MultiHop`, none-of-them-aggregated.
 
 A separate Rust binary in `dexdo-halo2-kit/dex-halo2-circuit/examples/` (analogous to `gen_synthetic_voucher.rs` in the current single-thread setup) produces fixtures for every supported configuration:
 
-| Case | t | K (real hops) | Active `MultiHopProof`s | Notes |
+| Case | t | L (real hops) | Active `MultiHopProof`s | Notes |
 |------|---|---|---|---|
 | S0 | 0 | 0 | 0 | Pure single-thread, all hop proofs inactive |
 | S1 | t≠0 | 1 | 1 (1 active hop) | Shortest cross-thread |
@@ -736,10 +736,10 @@ The multi-proof path scales more gracefully on smartphone for chain lengths up t
 
 - **`X.block_id`, `X.height`, X's thread `t`** — fully hidden behind the voucher binding and the salted endpoints. No public input reveals which block, which thread, or which batch X belongs to.
 - **`C.block_id`** — only `salted_C_start = Poseidon(salt, C.block_id)` is exposed. Without `salt`, this is pseudo-random.
-- **All intermediate block_ids `B_1 .. B_{K-1}`** — pure private witnesses inside `MultiHopProof`s, never leave the prover.
+- **All intermediate block_ids `B_1 .. B_{L-1}`** — pure private witnesses inside `MultiHopProof`s, never leave the prover.
 - **`Y.block_id`** — only `salted_Y_end = Poseidon(salt, Y.block_id)` is exposed. Same pseudo-randomness as C.
 - **`Y.envelope_hash`, `Y.tracked_ext_out_messages_root`** — unconstrained witnesses inside `DexFinalProof`.
-- **True chain length K** — hidden by the fixed `N_BUNDLE = 4` padding (§6.5).
+- **True chain length L** — hidden by the fixed `N_BUNDLE = 4` padding (§6.5).
 - **The salt itself** — private witness in every proof of the bundle.
 
 ### 9.2 What leaks
