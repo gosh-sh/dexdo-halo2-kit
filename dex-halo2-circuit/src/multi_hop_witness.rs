@@ -1,59 +1,41 @@
-//! Phase 4 MultiHopProof witness shapes — mirrors production GQL exactly.
+//! MultiHopProof witness shapes — mirrors production GQL types byte-for-byte.
 //!
-//! ## Why this exists
-//!
-//! Stage 1 (`bundle_verifier.rs`) tested RootPN.sol-style bundle checks against
-//! synthetic instance vectors built directly from `salt::*` helpers. That's
-//! sufficient for the *verifier* logic, but says nothing about whether a real
-//! Phase 4 `MultiHopProof` circuit witness lines up with what the production
-//! GraphQL layer will hand us.
-//!
-//! This module defines the witness structs the `MultiHopProof` circuit will
-//! consume, with field names + sizes **byte-for-byte identical** to
-//! `acki-nacki/helpers/proof_helper/src/gql_proof.rs`. The same synthetic
-//! generator (Stage 2b) can later be swapped for live GQL fixtures without a
-//! shape adapter.
+//! Field names and sizes match
+//! `acki-nacki/helpers/proof_helper/src/gql_proof.rs`, so synthetic test
+//! fixtures and live GQL payloads share a single shape.
 //!
 //! ## Layout
 //!
-//! Each MultiHopProof covers `H_HOPS_PER_PROOF = 5` hops. A bundle has
-//! `N_BUNDLE = 4` MultiHopProof snarks, so up to `H_HOPS_PER_PROOF * N_BUNDLE
-//! = 20` hops per bundle. Each hop carries:
+//! A bundle has `N_BUNDLE = 4` MultiHopProof snarks, each covering
+//! `H_HOPS_PER_PROOF = 5` hops (≤ 20 hops per bundle). Per hop:
 //!
-//! - The **block-merkle** for the hop's target block: `BLOCK_MERKLE_LEAF_COUNT
-//!   = 8` SHA-256 leaves L0..L7, of which only L7 is constrained at the
-//!   *outer* tree level here (it's the Poseidon root over the block's ref
-//!   chain — production calls it `proof_block_refs_root`).
-//! - The **inner ref-tree opening**: `MAX_PROOF_BLOCK_REFS` Poseidon leaves
-//!   (each = `compute_referenced_block_leaf_hash(index, block_id)`), with a
-//!   dense Merkle opening at `ref_index` proving the *parent* block id of the
-//!   hop chain.
-//! - A `is_active` flag (snark padding, §6.4 — inactive hops collapse to
-//!   `salted_start_block_id == salted_end_block_id == event_salted_block_id`).
+//! - **Outer block-merkle**: `BLOCK_MERKLE_LEAF_COUNT = 8` SHA-256 leaves
+//!   L0..L7 (only L7 is constrained at this level — it's the Poseidon root
+//!   over the block's ref chain; production calls it `proof_block_refs_root`).
+//! - **Inner ref-tree**: up to `MAX_PROOF_BLOCK_REFS` Poseidon leaves
+//!   (`compute_referenced_block_leaf_hash(index, block_id)`), opened at
+//!   `ref_index` to prove the parent block id of the hop chain.
+//! - **`is_active`** padding flag (spec §6.4): inactive hops collapse to
+//!   `salted_start_block_id == salted_end_block_id == event_salted_block_id`.
 //!
-//! ## Production-wire-format gap (`TODO(stage-2c)`)
+//! ## Two Poseidon hash families
 //!
-//! Production `history_proof::compute_referenced_blocks_root` uses *byte-flat
-//! Poseidon* (`PoseidonSponge::hash_bytes_flat`). The dexdo-halo2-kit's
-//! in-circuit Poseidon (`gosh_dense_balanced_tree`) is *Fr-vector-based*.
-//! Their root values are **not** byte-identical. For Stage 2 we mirror the
-//! *shape*; Stage 2c will introduce a byte-flat Poseidon chip (or a wrapper
-//! around the existing chip with explicit byte→Fr packing identical to the
-//! sponge variant) so circuit-produced L7 roots equal production-produced L7
-//! roots. Until then, any test that compares an in-circuit L7 root against a
-//! GQL-fetched L7 root will diverge — synthetic-only tests are safe because
-//! both witness and verification use the same Fr-vector hasher.
+//! - **Shape-mirror** (`ref_*_native`, `proof_block_refs_root_native`, …) —
+//!   Fr-vector Poseidon via `gosh_dense_balanced_tree`. Self-consistent
+//!   within this kit; **does not** match live-GQL L7 roots.
+//! - **Production-parity** (`*_bytes_flat_native`) — byte-flat sponge
+//!   identical to `tvm-sdk` `PoseidonSponge::hash_bytes_flat`. Use these
+//!   whenever a value must equal a live-GQL L7 root.
 //!
 //! ## Constants — sourced from production
 //!
 //! - `BLOCK_MERKLE_LEAF_COUNT = 8`  ← `gql_proof.rs:13`
 //! - `MAX_HISTORY_PROOF_LAYERS = 10` ← `gql_proof.rs:15`
 //! - `HISTORY_PROOF_WINDOW_SIZE = 128` ← `history-proof/src/lib.rs`
-//! - `REFERENCED_PARENT_BLOCK_TAG`/`REFERENCED_REF_BLOCK_TAG` ← `history-proof`
-//!
-//! The only knob we tune for first-cut testing is
-//! `MAX_PROOF_BLOCK_REFS = 16` (vs production-locked 256 in spec §10.1) —
-//! marked with `TODO(phase-4-prod)`.
+//! - `REFERENCED_PARENT_BLOCK_TAG` / `REFERENCED_REF_BLOCK_TAG`
+//!   ← `history-proof`
+//! - `MAX_PROOF_BLOCK_REFS = 16` — first-cut testing value;
+//!   production needs 256 (spec §10.1).
 
 use halo2_base::halo2_proofs::halo2curves::bn256::Fr;
 use sha2::{Digest, Sha256};
@@ -86,11 +68,10 @@ pub const N_BUNDLE: usize = 4;
 
 /// Max leaves in the L7 inner Poseidon dense merkle tree.
 ///
-/// **First-cut testing value.** Production protocol cap is 256 (spec §10.1).
-/// Bumping this only enlarges the L7-inner-path padding; on-chain ref-count
-/// validation already uses 256.
+/// **First-cut testing value.** Production protocol cap is 256 (spec §10.1);
+/// bumping this only enlarges the L7-inner-path padding.
 ///
-/// TODO(phase-4-prod): bump to 256 once cell-budget tuning is done.
+/// TODO: bump to 256 for production once cell-budget tuning is done.
 pub const MAX_PROOF_BLOCK_REFS: usize = 16;
 
 /// `ceil(log2(MAX_PROOF_BLOCK_REFS))`.
@@ -253,17 +234,11 @@ pub fn verify_block_merkle_leaf_proof(
 }
 
 // ---------------------------------------------------------------------------
-// L7 inner ref-chain helpers — Fr-vector Poseidon (shape-mirror only).
+// L7 inner ref-chain helpers — shape-mirror (Fr-vector Poseidon).
 // ---------------------------------------------------------------------------
 //
-// TODO(stage-2c): production `compute_referenced_blocks_root` uses byte-flat
-// Poseidon (`PoseidonSponge::hash_bytes_flat`) over
-// `tag || block_id`. The function below uses
-// `gosh_dense_balanced_tree::poseidon_hash_native(&[tag_fr, block_id_fr])`,
-// which is **not** byte-identical to the production output. Synthetic tests
-// in this kit are self-consistent because witness and verifier use the same
-// function, but cross-checking against a live GQL L7 root will FAIL until
-// the byte-flat sponge is wired into the circuit.
+// These are self-consistent within this kit but do NOT match live-GQL L7
+// roots — for that, use the `_bytes_flat_*` family below.
 
 use gosh_dense_balanced_tree::{bytes_to_fr, fr_to_bytes, poseidon_hash_native};
 
@@ -271,10 +246,6 @@ use gosh_dense_balanced_tree::{bytes_to_fr, fr_to_bytes, poseidon_hash_native};
 /// 31-byte LE chunks. Used because the production tags
 /// (`acki-nacki:referenced-block:parent:v1`, 37 bytes) exceed the 31-byte
 /// single-Fr limit. The Fr-vector Poseidon input is `[chunks..., block_id]`.
-///
-/// TODO(stage-2c): this packing is *not* byte-equivalent with production's
-/// `PoseidonSponge::hash_bytes_flat(tag || block_id)`. Production absorbs
-/// raw bytes through the sponge; here we absorb pre-packed field elements.
 fn pack_tag_chunks(tag_bytes: &[u8]) -> Vec<Fr> {
     let mut chunks = Vec::new();
     for chunk in tag_bytes.chunks(31) {
@@ -285,12 +256,9 @@ fn pack_tag_chunks(tag_bytes: &[u8]) -> Vec<Fr> {
     chunks
 }
 
-/// Native: per-ref leaf hash. Tag selection mirrors
-/// `history-proof::compute_referenced_block_leaf_hash`.
-///
-/// TODO(stage-2c): production uses `PoseidonHasher.digest(tag_bytes ||
-/// block_id_bytes)` (byte-flat). This Fr-vector version is shape-equivalent
-/// but NOT byte-equivalent.
+/// Native: per-ref leaf hash, shape-mirror only. For byte-for-byte parity
+/// with `history-proof::compute_referenced_block_leaf_hash`, use
+/// [`ref_leaf_hash_bytes_flat_native`].
 pub fn ref_leaf_hash_native(index: usize, block_id: &[u8; 32]) -> [u8; 32] {
     let tag_bytes = if index == 0 {
         REFERENCED_PARENT_BLOCK_TAG
@@ -303,20 +271,18 @@ pub fn ref_leaf_hash_native(index: usize, block_id: &[u8; 32]) -> [u8; 32] {
     fr_to_bytes(out_fr)
 }
 
-/// Native: combine two children in the Poseidon dense merkle tree.
-///
-/// TODO(stage-2c): production combiner is `hash_bytes_flat(left||right)`;
-/// this is Fr-vector `Poseidon([fr(left), fr(right)])`.
+/// Native: combine two children in the Poseidon dense merkle tree
+/// (shape-mirror; for parity use [`ref_inner_combine_bytes_flat_native`]).
 pub fn ref_inner_combine_native(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
     let out = poseidon_hash_native(&[bytes_to_fr(left), bytes_to_fr(right)]);
     fr_to_bytes(out)
 }
 
-/// Compute the L7 root over `proof_block_refs`. Pads to
+/// Compute the L7 root over `proof_block_refs` (shape-mirror). Pads to
 /// `MAX_PROOF_BLOCK_REFS` with an inactive padding leaf
 /// (`fr_to_bytes(Fr::from(0))` — the dense-tree convention).
 ///
-/// TODO(stage-2c): byte-flat Poseidon production parity (see module doc).
+/// For byte-for-byte GQL parity use [`proof_block_refs_root_bytes_flat_native`].
 pub fn proof_block_refs_root_native(proof_block_refs: &[[u8; 32]]) -> [u8; 32] {
     assert!(
         proof_block_refs.len() <= MAX_PROOF_BLOCK_REFS,
@@ -410,33 +376,17 @@ pub fn verify_proof_block_ref_inner_path(
 }
 
 // ---------------------------------------------------------------------------
-// Production-parity helpers (byte-flat Poseidon sponge mode)
+// Production-parity helpers (byte-flat Poseidon sponge)
 // ---------------------------------------------------------------------------
 //
-// The functions below mirror `tvm-sdk/tvm_vm/.../poseidon::hash_bytes_flat` and
-// `acki-nacki/node/libs/history-proof::compute_referenced_blocks_root`
-// **byte-for-byte**. They are additive siblings of the shape-only
-// `ref_leaf_hash_native` / `ref_inner_combine_native` / `*_native` family —
-// the latter remain unchanged.
+// Byte-for-byte mirrors of `tvm-sdk` `PoseidonSponge::hash_bytes_flat` and
+// `acki-nacki/node/libs/history-proof::compute_referenced_blocks_root`.
+// Use these whenever a hash must equal a live-GQL value.
 //
-// Verified-equivalence preconditions (checked before introducing these):
-// - `gosh_dense_balanced_tree::poseidon_hash_native` uses
-//   `Poseidon<Fr, T=3, RATE=2>::new(R_F=8, R_P=57)` — identical sponge params
-//   to `PoseidonSponge` in tvm-sdk.
-// - `bytes_to_fr` is `Fr::from_raw([u64 LE chunks])` — identical to
-//   `canonical_le_bytes_to_field_element` in tvm-sdk.
-//
-// Sole difference between the shape-mirror and production-parity families
-// is the **byte→Fr chunking step before the sponge**:
-//
-//   Production: chunk(31) over `tag ‖ block_id` → each chunk zero-padded to
-//               32 LE → Fr → absorbed
-//   Shape-mirror: tag packed separately into 31-byte chunks; block_id passed
-//                 as a single 32-byte Fr (different boundary, different
-//                 Fr vector, different output).
-//
-// Use these `_bytes_flat_*` variants whenever you need an L7 root / ref-leaf
-// hash that must equal the value produced by the live GQL layer.
+// Sponge params (`T=3, RATE=2, R_F=8, R_P=57`) and the LE-bytes→Fr decoding
+// are identical to tvm-sdk; the only difference vs. the shape-mirror family
+// is that here the full `tag ‖ block_id` byte stream is chunked(31) and
+// absorbed, rather than tag and block_id being packed separately.
 
 /// Native: Poseidon sponge over a raw byte stream, identical to
 /// `PoseidonSponge::hash_bytes_flat` in tvm-sdk.
