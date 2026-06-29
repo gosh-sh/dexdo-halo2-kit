@@ -15,13 +15,15 @@ require(
 );
 ```
 
-`gosh.check_layer_hash(root, N)` asks the node whether `root` is currently present in `GlobalHistoricalData[N]` — the node's window of recent layer-N batch hashes for **thread 0**. The proof itself exposes `finalLayerHistoricalHashRoot` as instance 1 of its public-input vector.
+`gosh.check_layer_hash(root, N)` asks the node whether `root` is currently present in the layer-N window of recent batch hashes that the executing thread's VM context observes. On the `poseidon_dex` branch this is the layer-N slice of `GlobalHistoryData[<executing thread>]` (`node/src/types/history_proof.rs:55`, callback at `node/src/block/{producer/process.rs:200-249, verify.rs:96-141}`); because `RootPN.sol` is dapp-pinned to thread 0 (`contracts/scripts/generate_zerostate.py:65-71`, matching `DEFAULT_TRACKED_ROOT_PN_ROUTING = "0::1010..."`), the DEX path always resolves against thread 0's window. The proof itself exposes `finalLayerHistoricalHashRoot` as instance 1 of its public-input vector.
 
 Therefore the DEX circuit does **not** anchor against a single fixed layer. It anchors against `#L<N>(M)` for some `(N, M)` chosen by the prover, subject only to the node still retaining that root in `GlobalHistoricalData[N]`. The prover normally targets the smallest N (N=1, cheapest in-circuit) and falls back to higher N if the layer-1 root containing the event has aged out (see `generate_vouchers_with_live_event_proving.py`).
 
 **Anonymity is the primary purpose of this anchoring.** The DEX circuit must hide the concrete block in which the user's voucher-generation event happened — both the block's id / height (which would identify a small anonymity set) and, in the multi-thread case, the thread `t` of that block. The verifier learns only the pair `(finalLayerHistoricalHashRoot, layerNumber)`, which subsumes a full batch (N=1) or higher-layer aggregate (N>1) of recent thread-0 history; the witness — concrete block id, thread id, layer-1 batch path, and all cross-thread chain hops — stays inside the proof and is never revealed. This is also why anchoring at a higher layer N (a larger anonymity set) is sometimes preferable even when a layer-1 anchor is still available.
 
-Multi-thread refinement: in the multi-thread design `GlobalHistoricalData` is maintained for thread 0 only. Events in thread t ≠ 0 must therefore be chained to a thread-0 batch hash via cross-thread reference edges before they can be anchored against `GlobalHistoricalData[N]`. The thread id `t` itself is part of the hidden witness — the verifier cannot distinguish proofs originating in thread 0 from proofs originating in any other thread.
+Multi-thread refinement: although the `poseidon_dex` data structure `GlobalHistoryData` is a `HashMap<ThreadIdentifier, HistoryLayerData>` and the VM callback technically consults the executing thread's slice, the DEX claim path always resolves against **thread 0's** window because `RootPN.sol` is pinned to thread 0 (see citations above). Events in thread t ≠ 0 must therefore be chained to a thread-0 batch hash via cross-thread reference edges before they can be anchored. The thread id `t` itself is part of the hidden witness — the verifier cannot distinguish proofs originating in thread 0 from proofs originating in any other thread.
+
+> **Branch caveat — `poseidon_profile_new` semantics.** A sibling branch `poseidon_profile_new` reshapes the history-proof model: there is no global per-thread map; instead each block inherits a frozen thread-0 cursor (`HistoryLayerData`) from its parent and the VM callback **ignores the `layer_number` argument** (`node/src/types/history_proof.rs:146-154` — own comment: *"layer_number is intentionally ignored: CHKHISTPROOF checks the whole zero-thread proof cursor that was inherited by this block"*). On this branch `history_proof_thread_id()` is hardcoded to `ThreadIdentifier::default()` (= thread 0), making the thread-0-only restriction explicit rather than emergent. If the deployment target migrates from `poseidon_dex` to `poseidon_profile_new`, the circuit's `layerNumber` public input becomes non-binding at the VM boundary (the node accepts any layer the root happens to live at) — it remains binding only as a prover-side hint constrained by the dense-chain length inside the circuit.
 
 The canonical multi-thread design lives on the `poseidon_dex` branch of `acki-nacki`. All field names and helpers below refer to that branch.
 
@@ -38,7 +40,7 @@ Adopted from `History proofs proposal.docx` and the `poseidon_dex` implementatio
 | **Key block at layer N** | A block whose height is a multiple of `BWS^N`. It carries `#L<N>(...)` (and `#L<n>(...)` for all `n ≤ N` whose boundaries coincide) in its `common_section.history_proofs`. |
 | **Non-key block** | Any block that is not layer-1 key. `common_section.history_proofs` is empty (default-built). |
 | **Block leaf** (layer-1) | `block_leaf = Poseidon96(block_id, envelope_hash, tracked_ext_out_messages_root)` — what gets put into the per-thread layer-1 batch tree by the producer of the next key block. |
-| **GlobalHistoricalData** | Node-side, per-thread (in multi-thread: thread 0 only) windows of layer-N batch hashes, queried by the contract via `gosh.check_layer_hash(root, N)`. |
+| **GlobalHistoricalData** | Node-side windows of layer-N batch hashes queried by the contract via `gosh.check_layer_hash(root, N)`. On `poseidon_dex` the structure is `HashMap<ThreadIdentifier, HistoryLayerData>` (per-thread) and the callback resolves against the executing thread; the DEX is thread-0-pinned via `RootPN`, so the effective window is thread 0's. |
 | **`finalLayerHistoricalHashRoot`** | Instance 1 of the DEX proof; the layer-N batch hash the prover anchors against. |
 | **`layerNumber`** | Contract argument naming the layer N that `finalLayerHistoricalHashRoot` belongs to. |
 
@@ -106,13 +108,15 @@ block_keeper_set_change_proof_data : Option<...>
 
 ### 1.2 L0 in detail
 
-Helper: `history_proofs_l0` at `node/libs/history-proof/src/lib.rs:175`.
+Helper: `history_proofs_l0` at `node/libs/history-proof/src/lib.rs:181`.
 
 L0 commits to **this block's thread** layer-batch-hash snapshot. **It is only meaningful for key blocks.** For non-key blocks, `common_section.history_proofs` is empty (default), so L0 is `Poseidon` of a preimage with `count = 0` and all layer slots zero-filled — it does not carry any usable batch hash.
 
 #### Which blocks populate which layers
 
-The producer of a layer-1 key block (height `≡ 0 (mod BWS)` within its thread, i.e. the first block of batch M+1) writes `#L1(M)` into `history_proofs[1]`. If that same height is also `≡ 0 (mod BWS^N)` for N > 1, the block additionally writes `#L<N>(...)` into `history_proofs[N]` for every N where the boundary coincides. Non-key blocks: `history_proofs` stays empty.
+On `poseidon_dex` (the branch this spec targets) the producer of a layer-1 key block in **any thread** (height `≡ 0 (mod BWS)` within its thread, i.e. the first block of batch M+1) writes `#L1(M)` for its own thread into `history_proofs[1]`. If that same height is also `≡ 0 (mod BWS^N)` for N > 1, the block additionally writes `#L<N>(...)` into `history_proofs[N]` for every N where the boundary coincides. Non-key blocks: `history_proofs` stays empty. Source: `node/src/block/producer/producer_service/block_producer.rs:1387-1526` (the outer `if` guards only on `height % BWS == 0 && height != 0 && !is_retired` — no thread guard).
+
+> **Branch caveat (structural).** On `poseidon_profile_new` the producer adds a first conjunct `self.thread_id == history_proof_thread_id()` (= thread 0) at `node/src/block/producer/producer_service/block_producer.rs:1367` and `calculate_expected_history_proofs_from_cursor` itself early-exits unless the block lives in thread 0 (`node/src/types/history_proof.rs:189`). As a consequence **only thread-0 key blocks ever carry `history_proofs` on that branch**, and the cross-thread C-extraction primitive of §5 (extracting `#L1(M_X)` from a thread-t key block C) **does not exist there**. If the deployment target migrates to `poseidon_profile_new`, the multi-thread scheme of this spec must be redesigned — either by anchoring the event block X directly into thread 0's layer-1 tree via a different leaf path, or by re-introducing per-thread history_proofs on that branch first.
 
 #### Preimage layout
 
@@ -269,7 +273,7 @@ Concrete steps inside the circuit:
 3. **Block-leaf reconstruction.** `block_leaf(X) = Poseidon96(X.block_id || X.envelope_hash || X.tracked_ext_out_messages_root)` — one Poseidon over 96 bytes.
 4. **Layer-1 batch path.** One Poseidon dense-Merkle path of depth 8 from `block_leaf(X)` to `#L1(M_X)`. Witness: the 8 sibling hashes + leaf index (range-checked to `[0, 256)`).
 5. **Dense chain to higher layers.** `verify_chain_of_dense_proofs` from `gosh-dense-balanced-tree` walks `MAX_CHAIN_LEN ≤ 11` dense links: `#L1(M_X) → #L1(M_X+1) → ... → #L<N>(...)`. `is_active` selectors gate each link; inactive links are constrained to `prev == curr`. The terminal root is `finalLayerHistoricalHashRoot`.
-6. **`layerNumber` semantics.** Public input `layerNumber` equals `target_layer + 1` where `target_layer` is the index of the last active link in the dense chain. On-chain `gosh.check_layer_hash(finalLayerHistoricalHashRoot, layerNumber)` looks the root up in `GlobalHistoricalData[layerNumber]`.
+6. **`layerNumber` semantics.** Public input `layerNumber` equals `target_layer + 1` where `target_layer` is the index of the last active link in the dense chain. On-chain `gosh.check_layer_hash(finalLayerHistoricalHashRoot, layerNumber)` looks the root up in the executing-thread layer-`layerNumber` slice of `GlobalHistoryData` on `poseidon_dex`. Because `RootPN` is dapp-pinned to thread 0, that resolves against thread 0's layer-N window. (Caveat: the `poseidon_profile_new` variant ignores `layerNumber` and scans every layer of the inherited cursor — see §0.)
 7. **Voucher binding.** Existing single-thread DEX logic for `depositIdentifierHash` and ECDSA-related fields.
 
 **Public-input vector (5 fields, current contract):**
