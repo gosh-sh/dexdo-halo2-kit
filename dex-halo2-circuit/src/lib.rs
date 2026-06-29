@@ -1,6 +1,5 @@
 pub mod boc_helper;
 pub mod bundle_verifier;
-pub mod circuit_helper;
 pub mod dark_dex_circuit_new;
 pub mod event_data_helper;
 pub mod multi_hop_proof;

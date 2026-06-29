@@ -78,57 +78,6 @@ impl BocFlattenData {
     }
 }
 
-/// Extracts the number of cell references from `cell_repr_data` produced by
-/// [`build_cell_repr_data`]. Reads the lower 3 bits of the `d1` descriptor byte.
-///
-/// Returns `None` for empty input (e.g. big cells with no data).
-pub fn refs_count_from_repr_data(repr_data: &[u8]) -> Option<usize> {
-    let d1 = repr_data.first()?;
-    Some((d1 & 0x07) as usize)
-}
-
-/// Extracts the cell level from `cell_repr_data` produced by
-/// [`build_cell_repr_data`]. Reads the level mask from bits 5-7 of the `d1`
-/// descriptor byte and returns the highest set bit position (0 for ordinary
-/// cells).
-///
-/// Returns `None` for empty input.
-pub fn level_from_repr_data(repr_data: &[u8]) -> Option<usize> {
-    let d1 = repr_data.first()?;
-    let level_mask = (d1 >> 5) & 0x07;
-    if level_mask == 0 {
-        Some(0)
-    } else {
-        Some(8 - level_mask.leading_zeros() as usize)
-    }
-}
-
-/// Returns the byte offset within `cell_repr_data` at which the cell's payload
-/// data bytes begin, along with the byte length of that data section.
-///
-/// `cell_repr_data` for an ordinary / exotic (non-big) cell is laid out as:
-///
-/// ```text
-/// offset      size    field
-/// 0           1       d1  – level_mask(3b) | exotic(1b) | refs_count(3b)
-/// 1           1       d2  – (bit_len / 8) * 2  |  (bit_len % 8 != 0)
-/// 2           N       payload data bytes        ← returned offset
-/// 2 + N       R * 2   child depths (big-endian u16 each)
-/// 2 + N + R*2 R * 32  child repr-hashes (SHA-256 each)
-/// ```
-///
-/// where `N = (d2 >> 1) + (d2 & 1)` = ⌈bit_len / 8⌉  and  `R = d1 & 0x07`.
-///
-/// Returns `None` if `repr_data` is too short to contain both descriptor bytes.
-pub fn data_range_in_repr_data(repr_data: &[u8]) -> Option<(usize, usize)> {
-    if repr_data.len() < 2 {
-        return None;
-    }
-    let d2 = repr_data[1];
-    let data_len = (d2 >> 1) as usize + (d2 & 1) as usize;
-    Some((2, data_len))
-}
-
 /// Builds the SHA256 preimage (`cell_repr_data`) whose hash equals the cell's
 /// `repr_hash`. The data follows the same layout used in `DataCell::finalize`:
 ///
@@ -275,87 +224,16 @@ pub fn serialize_cells_tree_root_first(root: &Cell) -> Result<Vec<BocFlattenData
 }
 
 #[cfg(test)]
-use tvm_block::Deserializable;
-#[cfg(test)]
-use tvm_block::Message;
-#[cfg(test)]
-use tvm_block::Serializable;
-#[test]
-fn test_parse_ext_out_event_message_from_base64_boc() {
-    const BOC: &str = "te6ccgEBAgEAnQABn+AAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIcAAAAAAAA81mmcc6JgAQCQY4DCGqurq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADuaygAAAAAC";
-
-    let msg = Message::construct_from_base64(BOC).unwrap();
-
-    println!("msg : {:?}", msg);
-
-    //println!("msg.body : {:?}", msg.body);
-
-    //let t = msg.clone().body.unwrap();
-
-    //println!("t: {:?}", t);
-
-    let rr = msg.serialize().unwrap();
-    println!("Msg cell {:#.2222}", rr);
-
-    // Contract events are external outbound messages.
-    /*let header = msg
-        .ext_out_header()
-        .expect("expected ExtOutMsgInfo for a contract event");
-
-    // The emitting contract address is the source.
-    let src = header.src().expect("event source address must be set");
-    println!("event src: {}", src);
-
-    // Events have no real destination; they use addr_none.
-    assert_eq!(header.dst, MsgAddressExt::AddrNone);
-
-    // Logical time and unix timestamp are set by the block builder.
-    println!("created_lt: {}, created_at: {}", header.created_lt, header.created_at.as_u32());
-    assert_ne!(header.created_lt, 0);
-    assert_ne!(header.created_at.as_u32(), 0);*/
-
-    // The body contains the ABI-encoded event payload.
-    assert!(msg.has_body(), "event message must have a body");
-    let mut body = msg.body().unwrap();
-
-    // First 32 bits are the ABI v2 function ID identifying the event.
-    let function_id = body.get_next_u32().unwrap();
-
-    let cc = body.cell();
-    println!("Child {:#.2222}", cc);
-    println!("event function_id: 0x{:08x}", function_id);
-    assert_ne!(
-        function_id, 0,
-        "function_id should be non-zero for a real event"
-    );
-}
-
-#[test]
-fn test_parse_event_boc() {
-    const BOC: &str = "te6ccgEBAgEAnQABn+AAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIcAAAAAAAA81mmcc6JgAQCQY4DCGqurq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADuaygAAAAAC";
-
-    let msg = Message::construct_from_base64(BOC).unwrap();
-
-    println!("msg : {:?}", msg);
-
-    let msg_cell = msg.serialize().unwrap();
-    println!("Msg cell {:#.2222}", msg_cell);
-
-    let flattened = serialize_cells_tree_root_first(&msg_cell).unwrap();
-    println!(
-        "\n=== serialize_cells_tree_root_first ({} cells) ===",
-        flattened.len()
-    );
-    for (i, entry) in flattened.iter().enumerate() {
-        println!("--- Cell {} ---", i);
-        entry.pretty_print();
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
+    use tvm_block::Deserializable;
+    use tvm_block::Message;
+    use tvm_block::Serializable;
     use tvm_types::BuilderData;
+
+    /// A real-world ext-out event message captured from a node. Used by tests that
+    /// parse a Message back from its base64 BOC.
+    const EVENT_BOC: &str = "te6ccgEBAgEAnQABn+AAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIcAAAAAAAA81mmcc6JgAQCQY4DCGqurq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADuaygAAAAAC";
 
     fn create_cell(bytes: &[u8], refs: &[&Cell]) -> Cell {
         let mut b = BuilderData::new();
@@ -364,6 +242,24 @@ mod tests {
             b.checked_append_reference((*child).clone()).unwrap();
         }
         b.into_cell().unwrap()
+    }
+
+    /// End-to-end check: an ext-out event BOC parses into a `Message` whose body
+    /// starts with a non-zero ABI v2 function id, and whose serialized cell tree
+    /// flattens (root-first) with the root entry's `repr_hash` matching the
+    /// cell handed back by `msg.serialize()`.
+    #[test]
+    fn test_parse_event_boc_walks_cell_tree() {
+        let msg = Message::construct_from_base64(EVENT_BOC).unwrap();
+
+        assert!(msg.has_body(), "event message must have a body");
+        let function_id = msg.body().unwrap().get_next_u32().unwrap();
+        assert_ne!(function_id, 0, "function_id should be non-zero for a real event");
+
+        let msg_cell = msg.serialize().unwrap();
+        let flattened = serialize_cells_tree_root_first(&msg_cell).unwrap();
+        assert!(!flattened.is_empty());
+        assert_eq!(&flattened[0].repr_hash[..], msg_cell.repr_hash().as_slice());
     }
 
     #[test]

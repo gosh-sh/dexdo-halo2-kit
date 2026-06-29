@@ -11,9 +11,3 @@ pub fn poseidon_hash(message: &[Fr]) -> Fr {
     native_sponge.update(message);
     native_sponge.squeeze()
 }
-
-#[test]
-fn test() {
-    let digest = poseidon_hash(&[Fr::zero()]);
-    //println!("{:?}", hex::encode(digest.to_bytes()));
-}
