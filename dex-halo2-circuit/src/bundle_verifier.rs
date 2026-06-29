@@ -20,10 +20,7 @@
 //!
 //! # Layouts
 //!
-//! Two layouts are supported for the `DexFinalProof`, distinguished only by
-//! instance-vector length:
-//!
-//! **Phase 3 (today, 7 instances — produced by `DarkDexCircuitNew`):**
+//! `DexFinalProof` is 7 instances, as produced by `DarkDexCircuitNew`:
 //! ```text
 //!   [0] poseidon_commitment       (= depositIdentifierHash)
 //!   [1] final_root                (= finalLayerHistoricalHashRoot)
@@ -34,19 +31,7 @@
 //!   [6] event_salted_block_id     ← used by check (3) as the "bundle head"
 //! ```
 //!
-//! **Phase 4+ (target spec §6.9, 8 instances):**
-//! ```text
-//!   [0] depositIdentifierHash
-//!   [1] finalLayerHistoricalHashRoot
-//!   [2] voucherNominalFr
-//!   [3] tokenTypeFr
-//!   [4] ephemeralPubkey
-//!   [5] salted_C_start            ← used by check (3) as the "bundle head"
-//!   [6] salted_Y_end
-//!   [7] salt_commitment           ← used by check (2)
-//! ```
-//!
-//! `MultiHopProof` is always 3 instances (`§6.9`):
+//! `MultiHopProof` is 3 instances (`MULTITHREAD_CIRCUIT_SPEC.md` §6.9):
 //! ```text
 //!   [0] salted_start
 //!   [1] salted_end
@@ -61,7 +46,7 @@ use halo2_base::halo2_proofs::halo2curves::bn256::Fr;
 /// reading the proof's public instance vector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProofKind {
-    /// `DexFinalProof`. Phase 3: 7 instances. Phase 4+: 8 instances.
+    /// `DexFinalProof`. 7 instances.
     DexFinal,
     /// `MultiHopProof`. Always 3 instances.
     MultiHop,
@@ -105,7 +90,7 @@ pub enum BundleError {
     DexFinalNotFirst { found_at: usize },
     /// A proof's instance-vector length doesn't match its declared `kind`.
     /// `expected_one_of` enumerates every accepted length for that kind
-    /// (e.g. DexFinal accepts 7 or 8 for Phase 3 / Phase 4+).
+    /// (DexFinal: 7; MultiHop: 3).
     BadInstanceLen {
         proof_index: usize,
         kind: ProofKind,
@@ -116,9 +101,8 @@ pub enum BundleError {
     /// `bundle[0]`'s salt_commitment; `mismatch_at` is the index of the
     /// first snark that disagrees.
     SaltCommitmentMismatch { first: Fr, mismatch_at: usize, got: Fr },
-    /// `DexFinal.salted_C_start` (Phase 4+) or `DexFinal.event_salted_block_id`
-    /// (Phase 3) does not equal `bundle[1].salted_start`. Check (3).
-    /// Only fires when there is at least one MultiHop in the bundle.
+    /// `DexFinal.event_salted_block_id` does not equal `bundle[1].salted_start`.
+    /// Check (3). Only fires when there is at least one MultiHop in the bundle.
     HeadLinkBreak { dex_final_head: Fr, first_hop_start: Fr },
     /// `bundle[i].salted_end != bundle[i+1].salted_start`. Check (4).
     ContinuityBreak {
@@ -132,14 +116,12 @@ pub enum BundleError {
 // Instance-vector field offsets
 // ---------------------------------------------------------------------------
 
-/// Phase 3 `DarkDexCircuitNew` instance count (today's circuit).
-pub const DEX_FINAL_PHASE3_LEN: usize = 7;
-/// Phase 4+ target `DexFinalProof` instance count (spec §6.9).
-pub const DEX_FINAL_PHASE4_LEN: usize = 8;
+/// `DarkDexCircuitNew` `DexFinalProof` instance count.
+pub const DEX_FINAL_LEN: usize = 7;
 /// `MultiHopProof` instance count (spec §6.9).
 pub const MULTI_HOP_LEN: usize = 3;
 
-const DEX_FINAL_PHASE3_LENGTHS: &[usize] = &[DEX_FINAL_PHASE3_LEN, DEX_FINAL_PHASE4_LEN];
+const DEX_FINAL_LENGTHS: &[usize] = &[DEX_FINAL_LEN];
 const MULTI_HOP_LENGTHS: &[usize] = &[MULTI_HOP_LEN];
 
 /// MultiHop offsets per spec §6.9.
@@ -149,36 +131,33 @@ mod multihop_offset {
     pub const SALT_COMMITMENT: usize = 2;
 }
 
-/// DexFinal offsets — vary by layout (Phase 3 vs Phase 4+).
+/// DexFinal offsets — `DarkDexCircuitNew`'s 7-instance layout.
 mod dexfinal_offset {
-    // Phase 3 (DarkDexCircuitNew, 7 instances)
-    pub const P3_SALT_COMMITMENT: usize = 5;
-    pub const P3_HEAD_BLOCK_ID: usize = 6; // event_salted_block_id
-    // Phase 4+ (target DexFinalProof, 8 instances)
-    pub const P4_SALTED_C_START: usize = 5; // bundle head
-    pub const P4_SALT_COMMITMENT: usize = 7;
+    pub const SALT_COMMITMENT: usize = 5;
+    pub const HEAD_BLOCK_ID: usize = 6; // event_salted_block_id
 }
 
 // ---------------------------------------------------------------------------
 // Field accessors (layout-aware)
 // ---------------------------------------------------------------------------
 
-/// Extract `salt_commitment` from any kind of proof, picking the right
-/// offset based on `kind` (and layout, for DexFinal).
+/// Extract `salt_commitment` from any kind of proof.
 ///
 /// Returns `BadInstanceLen` for malformed inputs.
 pub fn salt_commitment(p: &BundleProof, proof_index: usize) -> Result<Fr, BundleError> {
     match p.kind {
-        ProofKind::DexFinal => match p.instances.len() {
-            DEX_FINAL_PHASE3_LEN => Ok(p.instances[dexfinal_offset::P3_SALT_COMMITMENT]),
-            DEX_FINAL_PHASE4_LEN => Ok(p.instances[dexfinal_offset::P4_SALT_COMMITMENT]),
-            got => Err(BundleError::BadInstanceLen {
-                proof_index,
-                kind: ProofKind::DexFinal,
-                got,
-                expected_one_of: DEX_FINAL_PHASE3_LENGTHS,
-            }),
-        },
+        ProofKind::DexFinal => {
+            if p.instances.len() == DEX_FINAL_LEN {
+                Ok(p.instances[dexfinal_offset::SALT_COMMITMENT])
+            } else {
+                Err(BundleError::BadInstanceLen {
+                    proof_index,
+                    kind: ProofKind::DexFinal,
+                    got: p.instances.len(),
+                    expected_one_of: DEX_FINAL_LENGTHS,
+                })
+            }
+        }
         ProofKind::MultiHop => {
             if p.instances.len() == MULTI_HOP_LEN {
                 Ok(p.instances[multihop_offset::SALT_COMMITMENT])
@@ -195,31 +174,18 @@ pub fn salt_commitment(p: &BundleProof, proof_index: usize) -> Result<Fr, Bundle
 }
 
 /// Extract the "bundle head" — the salted block_id that the first
-/// MultiHopProof's `salted_start` must equal.
-///
-/// In Phase 3 today this is `event_salted_block_id` (instance [6]); in
-/// Phase 4+ it becomes `salted_C_start` (instance [5]).
+/// MultiHopProof's `salted_start` must equal. This is
+/// `event_salted_block_id` at instance [6].
 pub fn dex_final_head(p: &BundleProof, proof_index: usize) -> Result<Fr, BundleError> {
-    if p.kind != ProofKind::DexFinal {
-        // Programmer error: pass DexFinal proofs only. Encode as a
-        // length-style failure to keep the error vocabulary small.
+    if p.kind != ProofKind::DexFinal || p.instances.len() != DEX_FINAL_LEN {
         return Err(BundleError::BadInstanceLen {
             proof_index,
             kind: p.kind,
             got: p.instances.len(),
-            expected_one_of: DEX_FINAL_PHASE3_LENGTHS,
+            expected_one_of: DEX_FINAL_LENGTHS,
         });
     }
-    match p.instances.len() {
-        DEX_FINAL_PHASE3_LEN => Ok(p.instances[dexfinal_offset::P3_HEAD_BLOCK_ID]),
-        DEX_FINAL_PHASE4_LEN => Ok(p.instances[dexfinal_offset::P4_SALTED_C_START]),
-        got => Err(BundleError::BadInstanceLen {
-            proof_index,
-            kind: ProofKind::DexFinal,
-            got,
-            expected_one_of: DEX_FINAL_PHASE3_LENGTHS,
-        }),
-    }
+    Ok(p.instances[dexfinal_offset::HEAD_BLOCK_ID])
 }
 
 pub fn multihop_salted_start(p: &BundleProof, proof_index: usize) -> Result<Fr, BundleError> {
@@ -344,20 +310,6 @@ mod tests {
         ])
     }
 
-    /// Build a Phase-4-style DexFinal instance vector.
-    fn phase4_dex_final(salt_commitment: Fr, salted_c_start: Fr, salted_y_end: Fr) -> BundleProof {
-        BundleProof::new_dex_final(vec![
-            Fr::from(201u64),
-            Fr::from(202u64),
-            Fr::from(203u64),
-            Fr::from(204u64),
-            Fr::from(205u64),
-            salted_c_start, // [5]
-            salted_y_end,   // [6]
-            salt_commitment, // [7]
-        ])
-    }
-
     fn multi_hop(salted_start: Fr, salted_end: Fr, salt_commitment: Fr) -> BundleProof {
         BundleProof::new_multi_hop(vec![salted_start, salted_end, salt_commitment])
     }
@@ -369,15 +321,6 @@ mod tests {
         let sc = Fr::from(0xC0FFEEu64);
         let head = Fr::from(0xBEEFu64);
         let b = vec![phase3_dex_final(sc, head)];
-        assert_eq!(verify_bundle(&b), Ok(()));
-    }
-
-    #[test]
-    fn single_dex_final_phase4_ok() {
-        let sc = Fr::from(0xC0FFEEu64);
-        let c = Fr::from(0xBEEFu64);
-        let y = Fr::from(0xDEADu64);
-        let b = vec![phase4_dex_final(sc, c, y)];
         assert_eq!(verify_bundle(&b), Ok(()));
     }
 
@@ -550,7 +493,7 @@ mod tests {
 
     #[test]
     fn dex_final_with_wrong_instance_count_rejected() {
-        let bad = BundleProof::new_dex_final(vec![Fr::from(1u64); 6]); // not 7 nor 8
+        let bad = BundleProof::new_dex_final(vec![Fr::from(1u64); 6]); // not 7
         let b = vec![bad];
         match verify_bundle(&b) {
             Err(BundleError::BadInstanceLen { proof_index, kind, got, .. }) => {

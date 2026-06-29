@@ -18,7 +18,7 @@
 //! the bundle-verifier API is shape-invariant.
 
 use dex_halo2_circuit::bundle_verifier::{
-    verify_bundle, BundleError, BundleProof, DEX_FINAL_PHASE3_LEN, MULTI_HOP_LEN,
+    verify_bundle, BundleError, BundleProof, DEX_FINAL_LEN, MULTI_HOP_LEN,
 };
 use dex_halo2_circuit::salt::{
     compute_salt_commitment_native, compute_salt_native, compute_salted_block_id_native,
@@ -109,7 +109,7 @@ fn synthetic_bundle_happy_path() {
     let (dex_final, hops) = synthesize_bundle_instances(sk_u, &block_ids);
 
     // Sanity: shape matches what the verifier expects.
-    assert_eq!(dex_final.len(), DEX_FINAL_PHASE3_LEN);
+    assert_eq!(dex_final.len(), DEX_FINAL_LEN);
     for h in &hops {
         assert_eq!(h.len(), MULTI_HOP_LEN);
     }

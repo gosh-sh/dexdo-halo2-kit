@@ -8,7 +8,7 @@
 //! `cargo test --release --test test_bundle_stress_l100 -- --ignored --nocapture`.
 
 use dex_halo2_circuit::bundle_verifier::{
-    verify_bundle, BundleProof, DEX_FINAL_PHASE3_LEN,
+    verify_bundle, BundleProof, DEX_FINAL_LEN,
 };
 use dex_halo2_circuit::multi_hop_proof::{MultiHopProofCircuitC, PhaseCHopWitness};
 use dex_halo2_circuit::multi_hop_witness::H_HOPS_PER_PROOF;
@@ -34,7 +34,7 @@ fn bundle_circuit_params() -> BaseCircuitParams {
 }
 
 fn synthetic_dex_final(salt_commitment: Fr, bundle_head_salted: Fr) -> BundleProof {
-    let mut instances = vec![Fr::zero(); DEX_FINAL_PHASE3_LEN];
+    let mut instances = vec![Fr::zero(); DEX_FINAL_LEN];
     instances[0] = Fr::from(0xD0u64);
     instances[1] = Fr::from(0xD1u64);
     instances[2] = Fr::from(0xD2u64);
