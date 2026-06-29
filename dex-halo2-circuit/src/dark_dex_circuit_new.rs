@@ -24,13 +24,12 @@ use halo2_base::{
 use std::cell::RefCell;
 
 use crate::boc_helper::*;
-use crate::poseidon::*;
 use crate::salt::domain_tag_hop_salt_fr;
 use gosh_dense_balanced_tree::{
     bytes_to_fr, compute_root_native, dense_merkle_root_circuit,
     dense_merkle_root_circuit_padded, fr_to_bytes, poseidon_hash_native,
     preprocess_dense_proof, preprocess_dense_proof_padded,
-    verify_chain_of_dense_proofs, DenseChainLink, MAX_CHAIN_LEN,
+    verify_chain_of_dense_proofs, DenseChainLink, MAX_CHAIN_LEN, R_F, R_P, RATE, T,
 };
 use halo2_base::Context;
 

@@ -6,7 +6,7 @@
 //! satisfy the constraint `ctx.constrain_equal(&sk_u_commit, &hasher_result)`
 //! in `DarkDexCircuitNew::synthesize`.
 
-use dex_halo2_circuit::poseidon::{poseidon_hash, R_F, R_P, RATE, T};
+use gosh_dense_balanced_tree::{poseidon_hash_native as poseidon_hash, R_F, R_P, RATE, T};
 use halo2_base::{
     gates::{
         circuit::{builder::BaseCircuitBuilder, BaseCircuitParams},

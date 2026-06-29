@@ -17,8 +17,7 @@
 //! - [`compute_salt_commitment_native`] — `salt_commitment = Poseidon([salt])`
 //! - [`compute_salted_block_id_native`] — `Poseidon([salt, bytes_to_fr(block_id)])`
 
-use crate::poseidon::poseidon_hash;
-use gosh_dense_balanced_tree::bytes_to_fr;
+use gosh_dense_balanced_tree::{bytes_to_fr, poseidon_hash_native};
 use halo2_base::halo2_proofs::halo2curves::bn256::Fr;
 
 /// Domain-tag byte string used to bind the voucher's `sk_u` into the per-bundle
@@ -48,12 +47,12 @@ pub fn domain_tag_hop_salt_fr() -> Fr {
 
 /// Native: `salt = Poseidon([DOMAIN_TAG_HOP_SALT_FR, sk_u])`.
 pub fn compute_salt_native(sk_u: Fr) -> Fr {
-    poseidon_hash(&[domain_tag_hop_salt_fr(), sk_u])
+    poseidon_hash_native(&[domain_tag_hop_salt_fr(), sk_u])
 }
 
 /// Native: `salt_commitment = Poseidon([salt])`.
 pub fn compute_salt_commitment_native(salt: Fr) -> Fr {
-    poseidon_hash(&[salt])
+    poseidon_hash_native(&[salt])
 }
 
 /// Native: `salted_block_id = Poseidon([salt, bytes_to_fr(block_id_le)])`.
@@ -63,7 +62,7 @@ pub fn compute_salt_commitment_native(salt: Fr) -> Fr {
 /// produce a value identical to the in-circuit computation, regardless of
 /// whether the underlying bytes are "true" BE or LE.
 pub fn compute_salted_block_id_native(salt: Fr, block_id_le: &[u8; 32]) -> Fr {
-    poseidon_hash(&[salt, bytes_to_fr(block_id_le)])
+    poseidon_hash_native(&[salt, bytes_to_fr(block_id_le)])
 }
 
 #[cfg(test)]

@@ -6,4 +6,4 @@ edition = "2024"
 [dependencies]
 hex = "0.4.3"
 halo2-base = { git = "https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381", branch = "bump-halo2-lib-v0.4.1", default-features = false, features = ["halo2-axiom"] }
-dex-halo2-circuit = { path = "../dex-halo2-circuit" }
+gosh-dense-balanced-tree = { git = "https://github.com/gosh-sh/gosh-halo2-crypto-lib", branch = "bump-halo2-lib-v0.4.1" }

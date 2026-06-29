@@ -5,7 +5,6 @@ use crate::multi_hop_witness::{
     BLOCK_MERKLE_DEPTH, BLOCK_MERKLE_LEAF_COUNT, H_HOPS_PER_PROOF, MAX_PROOF_BLOCK_REFS_DEPTH,
     N_BUNDLE,
 };
-use crate::poseidon::*;
 use crate::salt::{
     compute_salt_commitment_native, compute_salt_native, compute_salted_block_id_native,
 };
@@ -16,7 +15,7 @@ use dense_balanced_tree::{
     dense_merkle_proof, dense_merkle_root, PoseidonHasher as DensePoseidonHasher,
 };
 use gosh_dense_balanced_tree::{
-    bytes_to_fr, fr_to_bytes, DenseChainLink, MAX_CHAIN_LEN,
+    bytes_to_fr, fr_to_bytes, poseidon_hash_native, DenseChainLink, MAX_CHAIN_LEN,
 };
 use halo2_base::gates::circuit::BaseCircuitParams;
 use halo2_base::halo2_proofs::halo2curves::bn256::Fr;
@@ -114,7 +113,7 @@ pub fn extract_voucher_fields(
         &entries[1].cell_repr_data[EVENT_TOKEN_TYPE_START..EVENT_TOKEN_TYPE_END],
     );
     let expected_poseidon_hash =
-        poseidon_hash(&[voucher_nominal_val, token_type_val, sk_u, sk_u_commit_val]);
+        poseidon_hash_native(&[voucher_nominal_val, token_type_val, sk_u, sk_u_commit_val]);
     VoucherFields {
         sk_u,
         entries,

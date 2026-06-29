@@ -1,4 +1,4 @@
-use dex_halo2_circuit::poseidon::poseidon_hash;
+use gosh_dense_balanced_tree::poseidon_hash_native as poseidon_hash;
 use halo2_base::halo2_proofs::halo2curves::bn256::Fr;
 use std::env;
 

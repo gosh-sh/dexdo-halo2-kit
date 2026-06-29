@@ -44,7 +44,7 @@
 //!    LE-byte-packed L7 value.
 //! 3. **Salt math** — `salt`, `salt_commitment`, `salted_start`, `salted_end`
 //!    all derived via `PoseidonHasher::hash_fix_len_array` using the
-//!    `crate::poseidon::{T,RATE,R_F,R_P}` parameters.
+//!    `gosh_dense_balanced_tree::{T,RATE,R_F,R_P}` parameters.
 //!
 //! ## Not yet covered (later phases)
 //!
@@ -55,7 +55,7 @@
 //!   walk (production-wire parity against live GQL L7 roots).
 //! - `TODO(phase-4-prod)`: bump `MAX_PROOF_BLOCK_REFS` from 16 → 256.
 
-use gosh_dense_balanced_tree::bytes_to_fr;
+use gosh_dense_balanced_tree::{bytes_to_fr, R_F, R_P, RATE, T};
 use gosh_sha256_chip::Sha256Chip;
 use halo2_base::gates::circuit::builder::BaseCircuitBuilder;
 use halo2_base::gates::circuit::{BaseCircuitParams, BaseConfig};
@@ -72,7 +72,6 @@ use std::cell::RefCell;
 use crate::multi_hop_witness::{
     BLOCK_MERKLE_DEPTH, H_HOPS_PER_PROOF, MAX_PROOF_BLOCK_REFS_DEPTH, REFERENCED_PARENT_BLOCK_TAG,
 };
-use crate::poseidon::{R_F, R_P, RATE, T};
 use crate::salt::domain_tag_hop_salt_fr;
 
 const SHA256_HASH_LEN: usize = 32;

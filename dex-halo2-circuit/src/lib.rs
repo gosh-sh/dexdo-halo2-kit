@@ -4,7 +4,6 @@ pub mod dark_dex_circuit_new;
 pub mod event_data_helper;
 pub mod multi_hop_proof;
 pub mod multi_hop_witness;
-pub mod poseidon;
 pub mod salt;
 
 // `test_helpers` is exposed unconditionally so integration tests (under

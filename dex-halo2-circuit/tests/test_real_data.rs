@@ -16,14 +16,13 @@
 
 use dex_halo2_circuit::boc_helper::{serialize_cells_tree_root_first, BocFlattenData};
 use dex_halo2_circuit::dark_dex_circuit_new::DarkDexCircuitNew;
-use dex_halo2_circuit::poseidon::poseidon_hash;
 use dex_halo2_circuit::salt::{
     compute_salt_commitment_native, compute_salt_native, compute_salted_block_id_native,
 };
 
 use gosh_dense_balanced_tree::{
-    bytes_to_fr, compute_root_native, fr_to_bytes, preprocess_dense_proof,
-    DenseChainLink, MAX_CHAIN_LEN,
+    bytes_to_fr, compute_root_native, fr_to_bytes, poseidon_hash_native as poseidon_hash,
+    preprocess_dense_proof, DenseChainLink, MAX_CHAIN_LEN,
 };
 use halo2_base::gates::circuit::BaseCircuitParams;
 use halo2_base::halo2_proofs::dev::MockProver;
