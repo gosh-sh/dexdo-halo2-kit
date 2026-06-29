@@ -1,22 +1,12 @@
 //! Voucher-secret-derived salt and salted-block-id helpers (Phase 3).
 //!
-//! These are **vendored** from `gosh-referenced-block-hop::multi_hop` (Phase 2).
-//! The two implementations MUST stay byte-for-byte identical because
-//! `RootPN.sol` checks `salt_commitment` equality across all 5 snarks of a
-//! bundle (`1 DexFinalProof + 4 MultiHopProof`). Any divergence between this
-//! file and the Phase 2 definition breaks the on-chain orchestrator.
-//!
-//! ## Why vendored
-//!
-//! `gosh-referenced-block-hop` lives in the `gosh-halo2-crypto-lib` workspace
-//! pinned to the `main` branch of the `halo2-lib-zkevm-sha256-and-bls12-381`
-//! fork, while this workspace pins `bump-halo2-lib-v0.4.1`. Adding the crate
-//! as a git/path dependency pulls in two distinct `halo2-base` versions and
-//! the `Fr` types stop unifying at the boundary.
-//!
-//! TODO(phase-4): once the two crypto-lib workspaces converge on a single
-//! halo2-lib branch, drop this file and `use gosh_referenced_block_hop::*`
-//! directly.
+//! These native helpers MUST stay byte-for-byte equivalent to the in-circuit
+//! gadgets in [`crate::dark_dex_circuit_new`] and [`crate::multi_hop_proof`]:
+//! `RootPN.sol` checks `salt_commitment` equality across all snarks of a
+//! bundle (`1 DexFinalProof + N MultiHopProof`), and the per-hop
+//! `salted_block_id` continuity is what links adjacent hops. Any divergence
+//! between the native derivation here and the in-circuit derivation breaks
+//! the on-chain orchestrator.
 //!
 //! ## Public surface
 //!
@@ -27,16 +17,18 @@
 //! - [`compute_salt_commitment_native`] — `salt_commitment = Poseidon([salt])`
 //! - [`compute_salted_block_id_native`] — `Poseidon([salt, bytes_to_fr(block_id)])`
 
-use gosh_dense_balanced_tree::{bytes_to_fr, poseidon_hash_native};
+use crate::poseidon::poseidon_hash;
+use gosh_dense_balanced_tree::bytes_to_fr;
 use halo2_base::halo2_proofs::halo2curves::bn256::Fr;
 
 /// Domain-tag byte string used to bind the voucher's `sk_u` into the per-bundle
 /// salt. Differentiates this salt from any other Poseidon image of `sk_u`
 /// produced elsewhere (e.g. spend nullifier, deposit commitment).
 ///
-/// **Must match `gosh_referenced_block_hop::DOMAIN_TAG_HOP_SALT_BYTES`
-/// byte-for-byte** — the `salt_commitment` instance value of a DexFinalProof
-/// must equal the `salt_commitment` of every MultiHopProof in the same bundle.
+/// This tag is part of the on-chain ABI: the `salt_commitment` instance value
+/// of a DexFinalProof must equal the `salt_commitment` of every MultiHopProof
+/// in the same bundle. Changing the tag bytes is a breaking change for any
+/// previously-published proofs and for `RootPN.sol`'s salt-equality check.
 pub const DOMAIN_TAG_HOP_SALT_BYTES: &[u8] = b"acki-nacki:voucher-hop-salt:v1";
 
 /// Derive `DOMAIN_TAG_HOP_SALT_FR` from the ASCII tag bytes by zero-padding to
@@ -56,12 +48,12 @@ pub fn domain_tag_hop_salt_fr() -> Fr {
 
 /// Native: `salt = Poseidon([DOMAIN_TAG_HOP_SALT_FR, sk_u])`.
 pub fn compute_salt_native(sk_u: Fr) -> Fr {
-    poseidon_hash_native(&[domain_tag_hop_salt_fr(), sk_u])
+    poseidon_hash(&[domain_tag_hop_salt_fr(), sk_u])
 }
 
 /// Native: `salt_commitment = Poseidon([salt])`.
 pub fn compute_salt_commitment_native(salt: Fr) -> Fr {
-    poseidon_hash_native(&[salt])
+    poseidon_hash(&[salt])
 }
 
 /// Native: `salted_block_id = Poseidon([salt, bytes_to_fr(block_id_le)])`.
@@ -71,7 +63,7 @@ pub fn compute_salt_commitment_native(salt: Fr) -> Fr {
 /// produce a value identical to the in-circuit computation, regardless of
 /// whether the underlying bytes are "true" BE or LE.
 pub fn compute_salted_block_id_native(salt: Fr, block_id_le: &[u8; 32]) -> Fr {
-    poseidon_hash_native(&[salt, bytes_to_fr(block_id_le)])
+    poseidon_hash(&[salt, bytes_to_fr(block_id_le)])
 }
 
 #[cfg(test)]

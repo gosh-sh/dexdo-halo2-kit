@@ -847,7 +847,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "117725a109d387c937a1533ce01b450cbde6b88abceea8473c4d7a85853cda3c"
 dependencies = [
  "lazy_static",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1626,7 +1626,7 @@ checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 [[package]]
 name = "gosh-dense-balanced-tree"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/gosh-halo2-crypto-lib?branch=bump-halo2-lib-v0.4.1#285975a382153b5720e63d6356f445f4d7e3faf1"
+source = "git+https://github.com/gosh-sh/gosh-halo2-crypto-lib?branch=bump-halo2-lib-v0.4.1#a79a0c71e80d307a99dd47f713b4342ea4b9cbd6"
 dependencies = [
  "halo2-base 0.4.1",
  "pse-poseidon",
@@ -1635,7 +1635,7 @@ dependencies = [
 [[package]]
 name = "gosh-sha256-chip"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/gosh-halo2-crypto-lib?branch=bump-halo2-lib-v0.4.1#285975a382153b5720e63d6356f445f4d7e3faf1"
+source = "git+https://github.com/gosh-sh/gosh-halo2-crypto-lib?branch=bump-halo2-lib-v0.4.1#a79a0c71e80d307a99dd47f713b4342ea4b9cbd6"
 dependencies = [
  "halo2-base 0.4.1",
  "halo2-ecc",
@@ -1701,7 +1701,7 @@ dependencies = [
 [[package]]
 name = "halo2-base"
 version = "0.4.1"
-source = "git+https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381?branch=bump-halo2-lib-v0.4.1#21f7d97def1297caf5090d40718937601d8edbf2"
+source = "git+https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381?branch=bump-halo2-lib-v0.4.1#026e176de8aff8269ab3bbb7f7192b247adab965"
 dependencies = [
  "ark-std 0.3.0",
  "getset",
@@ -1746,7 +1746,7 @@ dependencies = [
 [[package]]
 name = "halo2-ecc"
 version = "0.4.1"
-source = "git+https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381?branch=bump-halo2-lib-v0.4.1#21f7d97def1297caf5090d40718937601d8edbf2"
+source = "git+https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381?branch=bump-halo2-lib-v0.4.1#026e176de8aff8269ab3bbb7f7192b247adab965"
 dependencies = [
  "halo2-base 0.4.1",
  "itertools 0.11.0",
@@ -4479,15 +4479,6 @@ name = "windows-sys"
 version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
-dependencies = [
- "windows-targets 0.52.6",
-]
-
-[[package]]
-name = "windows-sys"
-version = "0.59.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
 dependencies = [
  "windows-targets 0.52.6",
 ]
