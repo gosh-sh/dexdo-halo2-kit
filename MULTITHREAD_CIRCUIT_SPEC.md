@@ -651,6 +651,28 @@ MultiHopProof (3 fields):
 
 Three distinct VKs total: `VK_DexFinal`, `VK_MultiHop`, none-of-them-aggregated. All are bundled with the contract and the phone app. No universal VK machinery, no agg_vk_hash, no recursion. See §8 for why this matters.
 
+### 6.11 Measured performance — Phase 4 bundle tests (dev hardware)
+
+Numbers below are from end-to-end bundle tests in `dex-halo2-circuit/tests/` (`cargo test --release -- --ignored`), single-machine, no GPU, KZG backend. Each test builds real KZG proofs for every `MultiHopProofCircuitC` snark in the bundle; the `DexFinalProof` instance vector is supplied synthetically (its real-proof cost is the existing single-thread `DarkDexCircuitNew` baseline, not re-measured here). Circuit parameters: K=19, 56 advice columns, 4 lookup advice. Proof size per `MultiHopProof` snark: **18,240 B** (constant across all rows). Per-snark `verify`: ~8 ms.
+
+| Test (Phase 4 stage) | L (active hops) | `N_BUNDLE` | Real-KZG snarks | Mean prove / snark | Bundle wall time | Source |
+|---|---|---|---|---|---|---|
+| 2d — happy path | 5 | 4 | 4 | ~101 s | ~7.8 min | `test_bundle_e2e.rs` |
+| 2e — negative scenarios | varies | 2–3 | 2 | 97 / 112 s | ~4.3 min | `test_bundle_negative.rs` |
+| 2f — `L = L_MAX` worst case | 20 | 4 | 4 | ~98 s (uniform) | ~7.6 min | `test_bundle_stress.rs` |
+| 2g — L = 50 | 50 | 10 | 10 | ~104 s mean | ~18.3 min | `test_bundle_stress_l50.rs` |
+| 2g — L = 100 | 100 | 20 | 20 | ~97 s mean (2 thermal outliers) | ~46 min | `test_bundle_stress_l100.rs` |
+| 2g — L = 300 | 300 | 60 | 60 | 105.6 s mean (min 89.3, max 123.3, no thermal outliers) | ~107 min | `test_bundle_stress_l300.rs` |
+
+One-time costs per VK/PK: `keygen_vk` 35–47 s, `keygen_pk` 15–18 s.
+
+Two empirical findings from this dataset:
+
+1. **Linear `N_BUNDLE` scaling validated end-to-end from L=5 to L=300** (60× bundle width, identical per-snark cost). The spec's §10.2 Open Question #1 escape path A — *"raise `N_BUNDLE` if real chain lengths exceed `L_MAX = 20`"* — works at the absolute worst case reported by the team (L=300) with no circuit or aggregation changes.
+2. **Active and all-inactive snarks have identical prove cost.** The gate body is unconditional; only equality residuals are multiplied by `is_active`. The anonymity-uniformity padding of §6.5 therefore costs the same as proving real hops — there is no asymmetric cost a verifier could exploit to fingerprint chain length.
+
+Caveat: these numbers are dev-hardware (laptop-class CPU) wall times. Phone proving time will be substantially higher; §6.8's estimates remain the relevant numbers for the smartphone budget.
+
 ---
 
 ## 7. Synthetic test data generator
