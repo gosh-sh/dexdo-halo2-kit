@@ -442,13 +442,13 @@ DOMAIN_TAG_FR    = bytes_to_fr( DOMAIN_TAG_BYTES zero-padded to 32 LE bytes )
 #### Per-`MultiHopProof` public inputs (3)
 
 ```
-inst[0] = salted_start = Poseidon( [ salt , B_0.block_id ] )
-inst[1] = salted_end   = Poseidon( [ salt , B_H.block_id ] )
+inst[0] = salted_start_block_id = Poseidon( [ salt , B_0.block_id ] )
+inst[1] = salted_end_block_id   = Poseidon( [ salt , B_H.block_id ] )
 inst[2] = salt_commitment = Poseidon( [ salt ] )              // 1-input commitment; binds the salt across snarks
 ```
 
 Inside the circuit:
-- The same `salt` witness is used for `salted_start`, `salted_end`, `salt_commitment`.
+- The same `salt` witness is used for `salted_start_block_id`, `salted_end_block_id`, `salt_commitment`.
 - `salt_commitment` is identical across **all** proofs of the same bundle. RootPN checks this equality on-chain (cheap field comparison), which prevents an adversary from splicing proofs from different bundles together.
 
 #### Per-`DexFinalProof` public inputs (5 existing + 3 new)
@@ -525,11 +525,11 @@ To prevent the verifier from distinguishing thread-0 events from thread-t events
 
 Cases:
 
-- **t == 0** (event in thread 0): true chain length L = 0. All 4 `MultiHopProof`s are submitted with `is_active = 0` everywhere. Each is constrained to `salted_start == salted_end`. The DexFinalProof has `salted_C_start == salted_Y_end` (i.e. C == Y, since "C" is then just X's own block).
+- **t == 0** (event in thread 0): true chain length L = 0. All 4 `MultiHopProof`s are submitted with `is_active = 0` everywhere. Each is constrained to `salted_start_block_id == salted_end_block_id`. The DexFinalProof has `salted_C_start == salted_Y_end` (i.e. C == Y, since "C" is then just X's own block).
 - **t ≠ 0, L ≤ 5**: 1 `MultiHopProof` has up to 5 active hops; the remaining 3 are fully inactive (start == end at each).
 - **L up to 20**: up to 4 partially-or-fully active proofs.
 
-The verifier cannot tell from the public inputs whether any individual `MultiHopProof` is active or inactive — `salted_start == salted_end` is just one possible combination of two pseudo-random-looking field values.
+The verifier cannot tell from the public inputs whether any individual `MultiHopProof` is active or inactive — `salted_start_block_id == salted_end_block_id` is just one possible combination of two pseudo-random-looking field values.
 
 ### 6.6 `MultiHopProof` circuit detail
 
@@ -550,9 +550,9 @@ constraints:
   1. salt_commitment_check:
         salt_commitment_pub == Poseidon([salt])                          // 1-input
         salt == Poseidon([DOMAIN_TAG_FR, voucher_secret_seed])           // 2-input, sk_u = voucher_secret_seed
-  2. salted_endpoint_check:
-        salted_start_pub == Poseidon([salt, hop_current_block_id[0]])
-        salted_end_pub   == Poseidon([salt, hop_next_block_id[H-1]])
+  2. salted_end_block_idpoint_check:
+        salted_start_block_id_pub == Poseidon([salt, hop_current_block_id[0]])
+        salted_end_block_id_pub   == Poseidon([salt, hop_next_block_id[H-1]])
   3. for each hop h in 0..H:
         when is_active[h]: full hop constraints of §4.2
         when !is_active[h]: hop_next_block_id[h] == hop_current_block_id[h]
@@ -625,8 +625,8 @@ DexFinalProof (8 fields, full multi-thread design — Phase 4+):
   [7] salt_commitment
 
 MultiHopProof (3 fields):
-  [0] salted_start
-  [1] salted_end
+  [0] salted_start_block_id
+  [1] salted_end_block_id
   [2] salt_commitment
 ```
 
@@ -777,7 +777,7 @@ The multi-proof path scales more gracefully on smartphone for chain lengths up t
 ### 9.3 What is *not* a leak (subtle cases)
 
 - Two bundles by the same physical user are **not linkable** via salted endpoints, because each voucher has its own `voucher_secret_seed` → its own `salt` → its own `Poseidon(salt, *)` outputs. Two different vouchers' `salted_C_start`s are uncorrelated under the random-oracle model for Poseidon.
-- A proof's `salted_start == salted_end` (indicating an inactive `MultiHopProof`) is **not distinguishable** from an active proof where the chain happens to wrap or loop, *unless* an adversary computes `Poseidon(salt, ?)` for some specific block_id. Without the salt, the equality is just two pseudo-random field values that happen to coincide.
+- A proof's `salted_start_block_id == salted_end_block_id` (indicating an inactive `MultiHopProof`) is **not distinguishable** from an active proof where the chain happens to wrap or loop, *unless* an adversary computes `Poseidon(salt, ?)` for some specific block_id. Without the salt, the equality is just two pseudo-random field values that happen to coincide.
 
 ### 9.4 Threat: salt re-use across vouchers
 
@@ -813,7 +813,7 @@ The phone proves and submits all 5 snarks. If the user uses a relayer to broadca
 | SHA-256 chip | `gosh-sha256-chip` (unchanged) | Existing dependency |
 | On-chain verifier | per-snark Halo2 KZG verification | No aggregation |
 | Public-input layout (`DexFinalProof`) | existing 5 + `salted_C_start` + `salted_Y_end` + `salt_commitment` | Preserves contract compatibility |
-| Public-input layout (`MultiHopProof`) | `salted_start`, `salted_end`, `salt_commitment` | New artifact |
+| Public-input layout (`MultiHopProof`) | `salted_start_block_id`, `salted_end_block_id`, `salt_commitment` | New artifact |
 
 ### 10.2 Open questions
 

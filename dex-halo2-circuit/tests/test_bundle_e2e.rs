@@ -78,8 +78,8 @@ fn hop_to_phase_c(
         l7: h.block.block_merkle_tree_leaves[7],
         block_merkle_leaf_proof_l7: h.block_merkle_leaf_proof_l7,
         proof_block_ref_inner_path: h.proof_block_ref_inner_path,
-        salted_start: h.salted_start,
-        salted_end: h.salted_end,
+        salted_start_block_id: h.salted_start_block_id,
+        salted_end_block_id: h.salted_end_block_id,
     }
 }
 
@@ -144,10 +144,10 @@ fn bundle_e2e_k5_happy_path() {
         let hops: [PhaseCHopWitness; H_HOPS_PER_PROOF] =
             std::array::from_fn(|i| hop_to_phase_c(&snark.hops[i]));
 
-        let first_salted_start = snark.hops[0].salted_start;
-        let last_salted_end = snark.hops[H_HOPS_PER_PROOF - 1].salted_end;
+        let first_salted_start_block_id = snark.hops[0].salted_start_block_id;
+        let last_salted_end_block_id = snark.hops[H_HOPS_PER_PROOF - 1].salted_end_block_id;
         let salt_commitment = snark.salt_commitment;
-        let instances = vec![first_salted_start, last_salted_end, salt_commitment];
+        let instances = vec![first_salted_start_block_id, last_salted_end_block_id, salt_commitment];
 
         let prover_circuit = MultiHopProofCircuitC::new_for_proving(
             chain.sk_u,

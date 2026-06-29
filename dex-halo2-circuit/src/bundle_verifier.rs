@@ -9,9 +9,9 @@
 //!      (the salt-binder check — prevents splicing proofs from different
 //!      bundles together);
 //!   3. the **head** of the hop chain is linked to the DexFinalProof:
-//!      `DexFinal.salted_C_start == MultiHop[0].salted_start`;
+//!      `DexFinal.salted_C_start == MultiHop[0].salted_start_block_id`;
 //!   4. consecutive MultiHopProofs satisfy **chain continuity**:
-//!      `MultiHop[i].salted_end == MultiHop[i+1].salted_start`.
+//!      `MultiHop[i].salted_end_block_id == MultiHop[i+1].salted_start_block_id`.
 //!
 //! This module reproduces that logic in pure Rust against the proofs' public
 //! instance vectors. There is no on-chain or `tvm-sdk` dependency — the goal
@@ -33,8 +33,8 @@
 //!
 //! `MultiHopProof` is 3 instances (`MULTITHREAD_CIRCUIT_SPEC.md` §6.9):
 //! ```text
-//!   [0] salted_start
-//!   [1] salted_end
+//!   [0] salted_start_block_id
+//!   [1] salted_end_block_id
 //!   [2] salt_commitment
 //! ```
 
@@ -101,14 +101,14 @@ pub enum BundleError {
     /// `bundle[0]`'s salt_commitment; `mismatch_at` is the index of the
     /// first snark that disagrees.
     SaltCommitmentMismatch { first: Fr, mismatch_at: usize, got: Fr },
-    /// `DexFinal.event_salted_block_id` does not equal `bundle[1].salted_start`.
+    /// `DexFinal.event_salted_block_id` does not equal `bundle[1].salted_start_block_id`.
     /// Check (3). Only fires when there is at least one MultiHop in the bundle.
     HeadLinkBreak { dex_final_head: Fr, first_hop_start: Fr },
-    /// `bundle[i].salted_end != bundle[i+1].salted_start`. Check (4).
+    /// `bundle[i].salted_end_block_id != bundle[i+1].salted_start_block_id`. Check (4).
     ContinuityBreak {
         between_hops: (usize, usize),
-        salted_end: Fr,
-        salted_start: Fr,
+        salted_end_block_id: Fr,
+        salted_start_block_id: Fr,
     },
 }
 
@@ -126,8 +126,8 @@ const MULTI_HOP_LENGTHS: &[usize] = &[MULTI_HOP_LEN];
 
 /// MultiHop offsets per spec §6.9.
 mod multihop_offset {
-    pub const SALTED_START: usize = 0;
-    pub const SALTED_END: usize = 1;
+    pub const SALTED_START_BLOCK_ID: usize = 0;
+    pub const SALTED_END_BLOCK_ID: usize = 1;
     pub const SALT_COMMITMENT: usize = 2;
 }
 
@@ -174,7 +174,7 @@ pub fn salt_commitment(p: &BundleProof, proof_index: usize) -> Result<Fr, Bundle
 }
 
 /// Extract the "bundle head" — the salted block_id that the first
-/// MultiHopProof's `salted_start` must equal. This is
+/// MultiHopProof's `salted_start_block_id` must equal. This is
 /// `event_salted_block_id` at instance [6].
 pub fn dex_final_head(p: &BundleProof, proof_index: usize) -> Result<Fr, BundleError> {
     if p.kind != ProofKind::DexFinal || p.instances.len() != DEX_FINAL_LEN {
@@ -188,7 +188,7 @@ pub fn dex_final_head(p: &BundleProof, proof_index: usize) -> Result<Fr, BundleE
     Ok(p.instances[dexfinal_offset::HEAD_BLOCK_ID])
 }
 
-pub fn multihop_salted_start(p: &BundleProof, proof_index: usize) -> Result<Fr, BundleError> {
+pub fn multihop_salted_start_block_id(p: &BundleProof, proof_index: usize) -> Result<Fr, BundleError> {
     if p.kind != ProofKind::MultiHop || p.instances.len() != MULTI_HOP_LEN {
         return Err(BundleError::BadInstanceLen {
             proof_index,
@@ -197,10 +197,10 @@ pub fn multihop_salted_start(p: &BundleProof, proof_index: usize) -> Result<Fr, 
             expected_one_of: MULTI_HOP_LENGTHS,
         });
     }
-    Ok(p.instances[multihop_offset::SALTED_START])
+    Ok(p.instances[multihop_offset::SALTED_START_BLOCK_ID])
 }
 
-pub fn multihop_salted_end(p: &BundleProof, proof_index: usize) -> Result<Fr, BundleError> {
+pub fn multihop_salted_end_block_id(p: &BundleProof, proof_index: usize) -> Result<Fr, BundleError> {
     if p.kind != ProofKind::MultiHop || p.instances.len() != MULTI_HOP_LEN {
         return Err(BundleError::BadInstanceLen {
             proof_index,
@@ -209,7 +209,7 @@ pub fn multihop_salted_end(p: &BundleProof, proof_index: usize) -> Result<Fr, Bu
             expected_one_of: MULTI_HOP_LENGTHS,
         });
     }
-    Ok(p.instances[multihop_offset::SALTED_END])
+    Ok(p.instances[multihop_offset::SALTED_END_BLOCK_ID])
 }
 
 // ---------------------------------------------------------------------------
@@ -261,7 +261,7 @@ pub fn verify_bundle(bundle: &[BundleProof]) -> Result<(), BundleError> {
 
     // ---- check (3): head linkage ----
     let head = dex_final_head(&bundle[0], 0)?;
-    let first_hop_start = multihop_salted_start(&bundle[1], 1)?;
+    let first_hop_start = multihop_salted_start_block_id(&bundle[1], 1)?;
     if head != first_hop_start {
         return Err(BundleError::HeadLinkBreak {
             dex_final_head: head,
@@ -271,13 +271,13 @@ pub fn verify_bundle(bundle: &[BundleProof]) -> Result<(), BundleError> {
 
     // ---- check (4): continuity between consecutive MultiHops ----
     for i in 1..bundle.len() - 1 {
-        let salted_end = multihop_salted_end(&bundle[i], i)?;
-        let salted_start_next = multihop_salted_start(&bundle[i + 1], i + 1)?;
-        if salted_end != salted_start_next {
+        let salted_end_block_id = multihop_salted_end_block_id(&bundle[i], i)?;
+        let salted_start_block_id_next = multihop_salted_start_block_id(&bundle[i + 1], i + 1)?;
+        if salted_end_block_id != salted_start_block_id_next {
             return Err(BundleError::ContinuityBreak {
                 between_hops: (i, i + 1),
-                salted_end,
-                salted_start: salted_start_next,
+                salted_end_block_id,
+                salted_start_block_id: salted_start_block_id_next,
             });
         }
     }
@@ -310,8 +310,8 @@ mod tests {
         ])
     }
 
-    fn multi_hop(salted_start: Fr, salted_end: Fr, salt_commitment: Fr) -> BundleProof {
-        BundleProof::new_multi_hop(vec![salted_start, salted_end, salt_commitment])
+    fn multi_hop(salted_start_block_id: Fr, salted_end_block_id: Fr, salt_commitment: Fr) -> BundleProof {
+        BundleProof::new_multi_hop(vec![salted_start_block_id, salted_end_block_id, salt_commitment])
     }
 
     // -- happy paths --------------------------------------------------------
@@ -350,9 +350,9 @@ mod tests {
     }
 
     #[test]
-    fn inactive_hops_with_salted_start_eq_salted_end_ok() {
+    fn inactive_hops_with_salted_start_block_id_eq_salted_end_block_id_ok() {
         // §6.4: when a MultiHopProof is `is_active = 0` everywhere, the
-        // circuit constrains `salted_start == salted_end`. Bundle continuity
+        // circuit constrains `salted_start_block_id == salted_end_block_id`. Bundle continuity
         // then degenerates to all-equal salted endpoints.
         let sc = Fr::from(7u64);
         let p = Fr::from(42u64); // the shared "no progress" endpoint
@@ -480,10 +480,10 @@ mod tests {
             multi_hop(wrong, p2, sc), // start ≠ previous end
         ];
         match verify_bundle(&b) {
-            Err(BundleError::ContinuityBreak { between_hops, salted_end, salted_start }) => {
+            Err(BundleError::ContinuityBreak { between_hops, salted_end_block_id, salted_start_block_id }) => {
                 assert_eq!(between_hops, (1, 2));
-                assert_eq!(salted_end, p1);
-                assert_eq!(salted_start, wrong);
+                assert_eq!(salted_end_block_id, p1);
+                assert_eq!(salted_start_block_id, wrong);
             }
             other => panic!("expected ContinuityBreak, got {:?}", other),
         }

@@ -12,8 +12,8 @@
 //!
 //! | idx | name | derivation |
 //! |---|---|---|
-//! | 0 | `salted_start` | `Poseidon([salt, bytes_to_fr(parent_id)])` |
-//! | 1 | `salted_end`   | `Poseidon([salt, bytes_to_fr(block_id)])` |
+//! | 0 | `salted_start_block_id` | `Poseidon([salt, bytes_to_fr(parent_id)])` |
+//! | 1 | `salted_end_block_id`   | `Poseidon([salt, bytes_to_fr(block_id)])` |
 //! | 2 | `salt_commitment` | `Poseidon([salt])` |
 //!
 //! ## Private witnesses
@@ -21,9 +21,9 @@
 //! - `sk_u`: drives `salt = Poseidon([DOMAIN_TAG_HOP_SALT_FR, sk_u])` and
 //!   `salt_commitment = Poseidon([salt])`.
 //! - `parent_id` (32 B): the predecessor block referenced by the hop. Feeds
-//!   the ref-tree leaf computation and `salted_start`.
+//!   the ref-tree leaf computation and `salted_start_block_id`.
 //! - `block_id` (32 B): the hop's target block. Feeds the SHA-256 path
-//!   target and `salted_end`.
+//!   target and `salted_end_block_id`.
 //! - `l7` (32 B): the L7 ref-tree root sitting at `block_merkle_tree_leaves[7]`.
 //! - `block_merkle_leaf_proof_l7`: 3 SHA-256 siblings opening L7 against
 //!   `block_id` at leaf index 7.
@@ -42,14 +42,14 @@
 //!    `Poseidon([cur, sibling])` calls walk to the L7 root (ref-index 0:
 //!    current always on the left). Final Fr is constrained equal to the
 //!    LE-byte-packed L7 value.
-//! 3. **Salt math** — `salt`, `salt_commitment`, `salted_start`, `salted_end`
+//! 3. **Salt math** — `salt`, `salt_commitment`, `salted_start_block_id`, `salted_end_block_id`
 //!    all derived via `PoseidonHasher::hash_fix_len_array` using the
 //!    `gosh_dense_balanced_tree::{T,RATE,R_F,R_P}` parameters.
 //!
 //! ## Not yet covered (later phases)
 //!
 //! - `TODO(stage-2c-phase-b)`: extend to H=5 with internal hop continuity
-//!   (`ctx.constrain_equal(hops[i].salted_end, hops[i+1].salted_start)`).
+//!   (`ctx.constrain_equal(hops[i].salted_end_block_id, hops[i+1].salted_start_block_id)`).
 //! - `TODO(stage-2c-phase-c)`: `is_active` selector + inactive padding.
 //! - `TODO(stage-2c-suffix)`: byte-flat-Poseidon variant of the ref-tree
 //!   walk (production-wire parity against live GQL L7 roots).
@@ -76,7 +76,7 @@ use crate::salt::domain_tag_hop_salt_fr;
 
 const SHA256_HASH_LEN: usize = 32;
 
-/// Public-instance count: `[salted_start, salted_end, salt_commitment]`.
+/// Public-instance count: `[salted_start_block_id, salted_end_block_id, salt_commitment]`.
 pub const MULTI_HOP_PUBLIC_LEN: usize = 3;
 
 /// Pack `REFERENCED_PARENT_BLOCK_TAG` (37 bytes) into 2 × 31-byte-LE Fr
@@ -230,7 +230,7 @@ impl Circuit<Fr> for MultiHopProofCircuit {
             let mut builder = self.base_circuit_builder.borrow_mut();
             let range = builder.range_chip();
 
-            let (salted_start, salted_end, salt_commitment) = {
+            let (salted_start_block_id, salted_end_block_id, salt_commitment) = {
                 let gate = range.gate();
                 let ctx = builder.pool(0).main();
                 let sha256_chip = Sha256Chip::new(&range);
@@ -272,7 +272,7 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                 };
 
                 // === parent_id_fr (witness Fr; not byte-level, only used in
-                //     ref-leaf and salted_start Poseidon inputs) ===
+                //     ref-leaf and salted_start_block_id Poseidon inputs) ===
                 let parent_id_fr =
                     ctx.load_witness(bytes_to_fr(&self.hop.parent_id));
 
@@ -331,23 +331,23 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                 };
 
                 // === Salted endpoints ===
-                let salted_start = hasher.hash_fix_len_array(
+                let salted_start_block_id = hasher.hash_fix_len_array(
                     ctx,
                     gate,
                     &[salt_assigned, parent_id_fr],
                 );
-                let salted_end = hasher.hash_fix_len_array(
+                let salted_end_block_id = hasher.hash_fix_len_array(
                     ctx,
                     gate,
                     &[salt_assigned, block_id_fr],
                 );
 
-                (salted_start, salted_end, salt_commitment)
+                (salted_start_block_id, salted_end_block_id, salt_commitment)
             };
 
-            // Public instances [salted_start, salted_end, salt_commitment]
-            builder.assigned_instances[0].push(salted_start);
-            builder.assigned_instances[0].push(salted_end);
+            // Public instances [salted_start_block_id, salted_end_block_id, salt_commitment]
+            builder.assigned_instances[0].push(salted_start_block_id);
+            builder.assigned_instances[0].push(salted_end_block_id);
             builder.assigned_instances[0].push(salt_commitment);
         }
 
@@ -364,9 +364,9 @@ impl Circuit<Fr> for MultiHopProofCircuit {
 //
 // Phase B keeps every per-hop constraint from Phase A and adds:
 // - 5 hops, each constrained exactly as in Phase A
-// - `ctx.constrain_equal(hops[i].salted_end, hops[i+1].salted_start)` for
+// - `ctx.constrain_equal(hops[i].salted_end_block_id, hops[i+1].salted_start_block_id)` for
 //   i in 0..4 (intra-snark continuity)
-// - Public instances: `[hops[0].salted_start, hops[4].salted_end,
+// - Public instances: `[hops[0].salted_start_block_id, hops[4].salted_end_block_id,
 //   salt_commitment]`
 //
 // Phase A remains in this file as a regression-checked single-hop scaffold.
@@ -483,7 +483,7 @@ impl Circuit<Fr> for MultiHopProofCircuitB {
             let mut builder = self.base_circuit_builder.borrow_mut();
             let range = builder.range_chip();
 
-            let (first_salted_start, last_salted_end, salt_commitment) = {
+            let (first_salted_start_block_id, last_salted_end_block_id, salt_commitment) = {
                 let gate = range.gate();
                 let ctx = builder.pool(0).main();
                 let sha256_chip = Sha256Chip::new(&range);
@@ -582,21 +582,21 @@ impl Circuit<Fr> for MultiHopProofCircuitB {
                         gate.inner_product(ctx, cells, powers_le_32)
                     };
 
-                    let salted_start = hasher.hash_fix_len_array(
+                    let salted_start_block_id = hasher.hash_fix_len_array(
                         ctx,
                         gate,
                         &[salt_assigned, parent_id_fr],
                     );
-                    let salted_end = hasher.hash_fix_len_array(
+                    let salted_end_block_id = hasher.hash_fix_len_array(
                         ctx,
                         gate,
                         &[salt_assigned, block_id_fr],
                     );
 
-                    hop_endpoints.push((salted_start, salted_end));
+                    hop_endpoints.push((salted_start_block_id, salted_end_block_id));
                 }
 
-                // Intra-snark continuity: hops[i].salted_end == hops[i+1].salted_start.
+                // Intra-snark continuity: hops[i].salted_end_block_id == hops[i+1].salted_start_block_id.
                 for i in 0..H_HOPS_PER_PROOF - 1 {
                     ctx.constrain_equal(&hop_endpoints[i].1, &hop_endpoints[i + 1].0);
                 }
@@ -608,8 +608,8 @@ impl Circuit<Fr> for MultiHopProofCircuitB {
                 )
             };
 
-            builder.assigned_instances[0].push(first_salted_start);
-            builder.assigned_instances[0].push(last_salted_end);
+            builder.assigned_instances[0].push(first_salted_start_block_id);
+            builder.assigned_instances[0].push(last_salted_end_block_id);
             builder.assigned_instances[0].push(salt_commitment);
         }
 
@@ -624,19 +624,19 @@ impl Circuit<Fr> for MultiHopProofCircuitB {
 // ===========================================================================
 //
 // Differences vs Phase B:
-// - `PhaseCHopWitness` carries `is_active: bool` plus explicit `salted_start`
-//   and `salted_end` (the synth chain's authoritative endpoints — needed
+// - `PhaseCHopWitness` carries `is_active: bool` plus explicit `salted_start_block_id`
+//   and `salted_end_block_id` (the synth chain's authoritative endpoints — needed
 //   because inactive padding hops carry the terminal value, not
 //   `Poseidon(salt, 0)` which the Phase B derivation would compute from the
 //   zeroed `parent_id`/`block_id` witness).
 // - Per-hop equality constraints are gated by `is_active`:
 //   * ref-tree:   `(cur_fr - l7_fr) * is_active == 0`
 //   * SHA-256:    `(cur_bytes[i] - block_id_bytes[i]) * is_active == 0`
-//   * salted endpoints: `(salted_start - Poseidon(salt, parent_id_fr)) *
+//   * salted endpoints: `(salted_start_block_id - Poseidon(salt, parent_id_fr)) *
 //                        is_active == 0` (and similarly for end)
-// - For inactive hops: `(salted_start - salted_end) * (1 - is_active) == 0`
+// - For inactive hops: `(salted_start_block_id - salted_end_block_id) * (1 - is_active) == 0`
 //   so padding propagates the terminal value.
-// - Continuity `hops[i].salted_end == hops[i+1].salted_start` stays
+// - Continuity `hops[i].salted_end_block_id == hops[i+1].salted_start_block_id` stays
 //   unconditional (works for both active and inactive transitions).
 // - `is_active` is range-constrained to {0,1} via `gate.assert_bit`.
 
@@ -648,8 +648,8 @@ pub struct PhaseCHopWitness {
     pub l7: [u8; 32],
     pub block_merkle_leaf_proof_l7: [[u8; 32]; BLOCK_MERKLE_DEPTH],
     pub proof_block_ref_inner_path: [[u8; 32]; MAX_PROOF_BLOCK_REFS_DEPTH],
-    pub salted_start: Fr,
-    pub salted_end: Fr,
+    pub salted_start_block_id: Fr,
+    pub salted_end_block_id: Fr,
 }
 
 pub struct MultiHopProofCircuitC {
@@ -712,8 +712,8 @@ impl Circuit<Fr> for MultiHopProofCircuitC {
             l7: [0u8; 32],
             block_merkle_leaf_proof_l7: [[0u8; 32]; BLOCK_MERKLE_DEPTH],
             proof_block_ref_inner_path: [[0u8; 32]; MAX_PROOF_BLOCK_REFS_DEPTH],
-            salted_start: Fr::zero(),
-            salted_end: Fr::zero(),
+            salted_start_block_id: Fr::zero(),
+            salted_end_block_id: Fr::zero(),
         };
         let hops: [PhaseCHopWitness; H_HOPS_PER_PROOF] =
             std::array::from_fn(|_| dummy_hop());
@@ -763,7 +763,7 @@ impl Circuit<Fr> for MultiHopProofCircuitC {
             let mut builder = self.base_circuit_builder.borrow_mut();
             let range = builder.range_chip();
 
-            let (first_salted_start, last_salted_end, salt_commitment) = {
+            let (first_salted_start_block_id, last_salted_end_block_id, salt_commitment) = {
                 let gate = range.gate();
                 let ctx = builder.pool(0).main();
                 let sha256_chip = Sha256Chip::new(&range);
@@ -910,14 +910,14 @@ impl Circuit<Fr> for MultiHopProofCircuitC {
 
                     // Witness the salted endpoints (authoritative for both
                     // active and inactive hops).
-                    let salted_start_w = ctx.load_witness(hop.salted_start);
-                    let salted_end_w = ctx.load_witness(hop.salted_end);
+                    let salted_start_block_id_w = ctx.load_witness(hop.salted_start_block_id);
+                    let salted_end_block_id_w = ctx.load_witness(hop.salted_end_block_id);
 
-                    // Active-gated: salted_start == start_computed.
+                    // Active-gated: salted_start_block_id == start_computed.
                     {
                         let diff = gate.sub(
                             ctx,
-                            QuantumCell::Existing(salted_start_w),
+                            QuantumCell::Existing(salted_start_block_id_w),
                             QuantumCell::Existing(start_computed),
                         );
                         let gated = gate.mul(
@@ -927,11 +927,11 @@ impl Circuit<Fr> for MultiHopProofCircuitC {
                         );
                         gate.assert_is_const(ctx, &gated, &Fr::zero());
                     }
-                    // Active-gated: salted_end == end_computed.
+                    // Active-gated: salted_end_block_id == end_computed.
                     {
                         let diff = gate.sub(
                             ctx,
-                            QuantumCell::Existing(salted_end_w),
+                            QuantumCell::Existing(salted_end_block_id_w),
                             QuantumCell::Existing(end_computed),
                         );
                         let gated = gate.mul(
@@ -941,13 +941,13 @@ impl Circuit<Fr> for MultiHopProofCircuitC {
                         );
                         gate.assert_is_const(ctx, &gated, &Fr::zero());
                     }
-                    // Inactive-gated: salted_start == salted_end (propagate
+                    // Inactive-gated: salted_start_block_id == salted_end_block_id (propagate
                     // terminal value through padding hops).
                     {
                         let diff = gate.sub(
                             ctx,
-                            QuantumCell::Existing(salted_start_w),
-                            QuantumCell::Existing(salted_end_w),
+                            QuantumCell::Existing(salted_start_block_id_w),
+                            QuantumCell::Existing(salted_end_block_id_w),
                         );
                         let gated = gate.mul(
                             ctx,
@@ -957,7 +957,7 @@ impl Circuit<Fr> for MultiHopProofCircuitC {
                         gate.assert_is_const(ctx, &gated, &Fr::zero());
                     }
 
-                    hop_endpoints.push((salted_start_w, salted_end_w));
+                    hop_endpoints.push((salted_start_block_id_w, salted_end_block_id_w));
                 }
 
                 // Unconditional continuity (works across active/inactive).
@@ -972,8 +972,8 @@ impl Circuit<Fr> for MultiHopProofCircuitC {
                 )
             };
 
-            builder.assigned_instances[0].push(first_salted_start);
-            builder.assigned_instances[0].push(last_salted_end);
+            builder.assigned_instances[0].push(first_salted_start_block_id);
+            builder.assigned_instances[0].push(last_salted_end_block_id);
             builder.assigned_instances[0].push(salt_commitment);
         }
 
@@ -1029,8 +1029,8 @@ mod tests {
         // === Expected publics ===
         let salt = compute_salt_native(sk_u);
         let salt_commitment = compute_salt_commitment_native(salt);
-        let salted_start = compute_salted_block_id_native(salt, &parent_id);
-        let salted_end = compute_salted_block_id_native(salt, &block_id);
+        let salted_start_block_id = compute_salted_block_id_native(salt, &parent_id);
+        let salted_end_block_id = compute_salted_block_id_native(salt, &block_id);
 
         // === Circuit params ===
         // Phase A uses 3 SHA-256s (~354k advice cells each) + ~10 Poseidon
@@ -1046,7 +1046,7 @@ mod tests {
         };
 
         let circuit = MultiHopProofCircuit::new(sk_u, hop, params);
-        let instances = vec![vec![salted_start, salted_end, salt_commitment]];
+        let instances = vec![vec![salted_start_block_id, salted_end_block_id, salt_commitment]];
         let prover = MockProver::<Fr>::run(K, &circuit, instances).unwrap();
         prover.assert_satisfied();
     }
@@ -1081,15 +1081,15 @@ mod tests {
             }
         });
 
-        // Expected publics: first hop's salted_start, last hop's salted_end,
+        // Expected publics: first hop's salted_start_block_id, last hop's salted_end_block_id,
         // salt_commitment.
-        let first_salted_start = snark0.hops[0].salted_start;
-        let last_salted_end = snark0.hops[H_HOPS_PER_PROOF - 1].salted_end;
+        let first_salted_start_block_id = snark0.hops[0].salted_start_block_id;
+        let last_salted_end_block_id = snark0.hops[H_HOPS_PER_PROOF - 1].salted_end_block_id;
         let salt_commitment = snark0.salt_commitment;
 
         // Sanity: continuity holds in the synth chain (the circuit will assert it).
         for i in 0..H_HOPS_PER_PROOF - 1 {
-            assert_eq!(snark0.hops[i].salted_end, snark0.hops[i + 1].salted_start);
+            assert_eq!(snark0.hops[i].salted_end_block_id, snark0.hops[i + 1].salted_start_block_id);
         }
 
         // Sizing: Phase A used 8 cols for 3 SHA-256s. Phase B has 15 SHA-256s
@@ -1105,7 +1105,7 @@ mod tests {
         };
 
         let circuit = MultiHopProofCircuitB::new(chain.sk_u, phase_a_hops, params);
-        let instances = vec![vec![first_salted_start, last_salted_end, salt_commitment]];
+        let instances = vec![vec![first_salted_start_block_id, last_salted_end_block_id, salt_commitment]];
         let prover = MockProver::<Fr>::run(K, &circuit, instances).unwrap();
         prover.assert_satisfied();
     }
@@ -1127,8 +1127,8 @@ mod tests {
             l7: h.block.block_merkle_tree_leaves[7],
             block_merkle_leaf_proof_l7: h.block_merkle_leaf_proof_l7,
             proof_block_ref_inner_path: h.proof_block_ref_inner_path,
-            salted_start: h.salted_start,
-            salted_end: h.salted_end,
+            salted_start_block_id: h.salted_start_block_id,
+            salted_end_block_id: h.salted_end_block_id,
         }
     }
 
@@ -1154,13 +1154,13 @@ mod tests {
         let phase_c_hops: [PhaseCHopWitness; H_HOPS_PER_PROOF] =
             std::array::from_fn(|i| hop_to_phase_c(&snark0.hops[i]));
 
-        let first_salted_start = snark0.hops[0].salted_start;
-        let last_salted_end = snark0.hops[H_HOPS_PER_PROOF - 1].salted_end;
+        let first_salted_start_block_id = snark0.hops[0].salted_start_block_id;
+        let last_salted_end_block_id = snark0.hops[H_HOPS_PER_PROOF - 1].salted_end_block_id;
         let salt_commitment = snark0.salt_commitment;
 
         // Sanity: continuity holds.
         for i in 0..H_HOPS_PER_PROOF - 1 {
-            assert_eq!(snark0.hops[i].salted_end, snark0.hops[i + 1].salted_start);
+            assert_eq!(snark0.hops[i].salted_end_block_id, snark0.hops[i + 1].salted_start_block_id);
         }
 
         // Phase C adds ~34 mul + ~34 sub per hop on top of Phase B work.
@@ -1176,7 +1176,7 @@ mod tests {
         };
 
         let circuit = MultiHopProofCircuitC::new(chain.sk_u, phase_c_hops, params);
-        let instances = vec![vec![first_salted_start, last_salted_end, salt_commitment]];
+        let instances = vec![vec![first_salted_start_block_id, last_salted_end_block_id, salt_commitment]];
         let prover = MockProver::<Fr>::run(K, &circuit, instances).unwrap();
         prover.assert_satisfied();
     }
@@ -1195,8 +1195,8 @@ mod tests {
         let snark0 = &snarks[0];
         for hop in snark0.hops.iter() {
             assert!(!hop.is_active);
-            assert_eq!(hop.salted_start, hop.salted_end);
-            assert_eq!(hop.salted_start, chain.bundle_head_salted);
+            assert_eq!(hop.salted_start_block_id, hop.salted_end_block_id);
+            assert_eq!(hop.salted_start_block_id, chain.bundle_head_salted);
         }
 
         let phase_c_hops: [PhaseCHopWitness; H_HOPS_PER_PROOF] =

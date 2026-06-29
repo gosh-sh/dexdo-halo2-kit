@@ -43,9 +43,9 @@ fn phase3_dex_final_instances(salt_commitment: Fr, head_salted_block_id: Fr) -> 
     ]
 }
 
-/// MultiHop instance shape: `[salted_start, salted_end, salt_commitment]`.
-fn multihop_instances(salted_start: Fr, salted_end: Fr, salt_commitment: Fr) -> Vec<Fr> {
-    vec![salted_start, salted_end, salt_commitment]
+/// MultiHop instance shape: `[salted_start_block_id, salted_end_block_id, salt_commitment]`.
+fn multihop_instances(salted_start_block_id: Fr, salted_end_block_id: Fr, salt_commitment: Fr) -> Vec<Fr> {
+    vec![salted_start_block_id, salted_end_block_id, salt_commitment]
 }
 
 /// Generate the full instance vectors for a synthetic 5-snark bundle.
@@ -165,7 +165,7 @@ fn tampered_salt_commitment_in_hop2_rejected() {
     }
 }
 
-/// Tamper with a hop's `salted_start` — verifier must reject with
+/// Tamper with a hop's `salted_start_block_id` — verifier must reject with
 /// `ContinuityBreak`.
 #[test]
 fn tampered_continuity_break_rejected() {
@@ -174,7 +174,7 @@ fn tampered_continuity_break_rejected() {
 
     let (dex_final, mut hops) = synthesize_bundle_instances(sk_u, &block_ids);
 
-    // Break the chain between hop[1] and hop[2]: change hop[2]'s salted_start.
+    // Break the chain between hop[1] and hop[2]: change hop[2]'s salted_start_block_id.
     hops[2][0] = Fr::from(0xBADu64);
 
     let bundle = build_bundle(dex_final, hops);
@@ -188,7 +188,7 @@ fn tampered_continuity_break_rejected() {
 }
 
 /// Tamper with the DexFinal's head (`event_salted_block_id`, instance [6])
-/// so it no longer equals hop[0]'s `salted_start` — must reject with
+/// so it no longer equals hop[0]'s `salted_start_block_id` — must reject with
 /// `HeadLinkBreak`.
 #[test]
 fn tampered_dex_final_head_rejected() {
@@ -210,7 +210,7 @@ fn tampered_dex_final_head_rejected() {
 }
 
 /// All-inactive hops (T=0 case, §6.4): the chain degenerates to
-/// `salted_start == salted_end == event_salted_block_id`. The verifier
+/// `salted_start_block_id == salted_end_block_id == event_salted_block_id`. The verifier
 /// accepts; this confirms the verifier's continuity check doesn't
 /// over-constrain the "no real hops" case.
 #[test]

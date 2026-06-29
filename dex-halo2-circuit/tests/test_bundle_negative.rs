@@ -18,9 +18,9 @@
 //! proofs' instance vectors plus synthetic DexFinal entries:
 //!
 //!   * `SaltCommitmentMismatch` — bundle mixes A and B snarks.
-//!   * `HeadLinkBreak` — DexFinal head ≠ first hop's `salted_start`.
+//!   * `HeadLinkBreak` — DexFinal head ≠ first hop's `salted_start_block_id`.
 //!   * `ContinuityBreak` — `A.snark[0]` placed at positions 1 *and* 2;
-//!     its `salted_end` ≠ its own `salted_start`, so the continuity gate
+//!     its `salted_end_block_id` ≠ its own `salted_start_block_id`, so the continuity gate
 //!     fires.
 //!   * `DexFinalNotFirst` — DexFinal placed after a MultiHop.
 //!   * `DuplicateDexFinal` — two DexFinal proofs in the bundle.
@@ -82,8 +82,8 @@ fn hop_to_phase_c(
         l7: h.block.block_merkle_tree_leaves[7],
         block_merkle_leaf_proof_l7: h.block_merkle_leaf_proof_l7,
         proof_block_ref_inner_path: h.proof_block_ref_inner_path,
-        salted_start: h.salted_start,
-        salted_end: h.salted_end,
+        salted_start_block_id: h.salted_start_block_id,
+        salted_end_block_id: h.salted_end_block_id,
     }
 }
 
@@ -133,8 +133,8 @@ fn bundle_e2e_negatives() {
      -> Vec<Fr> {
         let hops: [PhaseCHopWitness; H_HOPS_PER_PROOF] =
             std::array::from_fn(|i| hop_to_phase_c(&hops_full[i]));
-        let first = hops_full[0].salted_start;
-        let last = hops_full[H_HOPS_PER_PROOF - 1].salted_end;
+        let first = hops_full[0].salted_start_block_id;
+        let last = hops_full[H_HOPS_PER_PROOF - 1].salted_end_block_id;
         // Compute salt_commitment from chain (always equal to chain.salt_commitment
         // for hops produced by synth_chain).
         let salt_commitment = dex_halo2_circuit::salt::compute_salt_commitment_native(
@@ -205,19 +205,19 @@ fn bundle_e2e_negatives() {
     }
 
     // -- 8. NEGATIVE: ContinuityBreak ------------------------------------
-    // Re-use A.snark[0] twice. Its salted_end (= salted(b_5)) ≠ its
-    // salted_start (= salted(b_0)) → continuity at idx 1→2 fails.
+    // Re-use A.snark[0] twice. Its salted_end_block_id (= salted(b_5)) ≠ its
+    // salted_start_block_id (= salted(b_0)) → continuity at idx 1→2 fails.
     {
         let bundle = vec![dex_a.clone(), multihop_a.clone(), multihop_a.clone()];
         match verify_bundle(&bundle) {
             Err(BundleError::ContinuityBreak {
                 between_hops,
-                salted_end,
-                salted_start,
+                salted_end_block_id,
+                salted_start_block_id,
             }) => {
                 assert_eq!(between_hops, (1, 2));
-                assert_eq!(salted_end, snarks_a[0].hops[H_HOPS_PER_PROOF - 1].salted_end);
-                assert_eq!(salted_start, snarks_a[0].hops[0].salted_start);
+                assert_eq!(salted_end_block_id, snarks_a[0].hops[H_HOPS_PER_PROOF - 1].salted_end_block_id);
+                assert_eq!(salted_start_block_id, snarks_a[0].hops[0].salted_start_block_id);
                 println!("[neg] ContinuityBreak between (1, 2) ✓");
             }
             other => panic!("expected ContinuityBreak, got {:?}", other),

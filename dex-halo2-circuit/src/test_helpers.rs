@@ -300,7 +300,7 @@ pub struct SynthChain {
 /// - `proof_block_ref_inner_path` opens leaf 0 of the ref-tree against L7
 ///
 /// Inactive padding hops (`is_active = false`) carry
-/// `salted_start == salted_end == hops[k_hops-1].salted_end` so RootPN's
+/// `salted_start_block_id == salted_end_block_id == hops[k_hops-1].salted_end_block_id` so RootPN's
 /// continuity check holds.
 ///
 /// For `k_hops = 0` the chain degenerates: all `N_BUNDLE * H` hops inactive,
@@ -377,15 +377,15 @@ pub fn synth_chain(seed: u64, k_hops: usize) -> SynthChain {
         // Recompute salted endpoints since we replaced block_ids[i+1].
         // (block_ids[0..=i] are unchanged; future ones still random until
         // their loop iteration overwrites them.)
-        let salted_end = compute_salted_block_id_native(salt, &computed_block_id);
+        let salted_end_block_id = compute_salted_block_id_native(salt, &computed_block_id);
 
         let block_merkle_leaf_proof_l7 = block_merkle_leaf_proof(&leaves, 7);
         let proof_block_ref_inner_path = proof_block_ref_inner_path_native(&proof_block_refs, 0);
 
-        let salted_start = if i == 0 {
+        let salted_start_block_id = if i == 0 {
             bundle_head_salted
         } else {
-            // Previous hop's salted_end (which is `salted_block_id of
+            // Previous hop's salted_end_block_id (which is `salted_block_id of
             // block_ids[i]`, the now-finalized block we just constructed in
             // iteration i-1).
             compute_salted_block_id_native(salt, &block_ids[i])
@@ -404,8 +404,8 @@ pub fn synth_chain(seed: u64, k_hops: usize) -> SynthChain {
             block_merkle_leaf_proof_l7,
             ref_index: 0,
             proof_block_ref_inner_path,
-            salted_start,
-            salted_end,
+            salted_start_block_id,
+            salted_end_block_id,
         });
     }
 
@@ -413,7 +413,7 @@ pub fn synth_chain(seed: u64, k_hops: usize) -> SynthChain {
     let final_terminal_salted = if k_hops == 0 {
         bundle_head_salted
     } else {
-        hops[k_hops - 1].salted_end
+        hops[k_hops - 1].salted_end_block_id
     };
     let _ = terminal_salted; // silence
 
@@ -435,8 +435,8 @@ pub fn synth_chain(seed: u64, k_hops: usize) -> SynthChain {
             block_merkle_leaf_proof_l7: zero_l7_proof,
             ref_index: 0,
             proof_block_ref_inner_path: zero_inner_path,
-            salted_start: final_terminal_salted,
-            salted_end: final_terminal_salted,
+            salted_start_block_id: final_terminal_salted,
+            salted_end_block_id: final_terminal_salted,
         });
     }
 
@@ -521,12 +521,12 @@ pub fn synth_chain_n(seed: u64, k_hops: usize, n_bundle: usize) -> SynthChain {
         let computed_block_id = block_merkle_root(&leaves);
         block_ids[i + 1] = computed_block_id;
 
-        let salted_end = compute_salted_block_id_native(salt, &computed_block_id);
+        let salted_end_block_id = compute_salted_block_id_native(salt, &computed_block_id);
 
         let block_merkle_leaf_proof_l7 = block_merkle_leaf_proof(&leaves, 7);
         let proof_block_ref_inner_path = proof_block_ref_inner_path_native(&proof_block_refs, 0);
 
-        let salted_start = if i == 0 {
+        let salted_start_block_id = if i == 0 {
             bundle_head_salted
         } else {
             compute_salted_block_id_native(salt, &block_ids[i])
@@ -542,15 +542,15 @@ pub fn synth_chain_n(seed: u64, k_hops: usize, n_bundle: usize) -> SynthChain {
             block_merkle_leaf_proof_l7,
             ref_index: 0,
             proof_block_ref_inner_path,
-            salted_start,
-            salted_end,
+            salted_start_block_id,
+            salted_end_block_id,
         });
     }
 
     let final_terminal_salted = if k_hops == 0 {
         bundle_head_salted
     } else {
-        hops[k_hops - 1].salted_end
+        hops[k_hops - 1].salted_end_block_id
     };
 
     while hops.len() < total_slots {
@@ -567,8 +567,8 @@ pub fn synth_chain_n(seed: u64, k_hops: usize, n_bundle: usize) -> SynthChain {
             block_merkle_leaf_proof_l7: zero_l7_proof,
             ref_index: 0,
             proof_block_ref_inner_path: zero_inner_path,
-            salted_start: final_terminal_salted,
-            salted_end: final_terminal_salted,
+            salted_start_block_id: final_terminal_salted,
+            salted_end_block_id: final_terminal_salted,
         });
     }
 
@@ -652,8 +652,8 @@ mod synth_chain_tests {
         assert_eq!(c.hops.len(), N_BUNDLE * H_HOPS_PER_PROOF);
         for h in &c.hops {
             assert!(!h.is_active);
-            assert_eq!(h.salted_start, c.bundle_head_salted);
-            assert_eq!(h.salted_end, c.bundle_head_salted);
+            assert_eq!(h.salted_start_block_id, c.bundle_head_salted);
+            assert_eq!(h.salted_end_block_id, c.bundle_head_salted);
         }
     }
 
@@ -664,11 +664,11 @@ mod synth_chain_tests {
         let c = synth_chain(0xBADBABE, 5);
 
         // Continuity: hops[0].start == head; hops[i].end == hops[i+1].start.
-        assert_eq!(c.hops[0].salted_start, c.bundle_head_salted);
+        assert_eq!(c.hops[0].salted_start_block_id, c.bundle_head_salted);
         for i in 0..N_BUNDLE * H_HOPS_PER_PROOF - 1 {
             assert_eq!(
-                c.hops[i].salted_end,
-                c.hops[i + 1].salted_start,
+                c.hops[i].salted_end_block_id,
+                c.hops[i + 1].salted_start_block_id,
                 "continuity broken between hop {i} and hop {}",
                 i + 1
             );
@@ -706,11 +706,11 @@ mod synth_chain_tests {
         }
 
         // Inactive hops sit at terminal.
-        let terminal = c.hops[4].salted_end;
+        let terminal = c.hops[4].salted_end_block_id;
         for i in 5..N_BUNDLE * H_HOPS_PER_PROOF {
             assert!(!c.hops[i].is_active);
-            assert_eq!(c.hops[i].salted_start, terminal);
-            assert_eq!(c.hops[i].salted_end, terminal);
+            assert_eq!(c.hops[i].salted_start_block_id, terminal);
+            assert_eq!(c.hops[i].salted_end_block_id, terminal);
         }
     }
 
@@ -748,7 +748,7 @@ mod synth_chain_tests {
         }
         // Strict continuity along the full 20-hop chain.
         for i in 0..19 {
-            assert_eq!(c.hops[i].salted_end, c.hops[i + 1].salted_start);
+            assert_eq!(c.hops[i].salted_end_block_id, c.hops[i + 1].salted_start_block_id);
         }
         let snarks = split_into_bundle_snarks(&c);
         for s in &snarks {

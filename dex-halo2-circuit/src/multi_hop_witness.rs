@@ -29,7 +29,7 @@
 //!   dense Merkle opening at `ref_index` proving the *parent* block id of the
 //!   hop chain.
 //! - A `is_active` flag (snark padding, §6.4 — inactive hops collapse to
-//!   `salted_start == salted_end == event_salted_block_id`).
+//!   `salted_start_block_id == salted_end_block_id == event_salted_block_id`).
 //!
 //! ## Production-wire-format gap (`TODO(stage-2c)`)
 //!
@@ -136,7 +136,7 @@ pub struct BlockWitness {
 #[derive(Clone, Debug)]
 pub struct HopWitness {
     /// Whether this hop slot is real or inactive padding (spec §6.4). When
-    /// `false`, the circuit constrains `salted_start == salted_end ==
+    /// `false`, the circuit constrains `salted_start_block_id == salted_end_block_id ==
     /// event_salted_block_id` and skips all openings below.
     pub is_active: bool,
 
@@ -159,15 +159,15 @@ pub struct HopWitness {
 
     /// The hop's start endpoint as the verifier sees it:
     /// `Poseidon([salt, bytes_to_fr(block_id_of_predecessor)])`.
-    pub salted_start: Fr,
+    pub salted_start_block_id: Fr,
 
     /// The hop's end endpoint:
     /// `Poseidon([salt, bytes_to_fr(block.block_id)])`.
-    pub salted_end: Fr,
+    pub salted_end_block_id: Fr,
 }
 
 /// One MultiHopProof snark's worth of witness data — `H_HOPS_PER_PROOF` hops,
-/// chained `hops[i].salted_end == hops[i+1].salted_start`.
+/// chained `hops[i].salted_end_block_id == hops[i+1].salted_start_block_id`.
 #[derive(Clone, Debug)]
 pub struct MultiHopProofWitness {
     pub hops: [HopWitness; H_HOPS_PER_PROOF],
