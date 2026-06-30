@@ -331,10 +331,10 @@ impl Circuit<Fr> for HopProofCircuit {
                 //   c2_r = LE(ref_block_id[28..32])     ip(., 256^[0..4])
                 // Both layouts are computed unconditionally; the final triple
                 // is `select`ed on `is_parent_slot`.
-                let ref_leaf_c0_p = ctx.load_constant(ref_leaf_parent_tag_chunk0_fr());
-                let ref_leaf_c0_r = ctx.load_constant(ref_leaf_ref_tag_chunk0_fr());
-                let ref_leaf_tag_lo_p = ctx.load_constant(ref_leaf_parent_tag_chunk1_lo_fr());
-                let ref_leaf_tag_lo_r = ctx.load_constant(ref_leaf_ref_tag_chunk1_lo_fr());
+                let ref_leaf_c0_parent = ctx.load_constant(ref_leaf_parent_tag_chunk0_fr());
+                let ref_leaf_c0_ref = ctx.load_constant(ref_leaf_ref_tag_chunk0_fr());
+                let ref_leaf_c1_tag_parent = ctx.load_constant(ref_leaf_parent_tag_chunk1_lo_fr());
+                let ref_leaf_c1_tag_ref = ctx.load_constant(ref_leaf_ref_tag_chunk1_lo_fr());
                 let pow_256_6 = ctx.load_constant(Fr::from(256u64).pow([6u64]));
                 let pow_256_3 = ctx.load_constant(Fr::from(256u64).pow([3u64]));
                 let powers_le_25: Vec<QuantumCell<Fr>> = (0..25)
@@ -363,12 +363,12 @@ impl Circuit<Fr> for HopProofCircuit {
                     QuantumCell::Existing(ref_block_id_lo25),
                     QuantumCell::Existing(pow_256_6),
                 );
-                let ref_leaf_c1_p = gate.add(
+                let ref_leaf_c1_parent = gate.add(
                     ctx,
-                    QuantumCell::Existing(ref_leaf_tag_lo_p),
+                    QuantumCell::Existing(ref_leaf_c1_tag_parent),
                     QuantumCell::Existing(ref_block_id_lo25_shifted),
                 );
-                let ref_leaf_c2_p = {
+                let ref_leaf_c2_parent = {
                     let cells: Vec<QuantumCell<Fr>> = ref_block_id_bytes[25..32]
                         .iter()
                         .map(|c| QuantumCell::Existing(*c))
@@ -389,12 +389,12 @@ impl Circuit<Fr> for HopProofCircuit {
                     QuantumCell::Existing(ref_block_id_lo28),
                     QuantumCell::Existing(pow_256_3),
                 );
-                let ref_leaf_c1_r = gate.add(
+                let ref_leaf_c1_ref = gate.add(
                     ctx,
-                    QuantumCell::Existing(ref_leaf_tag_lo_r),
+                    QuantumCell::Existing(ref_leaf_c1_tag_ref),
                     QuantumCell::Existing(ref_block_id_lo28_shifted),
                 );
-                let ref_leaf_c2_r = {
+                let ref_leaf_c2_ref = {
                     let cells: Vec<QuantumCell<Fr>> = ref_block_id_bytes[28..32]
                         .iter()
                         .map(|c| QuantumCell::Existing(*c))
@@ -404,20 +404,20 @@ impl Circuit<Fr> for HopProofCircuit {
 
                 let ref_leaf_c0 = gate.select(
                     ctx,
-                    QuantumCell::Existing(ref_leaf_c0_p),
-                    QuantumCell::Existing(ref_leaf_c0_r),
+                    QuantumCell::Existing(ref_leaf_c0_parent),
+                    QuantumCell::Existing(ref_leaf_c0_ref),
                     is_parent_slot,
                 );
                 let ref_leaf_c1 = gate.select(
                     ctx,
-                    QuantumCell::Existing(ref_leaf_c1_p),
-                    QuantumCell::Existing(ref_leaf_c1_r),
+                    QuantumCell::Existing(ref_leaf_c1_parent),
+                    QuantumCell::Existing(ref_leaf_c1_ref),
                     is_parent_slot,
                 );
                 let ref_leaf_c2 = gate.select(
                     ctx,
-                    QuantumCell::Existing(ref_leaf_c2_p),
-                    QuantumCell::Existing(ref_leaf_c2_r),
+                    QuantumCell::Existing(ref_leaf_c2_parent),
+                    QuantumCell::Existing(ref_leaf_c2_ref),
                     is_parent_slot,
                 );
                 let ref_leaf_fr = hasher.hash_fix_len_array(
