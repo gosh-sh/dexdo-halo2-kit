@@ -1188,8 +1188,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "tvm_block 2.24.21",
- "tvm_types 2.24.21",
+ "tvm_block 3.0.2",
+ "tvm_types 3.0.2",
 ]
 
 [[package]]
@@ -1780,8 +1780,8 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.18",
- "tvm_block 2.24.21",
- "tvm_types 2.24.21",
+ "tvm_block 3.0.2",
+ "tvm_types 3.0.2",
 ]
 
 [[package]]
@@ -4079,8 +4079,8 @@ dependencies = [
 
 [[package]]
 name = "tvm_block"
-version = "2.24.21"
-source = "git+https://github.com/tvmlabs/tvm-sdk#9fe59570de80d9fa8a3764edf1556e4faed040b6"
+version = "3.0.2"
+source = "git+https://github.com/tvmlabs/tvm-sdk?tag=v3.0.3-rc.an#8e0ef4bffd59983adb90474b280b1a515999cdf2"
 dependencies = [
  "anyhow",
  "base64",
@@ -4093,7 +4093,7 @@ dependencies = [
  "num-traits",
  "sha2 0.10.9",
  "thiserror 2.0.18",
- "tvm_types 2.24.21",
+ "tvm_types 3.0.2",
 ]
 
 [[package]]
@@ -4129,8 +4129,8 @@ dependencies = [
 
 [[package]]
 name = "tvm_types"
-version = "2.24.21"
-source = "git+https://github.com/tvmlabs/tvm-sdk#9fe59570de80d9fa8a3764edf1556e4faed040b6"
+version = "3.0.2"
+source = "git+https://github.com/tvmlabs/tvm-sdk?tag=v3.0.3-rc.an#8e0ef4bffd59983adb90474b280b1a515999cdf2"
 dependencies = [
  "aes",
  "anyhow",
