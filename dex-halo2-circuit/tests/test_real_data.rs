@@ -364,7 +364,7 @@ fn compute_instances(parsed: &ParsedFixture) -> Vec<Fr> {
 /// Append the 3 trailing public inputs to the instance vector (Phase 3):
 ///   [4] ephemeral_pubkey
 ///   [5] salt_commitment       = Poseidon([Poseidon([DOMAIN_TAG_HOP_SALT_FR, sk_u])])
-///   [6] event_salted_block_id = Poseidon([salt, bytes_to_fr(block_id)])
+///   [6] event_salted_block_id = bytes_to_fr(hash_bytes_flat(fr_to_bytes(salt) ‖ block_id))
 fn append_trailing_publics(
     instances: &mut Vec<Fr>,
     ephemeral_pubkey: Fr,

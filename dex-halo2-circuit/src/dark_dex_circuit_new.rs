@@ -93,110 +93,13 @@ pub(crate) fn poseidon_hash_96_native(a: &[u8; 32], b: &[u8; 32], c: &[u8; 32]) 
     fr_to_bytes(hash)
 }
 
-/// In-circuit: Poseidon hash of 3 × 32-byte inputs with algebraic linking.
+/// Byte-flat Poseidon over `a ‖ b ‖ c` (96 bytes total).
 ///
-/// Given assigned Fr values `a_fr, b_fr, c_fr` (LE packing of 32-byte inputs)
-/// and the corresponding native bytes, loads 6 intermediate witnesses,
-/// constrains the 31-byte chunking decomposition, and returns the Poseidon hash.
-///
-/// ## Algebraic linking (a = buf[0..32], b = buf[32..64], c = buf[64..96]):
-///   c0 + hi_a · 2^248 = a_fr       (hi_a = a[31], 1 byte)
-///   c1 = hi_a + 256 · low_b        (low_b = b[0..30], 30 bytes)
-///   low_b + hi_b · 2^240 = b_fr    (hi_b = b[30..32], 2 bytes)
-///   c2 = hi_b + 2^16 · low_c       (low_c = c[0..29], 29 bytes)
-///   low_c + c3 · 2^232 = c_fr      (c3 = c[29..32], 3 bytes)
-///
-/// ## Status
-/// Superseded by [`poseidon_hash_96_circuit_bytes`] (the byte-flat sibling).
-/// The Fr-input form admits `chunks_int ≡ Fr (mod p)` malleability for any
-/// caller that doesn't already pin the Fr inputs to a canonical byte form;
-/// all in-tree callers have migrated. Retained for documentation / parity.
-#[allow(dead_code)]
-fn poseidon_hash_96_circuit(
-    ctx: &mut Context<Fr>,
-    range: &impl RangeInstructions<Fr>,
-    hasher: &PoseidonHasher<Fr, T, RATE>,
-    a_fr: AssignedValue<Fr>,
-    b_fr: AssignedValue<Fr>,
-    c_fr: AssignedValue<Fr>,
-    a_bytes: &[u8; 32],
-    b_bytes: &[u8; 32],
-    c_bytes: &[u8; 32],
-) -> AssignedValue<Fr> {
-    let gate = range.gate();
-
-    // --- Off-circuit: compute chunks and intermediates ---
-    let mut buf = [0u8; 96];
-    buf[..32].copy_from_slice(a_bytes);
-    buf[32..64].copy_from_slice(b_bytes);
-    buf[64..96].copy_from_slice(c_bytes);
-    let (c0_val, _c1_val, _c2_val, c3_val) = chunk_96_bytes_to_fr(&buf);
-
-    let hi_a_val = Fr::from(a_bytes[31] as u64);
-
-    let mut low_b_buf = [0u8; 32];
-    low_b_buf[..30].copy_from_slice(&b_bytes[..30]);
-    let low_b_val = bytes_to_fr(&low_b_buf);
-
-    let hi_b_val = Fr::from(b_bytes[30] as u64 + (b_bytes[31] as u64) * 256);
-
-    let mut low_c_buf = [0u8; 32];
-    low_c_buf[..29].copy_from_slice(&c_bytes[..29]);
-    let low_c_val = bytes_to_fr(&low_c_buf);
-
-    // --- Load 6 witnesses ---
-    let c0 = ctx.load_witness(c0_val);
-    let hi_a = ctx.load_witness(hi_a_val);
-    let low_b = ctx.load_witness(low_b_val);
-    let hi_b = ctx.load_witness(hi_b_val);
-    let low_c = ctx.load_witness(low_c_val);
-    let c3 = ctx.load_witness(c3_val);
-
-    // --- 5 linking constraints ---
-    // 1. c0 + hi_a * 2^248 = a_fr
-    let pow_248 = QuantumCell::Constant(Fr::from(2u64).pow([248]));
-    let sum_a = gate.mul_add(ctx, hi_a, pow_248, c0);
-    ctx.constrain_equal(&sum_a, &a_fr);
-
-    // 2. c1 = hi_a + 256 * low_b  (derived, not a witness)
-    let c256 = QuantumCell::Constant(Fr::from(256u64));
-    let c1 = gate.mul_add(ctx, low_b, c256, hi_a);
-
-    // 3. low_b + hi_b * 2^240 = b_fr
-    let pow_240 = QuantumCell::Constant(Fr::from(2u64).pow([240]));
-    let sum_b = gate.mul_add(ctx, hi_b, pow_240, low_b);
-    ctx.constrain_equal(&sum_b, &b_fr);
-
-    // 4. c2 = hi_b + 2^16 * low_c  (derived, not a witness)
-    let pow_16 = QuantumCell::Constant(Fr::from(1u64 << 16));
-    let c2 = gate.mul_add(ctx, low_c, pow_16, hi_b);
-
-    // 5. low_c + c3 * 2^232 = c_fr
-    let pow_232 = QuantumCell::Constant(Fr::from(2u64).pow([232]));
-    let sum_c = gate.mul_add(ctx, c3, pow_232, low_c);
-    ctx.constrain_equal(&sum_c, &c_fr);
-
-    // --- 6 range checks ---
-    range.range_check(ctx, c0, 248);    // 31 bytes
-    range.range_check(ctx, hi_a, 8);    // 1 byte
-    range.range_check(ctx, low_b, 240); // 30 bytes
-    range.range_check(ctx, hi_b, 16);   // 2 bytes
-    range.range_check(ctx, low_c, 232); // 29 bytes
-    range.range_check(ctx, c3, 24);     // 3 bytes
-
-    // --- Poseidon hash ---
-    hasher.hash_fix_len_array(ctx, gate, &[c0, c1, c2, c3])
-}
-
-/// Byte-flat Poseidon over `a ‖ b ‖ c` (96 bytes total) — sound sibling of
-/// `poseidon_hash_96_circuit`.
-///
-/// Unlike `poseidon_hash_96_circuit`, this takes the byte cells directly
-/// (with per-byte `range_check 8`), so each chunk is uniquely determined
-/// by the witness. No `chunks_int ≡ Fr (mod p)` malleability: the integer
-/// formed by `a_bytes ‖ b_bytes ‖ c_bytes` is fully pinned by the per-byte
-/// range checks, and every chunk is < 2^248 < p so equals its integer
-/// value in Fp.
+/// Takes byte cells directly (with per-byte `range_check 8`), so each chunk
+/// is uniquely determined by the witness. No `chunks_int ≡ Fr (mod p)`
+/// malleability: the integer formed by `a_bytes ‖ b_bytes ‖ c_bytes` is
+/// fully pinned by the per-byte range checks, and every chunk is < 2^248 < p
+/// so equals its integer value in Fp.
 ///
 /// Chunk layout (matching `hash_bytes_flat` / `chunk_96_bytes_to_fr`):
 ///   c0 = LE(buf[0..31])   c1 = LE(buf[31..62])

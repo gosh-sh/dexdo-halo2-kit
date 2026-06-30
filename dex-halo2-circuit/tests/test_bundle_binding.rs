@@ -59,7 +59,7 @@ fn synthesize_bundle_instances(sk_u: Fr, block_ids: &[[u8; 32]; 5]) -> (Vec<Fr>,
     let salt = compute_salt_native(sk_u);
     let sc = compute_salt_commitment_native(salt);
 
-    // Pre-compute Poseidon([salt, bytes_to_fr(b_id)]) for every block_id.
+    // Pre-compute compute_salted_block_id_native(salt, b_id) for every block_id.
     let salted: Vec<Fr> = block_ids
         .iter()
         .map(|b| compute_salted_block_id_native(salt, b))
