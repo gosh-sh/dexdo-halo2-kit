@@ -1,10 +1,10 @@
-//! Stage 2e — real-prover bundle negative tests.
+//! Real-prover bundle negative tests.
 //!
 //! `bundle_verifier.rs` already has thorough negative coverage at the
 //! synthetic instance-vector level. This test re-runs the same gate checks
 //! against bundles assembled from **real KZG proofs**, to confirm that:
 //!
-//!   * a snark genuinely produced by `MultiHopProofCircuitC` (and accepted
+//!   * a snark genuinely produced by `MultiHopProofCircuit` (and accepted
 //!     by `check_proof_with_instances`) cannot be smuggled into a bundle
 //!     that violates any of `RootPN.sol`'s four acceptance checks; and
 //!   * the same proof's public instances trigger the same error path in
@@ -31,7 +31,7 @@
 use dex_halo2_circuit::bundle_verifier::{
     verify_bundle, BundleError, BundleProof, DEX_FINAL_LEN,
 };
-use dex_halo2_circuit::multi_hop_proof::{MultiHopProofCircuitC, PhaseCHopWitness};
+use dex_halo2_circuit::multi_hop_proof::{MultiHopProofCircuit, MultiHopWitness};
 use dex_halo2_circuit::multi_hop_witness::H_HOPS_PER_PROOF;
 use dex_halo2_circuit::test_helpers::{split_into_bundle_snarks, synth_chain};
 use halo2_base::gates::circuit::BaseCircuitParams;
@@ -67,15 +67,15 @@ fn synthetic_dex_final(salt_commitment: Fr, bundle_head_salted: Fr) -> BundlePro
     BundleProof::new_dex_final(instances)
 }
 
-fn hop_to_phase_c(
+fn hop_to_multi_hop(
     h: &dex_halo2_circuit::multi_hop_witness::HopWitness,
-) -> PhaseCHopWitness {
+) -> MultiHopWitness {
     let parent_id = if h.block.proof_block_refs.is_empty() {
         [0u8; 32]
     } else {
         h.block.proof_block_refs[0]
     };
-    PhaseCHopWitness {
+    MultiHopWitness {
         is_active: h.is_active,
         parent_id,
         block_id: h.block.block_id,
@@ -107,10 +107,10 @@ fn bundle_e2e_negatives() {
     println!("Generating SRS K={}...", K);
     let srs = gen_srs(K);
 
-    let keygen_hops: [PhaseCHopWitness; H_HOPS_PER_PROOF] =
-        std::array::from_fn(|i| hop_to_phase_c(&snarks_a[0].hops[i]));
+    let keygen_hops: [MultiHopWitness; H_HOPS_PER_PROOF] =
+        std::array::from_fn(|i| hop_to_multi_hop(&snarks_a[0].hops[i]));
     let keygen_circuit =
-        MultiHopProofCircuitC::new(chain_a.sk_u, keygen_hops, params.clone());
+        MultiHopProofCircuit::new(chain_a.sk_u, keygen_hops, params.clone());
 
     let t0 = Instant::now();
     let vk = keygen_vk(&srs, &keygen_circuit).expect("keygen_vk failed");
@@ -131,8 +131,8 @@ fn bundle_e2e_negatives() {
                                 H_HOPS_PER_PROOF],
                        label: &str|
      -> Vec<Fr> {
-        let hops: [PhaseCHopWitness; H_HOPS_PER_PROOF] =
-            std::array::from_fn(|i| hop_to_phase_c(&hops_full[i]));
+        let hops: [MultiHopWitness; H_HOPS_PER_PROOF] =
+            std::array::from_fn(|i| hop_to_multi_hop(&hops_full[i]));
         let first = hops_full[0].salted_start_block_id;
         let last = hops_full[H_HOPS_PER_PROOF - 1].salted_end_block_id;
         // Compute salt_commitment from chain (always equal to chain.salt_commitment
@@ -142,7 +142,7 @@ fn bundle_e2e_negatives() {
         );
         let instances = vec![first, last, salt_commitment];
 
-        let prover_circuit = MultiHopProofCircuitC::new_for_proving(
+        let prover_circuit = MultiHopProofCircuit::new_for_proving(
             chain_sk_u,
             hops,
             params.clone(),

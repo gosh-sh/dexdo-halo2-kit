@@ -266,14 +266,14 @@ pub fn build_two_level_tree(
 }
 
 // ---------------------------------------------------------------------------
-// Synthetic multi-hop chain generator (Stage 2b)
+// Synthetic multi-hop chain generator
 // ---------------------------------------------------------------------------
 
-/// Output of `synth_chain` — everything a Phase 4 bundle E2E test needs.
+/// Output of `synth_chain` — everything a bundle E2E test needs.
 pub struct SynthChain {
     /// `sk_u` chosen for the chain (random per call).
     pub sk_u: Fr,
-    /// Salt and salt_commitment derived from `sk_u` (canonical Phase 3 math).
+    /// Salt and salt_commitment derived from `sk_u` (canonical math from `salt.rs`).
     pub salt: Fr,
     pub salt_commitment: Fr,
     /// `k_hops` real hops plus padding to fill `N_BUNDLE * H_HOPS_PER_PROOF`

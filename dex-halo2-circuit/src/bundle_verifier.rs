@@ -295,10 +295,10 @@ mod tests {
 
     // -- helpers ------------------------------------------------------------
 
-    /// Build a Phase-3-style DexFinal instance vector with the given
-    /// `salt_commitment` and `head_block_id`. Other slots are filled with
-    /// distinguishable sentinels so tests can spot accidental cross-talk.
-    fn phase3_dex_final(salt_commitment: Fr, head_block_id: Fr) -> BundleProof {
+    /// Build a DexFinal instance vector with the given `salt_commitment` and
+    /// `head_block_id`. Other slots are filled with distinguishable sentinels
+    /// so tests can spot accidental cross-talk.
+    fn make_dex_final(salt_commitment: Fr, head_block_id: Fr) -> BundleProof {
         BundleProof::new_dex_final(vec![
             Fr::from(101u64), // [0] poseidon_commitment
             Fr::from(102u64), // [1] final_root
@@ -320,7 +320,7 @@ mod tests {
     fn single_dex_final_phase3_ok() {
         let sc = Fr::from(0xC0FFEEu64);
         let head = Fr::from(0xBEEFu64);
-        let b = vec![phase3_dex_final(sc, head)];
+        let b = vec![make_dex_final(sc, head)];
         assert_eq!(verify_bundle(&b), Ok(()));
     }
 
@@ -340,7 +340,7 @@ mod tests {
         let p4 = Fr::from(1004u64);
 
         let b = vec![
-            phase3_dex_final(sc, p0),
+            make_dex_final(sc, p0),
             multi_hop(p0, p1, sc),
             multi_hop(p1, p2, sc),
             multi_hop(p2, p3, sc),
@@ -357,7 +357,7 @@ mod tests {
         let sc = Fr::from(7u64);
         let p = Fr::from(42u64); // the shared "no progress" endpoint
         let b = vec![
-            phase3_dex_final(sc, p),
+            make_dex_final(sc, p),
             multi_hop(p, p, sc),
             multi_hop(p, p, sc),
             multi_hop(p, p, sc),
@@ -385,8 +385,8 @@ mod tests {
     fn two_dex_finals_rejected() {
         let sc = Fr::from(9u64);
         let b = vec![
-            phase3_dex_final(sc, Fr::from(1u64)),
-            phase3_dex_final(sc, Fr::from(1u64)),
+            make_dex_final(sc, Fr::from(1u64)),
+            make_dex_final(sc, Fr::from(1u64)),
         ];
         assert_eq!(verify_bundle(&b), Err(BundleError::DuplicateDexFinal { count: 2 }));
     }
@@ -396,7 +396,7 @@ mod tests {
         let sc = Fr::from(9u64);
         let b = vec![
             multi_hop(Fr::from(1u64), Fr::from(2u64), sc),
-            phase3_dex_final(sc, Fr::from(1u64)),
+            make_dex_final(sc, Fr::from(1u64)),
         ];
         assert_eq!(verify_bundle(&b), Err(BundleError::DexFinalNotFirst { found_at: 1 }));
     }
@@ -410,7 +410,7 @@ mod tests {
         let p0 = Fr::from(100u64);
         let p1 = Fr::from(101u64);
         let b = vec![
-            phase3_dex_final(sc, p0),
+            make_dex_final(sc, p0),
             multi_hop(p0, p1, evil),
         ];
         match verify_bundle(&b) {
@@ -432,7 +432,7 @@ mod tests {
         let p2 = Fr::from(102u64);
         let p3 = Fr::from(103u64);
         let b = vec![
-            phase3_dex_final(sc, p0),
+            make_dex_final(sc, p0),
             multi_hop(p0, p1, sc),
             multi_hop(p1, p2, sc),
             multi_hop(p2, p3, evil), // spliced from a different bundle
@@ -453,7 +453,7 @@ mod tests {
         let head = Fr::from(100u64);
         let wrong_start = Fr::from(999u64);
         let b = vec![
-            phase3_dex_final(sc, head),
+            make_dex_final(sc, head),
             multi_hop(wrong_start, Fr::from(101u64), sc),
         ];
         match verify_bundle(&b) {
@@ -475,7 +475,7 @@ mod tests {
         let wrong = Fr::from(999u64);
         let p2 = Fr::from(102u64);
         let b = vec![
-            phase3_dex_final(sc, p0),
+            make_dex_final(sc, p0),
             multi_hop(p0, p1, sc),
             multi_hop(wrong, p2, sc), // start ≠ previous end
         ];
@@ -509,7 +509,7 @@ mod tests {
     fn multihop_with_wrong_instance_count_rejected() {
         let sc = Fr::from(7u64);
         let bad = BundleProof::new_multi_hop(vec![Fr::from(1u64); 2]); // not 3
-        let b = vec![phase3_dex_final(sc, Fr::from(1u64)), bad];
+        let b = vec![make_dex_final(sc, Fr::from(1u64)), bad];
         match verify_bundle(&b) {
             Err(BundleError::BadInstanceLen { proof_index, kind, got, .. }) => {
                 assert_eq!(proof_index, 1);

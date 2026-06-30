@@ -578,7 +578,7 @@ impl Circuit<Fr> for DarkDexCircuitNew {
                 let inputs = [voucher_nominal, token_type, sk_u_assigned, sk_u_commit];
                 let final_hasher_result = hasher.hash_fix_len_array(ctx, gate, &inputs);
 
-                // === Phase 3: salt and salt_commitment ===
+                // === salt and salt_commitment ===
                 // salt = Poseidon([DOMAIN_TAG_HOP_SALT_FR, sk_u])
                 // salt_commitment = Poseidon([salt])
                 //
@@ -675,7 +675,7 @@ impl Circuit<Fr> for DarkDexCircuitNew {
                     .map(|i| QuantumCell::Constant(Fr::from(256u64).pow([i as u64])))
                     .collect();
 
-                // === Phase 3 (byte-flat): event_salted_block_id ===
+                // === byte-flat event_salted_block_id ===
                 //
                 // Match `compute_salted_block_id_native(salt, block_id)` in
                 // `salt.rs`: chunk the 64-byte stream `fr_to_bytes(salt) ‖
@@ -907,9 +907,9 @@ impl Circuit<Fr> for DarkDexCircuitNew {
             builder.assigned_instances[0].push(voucher_nominal);
             builder.assigned_instances[0].push(token_type);
             builder.assigned_instances[0].push(eph);
-            // Phase 3: salt-derived publics (binds this DexFinalProof to its
-            // bundle's MultiHopProofs via salt_commitment, and exposes the
-            // event block id under the same salt for chain-head splicing).
+            // Salt-derived publics (binds this DexFinalProof to its bundle's
+            // MultiHopProofs via salt_commitment, and exposes the event block
+            // id under the same salt for chain-head splicing).
             builder.assigned_instances[0].push(salt_commitment);
             builder.assigned_instances[0].push(event_salted_block_id);
         }
@@ -983,7 +983,7 @@ mod tests {
                 params.clone(),
             );
 
-            // Phase 3: derive salt-based publics for this voucher.
+            // Derive salt-based publics for this voucher.
             let salt = compute_salt_native(v.sk_u);
             let salt_commitment = compute_salt_commitment_native(salt);
             let event_salted_block_id = compute_salted_block_id_native(salt, &tw.block_id);
@@ -1051,7 +1051,7 @@ mod tests {
                 params.clone(),
             );
 
-            // Phase 3: salt-based publics (constant across the T-loop, but
+            // Salt-based publics (constant across the T-loop, but
             // recomputed each iteration for clarity).
             let salt = compute_salt_native(v.sk_u);
             let salt_commitment = compute_salt_commitment_native(salt);
@@ -1166,7 +1166,7 @@ mod tests {
                 break_points.clone(),
             );
 
-            // Phase 3 salt publics.
+            // Salt publics.
             let salt = compute_salt_native(v.sk_u);
             let salt_commitment = compute_salt_commitment_native(salt);
             let event_salted_block_id = compute_salted_block_id_native(salt, &tw.block_id);
@@ -1330,7 +1330,7 @@ mod tests {
                 break_points.clone(),
             );
 
-            // Phase 3 salt publics.
+            // Salt publics.
             let salt = compute_salt_native(v.sk_u);
             let salt_commitment = compute_salt_commitment_native(salt);
             let event_salted_block_id = compute_salted_block_id_native(salt, &tw.block_id);
@@ -1357,7 +1357,7 @@ mod tests {
             );
             check_proof_with_instances(&srs, pk.get_vk(), &proof_bytes, &[&instance_fr], true);
 
-            // Phase 3: 7 Fr × 32 bytes LE = 224 B (was 160 B before salt publics);
+            // 7 Fr × 32 bytes LE = 224 B (was 160 B before salt publics);
             // tvm-sdk decodes via Fr::from_bytes_le (byte-exact symmetric).
             let mut instances_bytes: Vec<u8> = Vec::with_capacity(7 * 32);
             for fr in &instance_fr {
@@ -1540,7 +1540,7 @@ mod tests {
                 break_points,
             );
 
-            // Phase 3 salt publics.
+            // Salt publics.
             let salt = compute_salt_native(v.sk_u);
             let salt_commitment = compute_salt_commitment_native(salt);
             let event_salted_block_id = compute_salted_block_id_native(salt, &tw.block_id);
@@ -1651,7 +1651,7 @@ mod tests {
                 params.clone(),
             );
 
-            // Phase 3 salt publics.
+            // Salt publics.
             let salt = compute_salt_native(v.sk_u);
             let salt_commitment = compute_salt_commitment_native(salt);
             let event_salted_block_id = compute_salted_block_id_native(salt, &tw.block_id);

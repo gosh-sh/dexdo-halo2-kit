@@ -2,6 +2,7 @@ pub mod boc_helper;
 pub mod bundle_verifier;
 pub mod dark_dex_circuit_new;
 pub mod event_data_helper;
+pub mod hop_proof;
 pub mod multi_hop_proof;
 pub mod multi_hop_witness;
 pub mod salt;

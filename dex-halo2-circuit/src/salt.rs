@@ -1,4 +1,4 @@
-//! Voucher-secret-derived salt and salted-block-id helpers (Phase 3).
+//! Voucher-secret-derived salt and salted-block-id helpers.
 //!
 //! These native helpers MUST stay byte-for-byte equivalent to the in-circuit
 //! gadgets in [`crate::dark_dex_circuit_new`] and [`crate::multi_hop_proof`]:

@@ -1,20 +1,16 @@
-//! Stage 1 bundle-binding integration test.
+//! Bundle-binding integration test.
 //!
-//! Wires together the **real** Phase 3 salt math from
-//! `dex_halo2_circuit::salt` with the pure-Rust `RootPN.sol` mock from
-//! `dex_halo2_circuit::bundle_verifier`, on a synthetic 5-snark claim
-//! bundle (1 DexFinal + 4 MultiHops).
+//! Wires together the **real** salt math from `dex_halo2_circuit::salt` with
+//! the pure-Rust `RootPN.sol` mock from `dex_halo2_circuit::bundle_verifier`,
+//! on a synthetic 5-snark claim bundle (1 DexFinal + 4 MultiHops).
 //!
 //! No halo2 prover is invoked here — we synthesize the public-input vectors
 //! using the same native helpers the in-circuit version constrains
 //! (`compute_salt_native`, `compute_salt_commitment_native`,
 //! `compute_salted_block_id_native`), then exercise the verifier on the
 //! happy path and on every tampering vector that `verify_bundle` can
-//! distinguish.
-//!
-//! Once the `MultiHopProof` circuit lands in Stage 2, this file's
-//! `synthesize_bundle_instances` helper can be reused with **real**
-//! `gen_proof_with_instances` outputs instead of native synthesis —
+//! distinguish. The `synthesize_bundle_instances` helper is reusable with
+//! **real** `gen_proof_with_instances` outputs instead of native synthesis —
 //! the bundle-verifier API is shape-invariant.
 
 use dex_halo2_circuit::bundle_verifier::{
@@ -28,10 +24,10 @@ use halo2_base::halo2_proofs::halo2curves::bn256::Fr;
 /// Number of MultiHopProofs per spec §6.4 (`N_BUNDLE`).
 const N_BUNDLE: usize = 4;
 
-/// Build a Phase-3 DexFinal instance vector with the given `salt_commitment`
+/// Build a DexFinal instance vector with the given `salt_commitment`
 /// and bundle-head `salted_block_id`. Slots [0..=4] are filled with
 /// distinguishable sentinels — the verifier only reads [5] and [6].
-fn phase3_dex_final_instances(salt_commitment: Fr, head_salted_block_id: Fr) -> Vec<Fr> {
+fn make_dex_final_instances(salt_commitment: Fr, head_salted_block_id: Fr) -> Vec<Fr> {
     vec![
         Fr::from(0xD0u64),   // [0] poseidon_commitment (depositIdentifierHash)
         Fr::from(0xD1u64),   // [1] final_root
@@ -67,7 +63,7 @@ fn synthesize_bundle_instances(sk_u: Fr, block_ids: &[[u8; 32]; 5]) -> (Vec<Fr>,
 
     // DexFinal's bundle-head = `salted[0]` (i.e. salted_id of the
     // event-block-id we just claimed — same as what hop[0] starts from).
-    let dex_final = phase3_dex_final_instances(sc, salted[0]);
+    let dex_final = make_dex_final_instances(sc, salted[0]);
     let hops = [
         multihop_instances(salted[0], salted[1], sc),
         multihop_instances(salted[1], salted[2], sc),
@@ -224,7 +220,7 @@ fn all_inactive_hops_t_eq_0_accepted() {
     let sc = compute_salt_commitment_native(salt);
     let p = compute_salted_block_id_native(salt, &single_block);
 
-    let dex_final = phase3_dex_final_instances(sc, p);
+    let dex_final = make_dex_final_instances(sc, p);
     let hops = [
         multihop_instances(p, p, sc),
         multihop_instances(p, p, sc),

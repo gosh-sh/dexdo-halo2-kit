@@ -276,6 +276,33 @@ pub fn poseidon_bytes_flat_native(bytes: &[u8]) -> [u8; 32] {
     fr_to_bytes(poseidon_hash_native(&inputs))
 }
 
+/// Byte-flat ref-leaf chunk0 constant: LE-pack of `REFERENCED_PARENT_BLOCK_TAG[0..31]`.
+///
+/// The byte-flat encoding of `tag(37B) || parent_id(32B)` (69 bytes total)
+/// splits into three 31-byte chunks: `chunk0 = data[0..31]` is the tag's
+/// first 31 bytes — entirely constant, so callers load it once via
+/// `ctx.load_constant`.
+pub fn ref_leaf_tag_chunk0_fr() -> Fr {
+    let bytes = REFERENCED_PARENT_BLOCK_TAG;
+    let mut buf = [0u8; 32];
+    buf[..31].copy_from_slice(&bytes[..31]);
+    bytes_to_fr(&buf)
+}
+
+/// Byte-flat ref-leaf chunk1 constant-tail: LE-pack of `REFERENCED_PARENT_BLOCK_TAG[31..37]`.
+///
+/// `chunk1 = data[31..62]` covers the last 6 tag bytes followed by
+/// `parent_id[0..25]`. The constant-tail (these 6 bytes packed at LE
+/// positions 0..6 of the chunk) is loaded once; the witness contribution
+/// (`parent_id[0..25]` packed at LE positions 6..31) is added in-circuit
+/// via `inner_product(parent_id[0..25], [256^6, ..., 256^30])`.
+pub fn ref_leaf_tag_chunk1_lo_fr() -> Fr {
+    let bytes = REFERENCED_PARENT_BLOCK_TAG;
+    let mut buf = [0u8; 32];
+    buf[..6].copy_from_slice(&bytes[31..37]);
+    bytes_to_fr(&buf)
+}
+
 /// Native: per-ref leaf hash matching
 /// `history-proof::compute_referenced_block_leaf_hash` byte-for-byte. Index 0
 /// uses the parent tag, ≥1 uses the ref tag, and the entire `tag ‖ block_id`

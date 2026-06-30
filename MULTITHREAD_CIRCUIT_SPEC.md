@@ -433,7 +433,7 @@ DOMAIN_TAG_FR    = bytes_to_fr( DOMAIN_TAG_BYTES zero-padded to 32 LE bytes )
 `salt` is a **private witness** in every proof of the bundle. The voucher-scoping ensures that two vouchers from the same user produce uncorrelated salted ids (different `sk_u`s).
 
 > **Canonical convention.** The constants and Poseidon shape above are the
-> ones enforced by Phase 2 (`gosh-referenced-block-hop`) and Phase 3 of
+> ones enforced by the upstream `gosh-referenced-block-hop` reference and by
 > `DarkDexCircuitNew` (see `dex-halo2-circuit/src/salt.rs`). `RootPN.sol`
 > equality-checks `salt_commitment` across all 5 snarks of a bundle, so any
 > divergence between this spec and `salt.rs` breaks the orchestrator. If they
@@ -614,7 +614,7 @@ If a worst-case anonymity guarantee is not required, `N_BUNDLE` can be made dyna
 ### 6.9 Public-input vectors recap
 
 ```
-DexFinalProof (8 fields, full multi-thread design — Phase 4+):
+DexFinalProof — full multi-thread design (8 fields, future):
   [0] depositIdentifierHash
   [1] finalLayerHistoricalHashRoot       ← consumed by gosh.check_layer_hash(.,layerNumber)
   [2] voucherNominalFr
@@ -630,8 +630,8 @@ MultiHopProof (3 fields):
   [2] salt_commitment
 ```
 
-> **Phase 3 status (2026-06-28).** `DarkDexCircuitNew` currently exposes
-> **7** instances (no separate `salted_Y_end`/`salted_C_start` split yet):
+> **DexFinalProof current shape.** `DarkDexCircuitNew` exposes **7**
+> instances (no separate `salted_Y_end`/`salted_C_start` split yet):
 >
 > ```
 > [0] poseidon_commitment   (= depositIdentifierHash analogue)
@@ -643,7 +643,7 @@ MultiHopProof (3 fields):
 > [6] event_salted_block_id = bytes_to_fr(hash_bytes_flat(fr_to_bytes(salt) ‖ block_id))
 > ```
 >
-> The Phase 4+ extension splits the single `event_salted_block_id` into the
+> The future extension splits the single `event_salted_block_id` into the
 > `salted_C_start` / `salted_Y_end` pair once C-extraction lands. Today's
 > on-chain encoding: **7 × 32 = 224 B** per `DexFinalProof` instance vec.
 
@@ -651,18 +651,18 @@ MultiHopProof (3 fields):
 
 Three distinct VKs total: `VK_DexFinal`, `VK_MultiHop`, none-of-them-aggregated. All are bundled with the contract and the phone app. No universal VK machinery, no agg_vk_hash, no recursion. See §8 for why this matters.
 
-### 6.11 Measured performance — Phase 4 bundle tests (dev hardware)
+### 6.11 Measured performance — bundle tests (dev hardware)
 
-Numbers below are from end-to-end bundle tests in `dex-halo2-circuit/tests/` (`cargo test --release -- --ignored`), single-machine, no GPU, KZG backend. Each test builds real KZG proofs for every `MultiHopProofCircuitC` snark in the bundle; the `DexFinalProof` instance vector is supplied synthetically (its real-proof cost is the existing single-thread `DarkDexCircuitNew` baseline, not re-measured here). Circuit parameters: K=19, 56 advice columns, 4 lookup advice. Proof size per `MultiHopProof` snark: **18,240 B** (constant across all rows). Per-snark `verify`: ~8 ms.
+Numbers below are from end-to-end bundle tests in `dex-halo2-circuit/tests/` (`cargo test --release -- --ignored`), single-machine, no GPU, KZG backend. Each test builds real KZG proofs for every `MultiHopProofCircuit` snark in the bundle; the `DexFinalProof` instance vector is supplied synthetically (its real-proof cost is the existing single-thread `DarkDexCircuitNew` baseline, not re-measured here). Circuit parameters: K=19, 56 advice columns, 4 lookup advice. Proof size per `MultiHopProof` snark: **18,240 B** (constant across all rows). Per-snark `verify`: ~8 ms.
 
-| Test (Phase 4 stage) | L (active hops) | `N_BUNDLE` | Real-KZG snarks | Mean prove / snark | Bundle wall time | Source |
+| Test | L (active hops) | `N_BUNDLE` | Real-KZG snarks | Mean prove / snark | Bundle wall time | Source |
 |---|---|---|---|---|---|---|
-| 2d — happy path | 5 | 4 | 4 | ~101 s | ~7.8 min | `test_bundle_e2e.rs` |
-| 2e — negative scenarios | varies | 2–3 | 2 | 97 / 112 s | ~4.3 min | `test_bundle_negative.rs` |
-| 2f — `L = L_MAX` worst case | 20 | 4 | 4 | ~98 s (uniform) | ~7.6 min | `test_bundle_stress.rs` |
-| 2g — L = 50 | 50 | 10 | 10 | ~104 s mean | ~18.3 min | `test_bundle_stress_l50.rs` |
-| 2g — L = 100 | 100 | 20 | 20 | ~97 s mean (2 thermal outliers) | ~46 min | `test_bundle_stress_l100.rs` |
-| 2g — L = 300 | 300 | 60 | 60 | 105.6 s mean (min 89.3, max 123.3, no thermal outliers) | ~107 min | `test_bundle_stress_l300.rs` |
+| happy path | 5 | 4 | 4 | ~101 s | ~7.8 min | `test_bundle_e2e.rs` |
+| negative scenarios | varies | 2–3 | 2 | 97 / 112 s | ~4.3 min | `test_bundle_negative.rs` |
+| `L = L_MAX` worst case | 20 | 4 | 4 | ~98 s (uniform) | ~7.6 min | `test_bundle_stress.rs` |
+| L = 50 | 50 | 10 | 10 | ~104 s mean | ~18.3 min | `test_bundle_stress_l50.rs` |
+| L = 100 | 100 | 20 | 20 | ~97 s mean (2 thermal outliers) | ~46 min | `test_bundle_stress_l100.rs` |
+| L = 300 | 300 | 60 | 60 | 105.6 s mean (min 89.3, max 123.3, no thermal outliers) | ~107 min | `test_bundle_stress_l300.rs` |
 
 One-time costs per VK/PK: `keygen_vk` 35–47 s, `keygen_pk` 15–18 s.
 
@@ -809,7 +809,7 @@ The phone proves and submits all 5 snarks. If the user uses a relayer to broadca
 | `MAX_CHAIN_LEN` (thread-0 dense chain) | **11** (unchanged) | `gosh-dense-balanced-tree` |
 | `MultiHopProof` K | **16** | Cell-budget sizing |
 | `DexFinalProof` K | **15** | Cell-budget sizing |
-| `DOMAIN_TAG_BYTES` | `b"acki-nacki:voucher-hop-salt:v1"` (30 B) | Per-version domain separation; **canonical from Phase 2 (`gosh-referenced-block-hop`)**, vendored in `dex-halo2-circuit/src/salt.rs` |
+| `DOMAIN_TAG_BYTES` | `b"acki-nacki:voucher-hop-salt:v1"` (30 B) | Per-version domain separation; **canonical from `gosh-referenced-block-hop`**, vendored in `dex-halo2-circuit/src/salt.rs` |
 | SHA-256 chip | `gosh-sha256-chip` (unchanged) | Existing dependency |
 | On-chain verifier | per-snark Halo2 KZG verification | No aggregation |
 | Public-input layout (`DexFinalProof`) | existing 5 + `salted_C_start` + `salted_Y_end` + `salt_commitment` | Preserves contract compatibility |
@@ -846,16 +846,7 @@ These must be answered with the team before circuit-side implementation begins.
 9. **Poseidon byte-flat parity / in-circuit chip gap.**
    Production at `acki-nacki/node/libs/history-proof/src/lib.rs:159` (`compute_referenced_block_leaf_hash`) does **`hash_bytes_flat(tag || block_id)`** — concatenates the 37-byte tag and 32-byte block_id into one 69-byte stream, then `PoseidonSponge::hash_bytes_flat` chunks the **whole stream** into 31-byte pieces (top byte zero ⇒ every chunk safely fits in Fr). Live GQL L7 roots commit to this byte-flat form. **Acki-nacki is sound here; this is not a production bug.**
 
-   **Resolution (Phase 4.B, 2026-06-30).** The kit's in-circuit path is now byte-flat end-to-end. The interim choice picked was Decision (b)-strong: every Poseidon input in the production paths of `multi_hop_proof.rs` (Phase B + C) and `dark_dex_circuit_new.rs` (`ext_msg_leaf`, `block_leaf`, `event_salted_block_id`) derives from byte cells with per-byte `range_check 8`, so each chunk is uniquely pinned by its byte witnesses and no `chunks_int ≡ Fr (mod p)` malleability exists. The two cases where a Poseidon input is itself an algebraic Fr (an in-circuit Poseidon output, e.g. `ext_out_root` and `salt`) are decomposed canonically: `salt` via the single high-byte split `salt_chunk0 + salt_hi · 2^248 == salt`, and `ext_out_root` via a 2-limb 128-bit decomposition plus a strict `V < p` cascade (`(V_hi < P_HI) OR (V_hi == P_HI AND V_lo < P_LO)`). With this, the kit's `event_salted_block_id`, the multi-hop `salted_{start,end}_block_id` endpoints, and the L7 ref-tree roots all match the byte-flat production rule in `acki-nacki/node/libs/history-proof/`, and the dark_dex tests that consume `compute_salted_block_id_native` as the expected public instance now all pass.
-
-   *Original 2026-06-… framing of the gap, retained for context:*
-   The current in-circuit Poseidon chip (`gosh_dense_balanced_tree::poseidon_hash_native`) only accepts `&[Fr]`. The kit's witness layer (`multi_hop_witness::ref_leaf_hash_native`, `ref_inner_combine_native`, `proof_block_refs_root_native`, and the `salted_*` Poseidon calls) was originally a kit-local re-implementation — **not a port of production** — that:
-   - correctly chunked the 37-byte tag at the 31-byte boundary via `pack_tag_chunks` (because the tag exceeds 31 bytes), but
-   - then collapsed the 32-byte block_id into a single Fr via `bytes_to_fr` (= `Fr::from_raw`, **silent mod-p reduction**). The chunking discipline applied to the tag was abandoned for the block_id.
-   Consequences (now resolved):
-   - The kit was self-consistent end-to-end (synth chain ↔ witness ↔ circuit) under that rule, but its L7 roots did **not** equal live-GQL roots. Tests that consume real-chain data could not bind to production.
-   - `Fr::from_raw` on a 32-byte input is collision-unsafe: BN254 Fr is ~254-bit, block_id is 256-bit, so distinct block_ids whose top bits push past Fr modulus collapse to the same Fr.
-   - The byte-for-byte production-equivalent helpers (`*_bytes_flat_native`) shipped first; the in-circuit byte-flat path (Phase 3 + 4) then swapped the witness layer over so the kit binds to live GQL.
+   **Resolution.** The kit's in-circuit path is byte-flat end-to-end. Every Poseidon input in the production paths of `multi_hop_proof.rs` and `dark_dex_circuit_new.rs` (`ext_msg_leaf`, `block_leaf`, `event_salted_block_id`) derives from byte cells with per-byte `range_check 8`, so each chunk is uniquely pinned by its byte witnesses and no `chunks_int ≡ Fr (mod p)` malleability exists. The two cases where a Poseidon input is itself an algebraic Fr (an in-circuit Poseidon output, e.g. `ext_out_root` and `salt`) are decomposed canonically: `salt` via the single high-byte split `salt_chunk0 + salt_hi · 2^248 == salt`, and `ext_out_root` via a 2-limb 128-bit decomposition plus a strict `V < p` cascade (`(V_hi < P_HI) OR (V_hi == P_HI AND V_lo < P_LO)`). With this, the kit's `event_salted_block_id`, the multi-hop `salted_{start,end}_block_id` endpoints, and the L7 ref-tree roots all match the byte-flat production rule in `acki-nacki/node/libs/history-proof/`, and the dark_dex tests that consume `compute_salted_block_id_native` as the expected public instance all pass.
 
 ### 10.3 Out of scope for this document
 
@@ -866,18 +857,14 @@ These must be answered with the team before circuit-side implementation begins.
 
 ---
 
-## 11. Implementation phases
+## 11. Remaining work
 
-| Phase | Goal | Crates / files touched |
-|---|---|---|
-| 1 | `HopCircuit` Halo2 gadget (single hop, no proving). Tests against `gql_proof.rs` fixtures. | `dex-halo2-circuit/src/gadgets/hop.rs` |
-| 2 | `MultiHopProof` circuit at K = 16. Witness builder. Native-prover end-to-end test for 1, 3, 5 active hops + uniformity check (all inactive). | `dex-halo2-circuit/src/circuits/multi_hop.rs` |
-| 3 | `DexFinalProof` extension: add C-reconstruction + `#L1(M_X)` extraction + batch-tree path + salt outputs. Reuses existing single-thread DEX logic for everything else. | `dex-halo2-circuit/src/circuits/dex_final.rs` |
-| 4 | RootPN.sol multi-proof orchestration. Verifier-contract updates: register `VK_MultiHop`, extend `claimVoucher` per §6.4. | `acki-nacki/contracts/dex/RootPN.sol` and Solidity test harness |
-| 5 | Synthetic E2E generator (§7). Chains of length 0, 1, 3, 5, 6, 15, 20. End-to-end on local devnet. | `dex-halo2-circuit/examples/gen_multithread_voucher.rs` |
-| 6 | Phone-side prover integration: WASM / native build of all 5 snarks, parallel proving where possible. | `tvm-sdk` + phone wallet integration |
+The in-tree circuit work (single-hop gadget, `MultiHopProofCircuit`, `DarkDexCircuitNew` extension, synthetic E2E generator) and its bundle-test coverage are landed in `dex-halo2-circuit`. The remaining work tracked outside this kit:
 
-Phase 1–5 are the in-tree circuit and contract work. Phase 6 is the wallet integration and may run partially in parallel.
+- **RootPN.sol multi-proof orchestration.** Register `VK_MultiHop` and extend `claimVoucher` per §6.4 (`acki-nacki/contracts/dex/RootPN.sol` + Solidity test harness).
+- **Phone-side prover integration.** WASM / native build of all 5 snarks; parallel proving where possible (`tvm-sdk` + phone wallet integration).
+
+These may run partially in parallel.
 
 ---
 

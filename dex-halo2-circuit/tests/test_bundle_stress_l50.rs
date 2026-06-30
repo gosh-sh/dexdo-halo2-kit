@@ -1,4 +1,4 @@
-//! Stage 2f extended — real-prover bundle stress test at chain-length L = 50.
+//! Real-prover bundle stress test at chain-length L = 50.
 //!
 //! This exercises the spec §10.2 Open Question #1 escape path: raise
 //! `N_BUNDLE` past its locked design value (4) to support chain lengths
@@ -6,7 +6,7 @@
 //! `H_HOPS_PER_PROOF = 5` (locked, phone budget at circuit K = 16),
 //! L = 50 hops require `N_BUNDLE = 10` snarks per bundle.
 //!
-//! Bundle layout: 1 synthetic Phase-3 DexFinal + 10 MultiHop snarks
+//! Bundle layout: 1 synthetic DexFinal + 10 MultiHop snarks
 //! (each 5 fully-active hops). End-to-end salted continuity is verified
 //! before keygen, and `verify_bundle` accepts the 11-proof bundle.
 //!
@@ -19,7 +19,7 @@
 use dex_halo2_circuit::bundle_verifier::{
     verify_bundle, BundleProof, DEX_FINAL_LEN,
 };
-use dex_halo2_circuit::multi_hop_proof::{MultiHopProofCircuitC, PhaseCHopWitness};
+use dex_halo2_circuit::multi_hop_proof::{MultiHopProofCircuit, MultiHopWitness};
 use dex_halo2_circuit::multi_hop_witness::H_HOPS_PER_PROOF;
 use dex_halo2_circuit::test_helpers::{split_into_bundle_snarks_n, synth_chain_n};
 use halo2_base::gates::circuit::BaseCircuitParams;
@@ -54,15 +54,15 @@ fn synthetic_dex_final(salt_commitment: Fr, bundle_head_salted: Fr) -> BundlePro
     BundleProof::new_dex_final(instances)
 }
 
-fn hop_to_phase_c(
+fn hop_to_multi_hop(
     h: &dex_halo2_circuit::multi_hop_witness::HopWitness,
-) -> PhaseCHopWitness {
+) -> MultiHopWitness {
     let parent_id = if h.block.proof_block_refs.is_empty() {
         [0u8; 32]
     } else {
         h.block.proof_block_refs[0]
     };
-    PhaseCHopWitness {
+    MultiHopWitness {
         is_active: h.is_active,
         parent_id,
         block_id: h.block.block_id,
@@ -114,10 +114,10 @@ fn bundle_stress_l50_n10() {
     let srs = gen_srs(K);
     println!("  gen_srs: {:?}", t0.elapsed());
 
-    let keygen_hops: [PhaseCHopWitness; H_HOPS_PER_PROOF] =
-        std::array::from_fn(|i| hop_to_phase_c(&snarks[0].hops[i]));
+    let keygen_hops: [MultiHopWitness; H_HOPS_PER_PROOF] =
+        std::array::from_fn(|i| hop_to_multi_hop(&snarks[0].hops[i]));
     let keygen_circuit =
-        MultiHopProofCircuitC::new(chain.sk_u, keygen_hops, params.clone());
+        MultiHopProofCircuit::new(chain.sk_u, keygen_hops, params.clone());
 
     let t0 = Instant::now();
     let vk = keygen_vk(&srs, &keygen_circuit).expect("keygen_vk failed");
@@ -138,15 +138,15 @@ fn bundle_stress_l50_n10() {
     let overall = Instant::now();
     for snark_idx in 0..N_BUNDLE {
         let snark = &snarks[snark_idx];
-        let hops: [PhaseCHopWitness; H_HOPS_PER_PROOF] =
-            std::array::from_fn(|i| hop_to_phase_c(&snark.hops[i]));
+        let hops: [MultiHopWitness; H_HOPS_PER_PROOF] =
+            std::array::from_fn(|i| hop_to_multi_hop(&snark.hops[i]));
 
         let first_salted_start_block_id = snark.hops[0].salted_start_block_id;
         let last_salted_end_block_id = snark.hops[H_HOPS_PER_PROOF - 1].salted_end_block_id;
         let salt_commitment = snark.salt_commitment;
         let instances = vec![first_salted_start_block_id, last_salted_end_block_id, salt_commitment];
 
-        let prover_circuit = MultiHopProofCircuitC::new_for_proving(
+        let prover_circuit = MultiHopProofCircuit::new_for_proving(
             chain.sk_u,
             hops,
             params.clone(),
@@ -177,7 +177,7 @@ fn bundle_stress_l50_n10() {
     }
     println!("\n{}-snark prove+verify wall: {:?}", N_BUNDLE, overall.elapsed());
 
-    // -- 4. Build synthetic Phase 3 DexFinal -----------------------------
+    // -- 4. Build synthetic DexFinal -------------------------------------
     let dex_final = synthetic_dex_final(chain.salt_commitment, chain.bundle_head_salted);
 
     // -- 5. Assemble bundle and run bundle_verifier ----------------------
