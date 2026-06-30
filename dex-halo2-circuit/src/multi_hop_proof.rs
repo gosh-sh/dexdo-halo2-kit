@@ -281,26 +281,11 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                 let pow_248 =
                     ctx.load_constant(Fr::from_raw([0u64, 0u64, 0u64, 1u64 << 56]));
                 let pow_256 = ctx.load_constant(Fr::from(256u64));
-                let powers_le_32_const: Vec<Fr> = (0..32)
-                    .map(|i| Fr::from(256u64).pow([i as u64]))
-                    .collect();
-                let powers_le_25_const: Vec<Fr> = (0..25)
-                    .map(|i| Fr::from(256u64).pow([i as u64]))
-                    .collect();
-                let powers_le_7_const: Vec<Fr> = (0..7)
-                    .map(|i| Fr::from(256u64).pow([i as u64]))
-                    .collect();
-                let powers_le_28_const: Vec<Fr> = (0..28)
-                    .map(|i| Fr::from(256u64).pow([i as u64]))
-                    .collect();
-                let powers_le_4_const: Vec<Fr> = (0..4)
-                    .map(|i| Fr::from(256u64).pow([i as u64]))
-                    .collect();
-                let powers_le_30_const: Vec<Fr> = (0..30)
-                    .map(|i| Fr::from(256u64).pow([i as u64]))
-                    .collect();
-                let powers_le_2_const: Vec<Fr> = (0..2)
-                    .map(|i| Fr::from(256u64).pow([i as u64]))
+                // LE byte→Fr power-of-256 table, shared by every inner_product in
+                // the per-hop loop (L7 pack, ref-leaf chunk math, salted-endpoint
+                // chunk math). Built once; sliced at each call site.
+                let powers_le_32: Vec<QuantumCell<Fr>> = (0..32)
+                    .map(|i| QuantumCell::Constant(Fr::from(256u64).pow([i as u64])))
                     .collect();
 
                 // === Salt decomposition: salt_fr == salt_chunk0 + salt_hi · 2^248 ===
@@ -341,35 +326,6 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                         QuantumCell::Existing(is_active),
                     );
 
-                    let powers_le_32: Vec<QuantumCell<Fr>> = powers_le_32_const
-                        .iter()
-                        .map(|p| QuantumCell::Constant(*p))
-                        .collect();
-                    let powers_le_25: Vec<QuantumCell<Fr>> = powers_le_25_const
-                        .iter()
-                        .map(|p| QuantumCell::Constant(*p))
-                        .collect();
-                    let powers_le_7: Vec<QuantumCell<Fr>> = powers_le_7_const
-                        .iter()
-                        .map(|p| QuantumCell::Constant(*p))
-                        .collect();
-                    let powers_le_28: Vec<QuantumCell<Fr>> = powers_le_28_const
-                        .iter()
-                        .map(|p| QuantumCell::Constant(*p))
-                        .collect();
-                    let powers_le_4: Vec<QuantumCell<Fr>> = powers_le_4_const
-                        .iter()
-                        .map(|p| QuantumCell::Constant(*p))
-                        .collect();
-                    let powers_le_30: Vec<QuantumCell<Fr>> = powers_le_30_const
-                        .iter()
-                        .map(|p| QuantumCell::Constant(*p))
-                        .collect();
-                    let powers_le_2: Vec<QuantumCell<Fr>> = powers_le_2_const
-                        .iter()
-                        .map(|p| QuantumCell::Constant(*p))
-                        .collect();
-
                     // === ref_index witness ===
                     let ref_index_assigned =
                         ctx.load_witness(Fr::from(hop.ref_index as u64));
@@ -391,7 +347,7 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                             .iter()
                             .map(|c| QuantumCell::Existing(*c))
                             .collect();
-                        gate.inner_product(ctx, cells, powers_le_32)
+                        gate.inner_product(ctx, cells, powers_le_32[..32].iter().cloned())
                     };
 
                     // ref_block_id as 32 byte cells (range-checked 8 bits each).
@@ -418,7 +374,7 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                             .iter()
                             .map(|c| QuantumCell::Existing(*c))
                             .collect();
-                        gate.inner_product(ctx, cells, powers_le_25)
+                        gate.inner_product(ctx, cells, powers_le_32[..25].iter().cloned())
                     };
                     let ref_block_id_lo25_shifted = gate.mul(
                         ctx,
@@ -435,7 +391,7 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                             .iter()
                             .map(|c| QuantumCell::Existing(*c))
                             .collect();
-                        gate.inner_product(ctx, cells, powers_le_7)
+                        gate.inner_product(ctx, cells, powers_le_32[..7].iter().cloned())
                     };
                     // Ref-layout chunks.
                     let ref_block_id_lo28 = {
@@ -443,7 +399,7 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                             .iter()
                             .map(|c| QuantumCell::Existing(*c))
                             .collect();
-                        gate.inner_product(ctx, cells, powers_le_28)
+                        gate.inner_product(ctx, cells, powers_le_32[..28].iter().cloned())
                     };
                     let ref_block_id_lo28_shifted = gate.mul(
                         ctx,
@@ -460,7 +416,7 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                             .iter()
                             .map(|c| QuantumCell::Existing(*c))
                             .collect();
-                        gate.inner_product(ctx, cells, powers_le_4)
+                        gate.inner_product(ctx, cells, powers_le_32[..4].iter().cloned())
                     };
 
                     let ref_leaf_c0 = gate.select(
@@ -560,16 +516,14 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                     // Computed unconditionally — only the equality vs the
                     // witnessed salted_*_block_id is gated.
                     let salted_endpoint = |ctx: &mut halo2_base::Context<Fr>,
-                                           endpoint_id_bytes: &[AssignedValue<Fr>],
-                                           powers_le_30: &[QuantumCell<Fr>],
-                                           powers_le_2: &[QuantumCell<Fr>]|
+                                           endpoint_id_bytes: &[AssignedValue<Fr>]|
                      -> AssignedValue<Fr> {
                         let endpoint_id_lo30 = {
                             let cells: Vec<QuantumCell<Fr>> = endpoint_id_bytes[0..30]
                                 .iter()
                                 .map(|c| QuantumCell::Existing(*c))
                                 .collect();
-                            gate.inner_product(ctx, cells, powers_le_30.iter().cloned())
+                            gate.inner_product(ctx, cells, powers_le_32[..30].iter().cloned())
                         };
                         let chunk1 = gate.mul_add(
                             ctx,
@@ -582,7 +536,7 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                                 .iter()
                                 .map(|c| QuantumCell::Existing(*c))
                                 .collect();
-                            gate.inner_product(ctx, cells, powers_le_2.iter().cloned())
+                            gate.inner_product(ctx, cells, powers_le_32[..2].iter().cloned())
                         };
                         hasher.hash_fix_len_array(
                             ctx,
@@ -590,18 +544,8 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                             &[salt_chunk0, chunk1, chunk2],
                         )
                     };
-                    let start_computed = salted_endpoint(
-                        ctx,
-                        &ref_block_id_bytes,
-                        &powers_le_30,
-                        &powers_le_2,
-                    );
-                    let end_computed = salted_endpoint(
-                        ctx,
-                        &block_id_bytes,
-                        &powers_le_30,
-                        &powers_le_2,
-                    );
+                    let start_computed = salted_endpoint(ctx, &ref_block_id_bytes);
+                    let end_computed = salted_endpoint(ctx, &block_id_bytes);
 
                     // Witness the salted endpoints (authoritative for both
                     // active and inactive hops).

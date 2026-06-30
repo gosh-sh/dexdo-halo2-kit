@@ -276,7 +276,9 @@ impl Circuit<Fr> for HopProofCircuit {
                 let salt_commitment =
                     hasher.hash_fix_len_array(ctx, gate, &[salt_assigned]);
 
-                // === LE 32-byte powers (only used for the L7 byte→Fr pack) ===
+                // === LE byte→Fr power-of-256 table (shared by every inner_product
+                // below — L7 pack, ref-leaf chunk math, salted-endpoint chunk math).
+                // Length 32 covers the longest slice we ever take. ===
                 let powers_le_32: Vec<QuantumCell<Fr>> = (0..32)
                     .map(|i| QuantumCell::Constant(Fr::from(256u64).pow([i as u64])))
                     .collect();
@@ -293,7 +295,7 @@ impl Circuit<Fr> for HopProofCircuit {
                         .iter()
                         .map(|c| QuantumCell::Existing(*c))
                         .collect();
-                    gate.inner_product(ctx, cells, powers_le_32)
+                    gate.inner_product(ctx, cells, powers_le_32[..32].iter().cloned())
                 };
 
                 // === ref_block_id as 32 byte cells (range-checked 8 bits each) ===
@@ -338,18 +340,6 @@ impl Circuit<Fr> for HopProofCircuit {
                 let ref_leaf_c1_tag_ref = ctx.load_constant(ref_leaf_ref_tag_chunk1_lo_fr());
                 let pow_256_6 = ctx.load_constant(Fr::from(256u64).pow([6u64]));
                 let pow_256_3 = ctx.load_constant(Fr::from(256u64).pow([3u64]));
-                let powers_le_25: Vec<QuantumCell<Fr>> = (0..25)
-                    .map(|i| QuantumCell::Constant(Fr::from(256u64).pow([i as u64])))
-                    .collect();
-                let powers_le_7: Vec<QuantumCell<Fr>> = (0..7)
-                    .map(|i| QuantumCell::Constant(Fr::from(256u64).pow([i as u64])))
-                    .collect();
-                let powers_le_28: Vec<QuantumCell<Fr>> = (0..28)
-                    .map(|i| QuantumCell::Constant(Fr::from(256u64).pow([i as u64])))
-                    .collect();
-                let powers_le_4: Vec<QuantumCell<Fr>> = (0..4)
-                    .map(|i| QuantumCell::Constant(Fr::from(256u64).pow([i as u64])))
-                    .collect();
 
                 // Parent-layout chunks.
                 let ref_block_id_lo25 = {
@@ -357,7 +347,7 @@ impl Circuit<Fr> for HopProofCircuit {
                         .iter()
                         .map(|c| QuantumCell::Existing(*c))
                         .collect();
-                    gate.inner_product(ctx, cells, powers_le_25)
+                    gate.inner_product(ctx, cells, powers_le_32[..25].iter().cloned())
                 };
                 let ref_block_id_lo25_shifted = gate.mul(
                     ctx,
@@ -374,7 +364,7 @@ impl Circuit<Fr> for HopProofCircuit {
                         .iter()
                         .map(|c| QuantumCell::Existing(*c))
                         .collect();
-                    gate.inner_product(ctx, cells, powers_le_7)
+                    gate.inner_product(ctx, cells, powers_le_32[..7].iter().cloned())
                 };
 
                 // Ref-layout chunks.
@@ -383,7 +373,7 @@ impl Circuit<Fr> for HopProofCircuit {
                         .iter()
                         .map(|c| QuantumCell::Existing(*c))
                         .collect();
-                    gate.inner_product(ctx, cells, powers_le_28)
+                    gate.inner_product(ctx, cells, powers_le_32[..28].iter().cloned())
                 };
                 let ref_block_id_lo28_shifted = gate.mul(
                     ctx,
@@ -400,7 +390,7 @@ impl Circuit<Fr> for HopProofCircuit {
                         .iter()
                         .map(|c| QuantumCell::Existing(*c))
                         .collect();
-                    gate.inner_product(ctx, cells, powers_le_4)
+                    gate.inner_product(ctx, cells, powers_le_32[..4].iter().cloned())
                 };
 
                 let ref_leaf_c0 = gate.select(
@@ -483,12 +473,6 @@ impl Circuit<Fr> for HopProofCircuit {
                 let pow_248 =
                     ctx.load_constant(Fr::from_raw([0u64, 0u64, 0u64, 1u64 << 56]));
                 let pow_256 = ctx.load_constant(Fr::from(256u64));
-                let powers_le_30: Vec<QuantumCell<Fr>> = (0..30)
-                    .map(|i| QuantumCell::Constant(Fr::from(256u64).pow([i as u64])))
-                    .collect();
-                let powers_le_2: Vec<QuantumCell<Fr>> = (0..2)
-                    .map(|i| QuantumCell::Constant(Fr::from(256u64).pow([i as u64])))
-                    .collect();
 
                 let salt_native = compute_salt_native(self.sk_u);
                 let salt_bytes_native = fr_to_bytes(salt_native);
@@ -522,7 +506,7 @@ impl Circuit<Fr> for HopProofCircuit {
                             .iter()
                             .map(|c| QuantumCell::Existing(*c))
                             .collect();
-                        gate.inner_product(ctx, cells, powers_le_30.clone())
+                        gate.inner_product(ctx, cells, powers_le_32[..30].iter().cloned())
                     };
                     let chunk1 = gate.mul_add(
                         ctx,
@@ -535,7 +519,7 @@ impl Circuit<Fr> for HopProofCircuit {
                             .iter()
                             .map(|c| QuantumCell::Existing(*c))
                             .collect();
-                        gate.inner_product(ctx, cells, powers_le_2.clone())
+                        gate.inner_product(ctx, cells, powers_le_32[..2].iter().cloned())
                     };
                     hasher.hash_fix_len_array(ctx, gate, &[salt_chunk0, chunk1, chunk2])
                 };
