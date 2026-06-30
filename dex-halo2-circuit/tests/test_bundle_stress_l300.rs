@@ -21,15 +21,16 @@ use halo2_base::utils::fs::gen_srs;
 use halo2_base::utils::testing::{check_proof_with_instances, gen_proof_with_instances};
 use std::time::Instant;
 
-const K: u32 = 19;
+const K: u32 = 17;
 
 fn bundle_circuit_params() -> BaseCircuitParams {
+    // Smartphone budget: K ≤ 17 per MULTITHREAD_CIRCUIT_SPEC §8.1.
     BaseCircuitParams {
         k: K as usize,
-        num_advice_per_phase: vec![56],
+        num_advice_per_phase: vec![110],
         num_fixed: 1,
-        num_lookup_advice_per_phase: vec![4],
-        lookup_bits: Some(18),
+        num_lookup_advice_per_phase: vec![8],
+        lookup_bits: Some(16),
         num_instance_columns: 1,
     }
 }
