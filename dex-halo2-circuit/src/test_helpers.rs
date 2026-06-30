@@ -304,7 +304,7 @@ pub struct SynthChain {
 /// continuity check holds.
 ///
 /// For `k_hops = 0` the chain degenerates: all `N_BUNDLE * H` hops inactive,
-/// all endpoints equal `Poseidon(salt, bytes_to_fr(block_ids[0]))`.
+/// all endpoints equal `hash_bytes_flat(fr_to_bytes(salt) ‖ block_ids[0])`.
 pub fn synth_chain(seed: u64, k_hops: usize) -> SynthChain {
     use rand::rngs::StdRng;
     use rand::SeedableRng;

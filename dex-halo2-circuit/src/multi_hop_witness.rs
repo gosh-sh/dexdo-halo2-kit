@@ -18,14 +18,16 @@
 //! - **`is_active`** padding flag (spec §6.4): inactive hops collapse to
 //!   `salted_start_block_id == salted_end_block_id == event_salted_block_id`.
 //!
-//! ## Two Poseidon hash families
+//! ## Poseidon hashing: byte-flat sponge everywhere
 //!
-//! - **Shape-mirror** (`ref_*_native`, `proof_block_refs_root_native`, …) —
-//!   Fr-vector Poseidon via `gosh_dense_balanced_tree`. Self-consistent
-//!   within this kit; **does not** match live-GQL L7 roots.
-//! - **Production-parity** (`*_bytes_flat_native`) — byte-flat sponge
-//!   identical to `tvm-sdk` `PoseidonSponge::hash_bytes_flat`. Use these
-//!   whenever a value must equal a live-GQL L7 root.
+//! Every Poseidon image in this kit is computed via `hash_bytes_flat` —
+//! raw bytes are split into 31-byte chunks (top byte of each 32-byte Fr
+//! buffer always zero ⇒ no silent mod-p reduction), each chunk becomes one
+//! Fr, and the resulting `Vec<Fr>` is absorbed through Poseidon. This is
+//! byte-for-byte identical to acki-nacki `node/libs/history-proof`
+//! (`compute_referenced_block_leaf_hash`, `dense_combine`, …) and tvm-sdk
+//! `PoseidonSponge::hash_bytes_flat`, so the kit's roots equal what GQL
+//! would compute over the same block_ids.
 //!
 //! ## Constants — sourced from production
 //!
@@ -143,11 +145,11 @@ pub struct HopWitness {
     pub proof_block_ref_inner_path: [[u8; 32]; MAX_PROOF_BLOCK_REFS_DEPTH],
 
     /// The hop's start endpoint as the verifier sees it:
-    /// `Poseidon([salt, bytes_to_fr(block_id_of_predecessor)])`.
+    /// `hash_bytes_flat(fr_to_bytes(salt) ‖ predecessor_block_id)`.
     pub salted_start_block_id: Fr,
 
     /// The hop's end endpoint:
-    /// `Poseidon([salt, bytes_to_fr(block.block_id)])`.
+    /// `hash_bytes_flat(fr_to_bytes(salt) ‖ block.block_id)`.
     pub salted_end_block_id: Fr,
 }
 
@@ -238,55 +240,71 @@ pub fn verify_block_merkle_leaf_proof(
 }
 
 // ---------------------------------------------------------------------------
-// L7 inner ref-chain helpers — shape-mirror (Fr-vector Poseidon).
+// L7 inner ref-chain helpers — byte-flat Poseidon sponge
 // ---------------------------------------------------------------------------
 //
-// These are self-consistent within this kit but do NOT match live-GQL L7
-// roots — for that, use the `_bytes_flat_*` family below.
+// Byte-for-byte mirrors of acki-nacki `node/libs/history-proof`
+// (`compute_referenced_block_leaf_hash`, `dense_combine`,
+// `compute_referenced_blocks_root`) and tvm-sdk
+// `PoseidonSponge::hash_bytes_flat`. The raw byte concatenation is chunked
+// at 31-byte boundaries with top byte zero ⇒ every Fr input is strictly
+// less than the BN254 Fr modulus, no silent mod-p reduction. Sponge params
+// (`T=3, RATE=2, R_F=8, R_P=57`) come from `gosh_dense_balanced_tree`.
 
 use gosh_dense_balanced_tree::{bytes_to_fr, fr_to_bytes, poseidon_hash_native};
 
-/// Pack a byte tag of arbitrary length into a `Vec<Fr>` by splitting into
-/// 31-byte LE chunks. Used because the production tags
-/// (`acki-nacki:referenced-block:parent:v1`, 37 bytes) exceed the 31-byte
-/// single-Fr limit. The Fr-vector Poseidon input is `[chunks..., block_id]`.
-fn pack_tag_chunks(tag_bytes: &[u8]) -> Vec<Fr> {
-    let mut chunks = Vec::new();
-    for chunk in tag_bytes.chunks(31) {
+/// Native: Poseidon sponge over a raw byte stream, identical to
+/// `PoseidonSponge::hash_bytes_flat` in tvm-sdk.
+///
+/// Chunks `bytes` into 31-byte windows, zero-pads the last to 32, interprets
+/// each chunk as a little-endian `Fr`, and absorbs the resulting `Vec<Fr>`
+/// through `poseidon_hash_native`. The top byte of each 32-byte Fr buffer is
+/// always zero (chunk size = 31), so each absorbed value is guaranteed to be
+/// strictly less than the BN254 Fr modulus.
+pub fn poseidon_bytes_flat_native(bytes: &[u8]) -> [u8; 32] {
+    const CHUNK: usize = 31;
+    let mut inputs: Vec<Fr> = Vec::with_capacity((bytes.len() + CHUNK - 1) / CHUNK);
+    for window in bytes.chunks(CHUNK) {
         let mut buf = [0u8; 32];
-        buf[..chunk.len()].copy_from_slice(chunk);
-        chunks.push(bytes_to_fr(&buf));
+        buf[..window.len()].copy_from_slice(window);
+        inputs.push(bytes_to_fr(&buf));
     }
-    chunks
+    if inputs.is_empty() {
+        // Match production: empty input still goes through one chunk of zeros.
+        inputs.push(bytes_to_fr(&[0u8; 32]));
+    }
+    fr_to_bytes(poseidon_hash_native(&inputs))
 }
 
-/// Native: per-ref leaf hash, shape-mirror only. For byte-for-byte parity
-/// with `history-proof::compute_referenced_block_leaf_hash`, use
-/// [`ref_leaf_hash_bytes_flat_native`].
+/// Native: per-ref leaf hash matching
+/// `history-proof::compute_referenced_block_leaf_hash` byte-for-byte. Index 0
+/// uses the parent tag, ≥1 uses the ref tag, and the entire `tag ‖ block_id`
+/// byte stream is fed through `poseidon_bytes_flat_native`.
 pub fn ref_leaf_hash_native(index: usize, block_id: &[u8; 32]) -> [u8; 32] {
-    let tag_bytes = if index == 0 {
+    let tag_bytes: &[u8] = if index == 0 {
         REFERENCED_PARENT_BLOCK_TAG
     } else {
         REFERENCED_REF_BLOCK_TAG
     };
-    let mut inputs = pack_tag_chunks(tag_bytes);
-    inputs.push(bytes_to_fr(block_id));
-    let out_fr = poseidon_hash_native(&inputs);
-    fr_to_bytes(out_fr)
+    let mut concat = Vec::with_capacity(tag_bytes.len() + 32);
+    concat.extend_from_slice(tag_bytes);
+    concat.extend_from_slice(block_id);
+    poseidon_bytes_flat_native(&concat)
 }
 
-/// Native: combine two children in the Poseidon dense merkle tree
-/// (shape-mirror; for parity use [`ref_inner_combine_bytes_flat_native`]).
+/// Native: pairwise combiner matching production's `dense_combine`
+/// (`hash_bytes_flat(left ‖ right)`).
 pub fn ref_inner_combine_native(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
-    let out = poseidon_hash_native(&[bytes_to_fr(left), bytes_to_fr(right)]);
-    fr_to_bytes(out)
+    let mut concat = [0u8; 64];
+    concat[..32].copy_from_slice(left);
+    concat[32..].copy_from_slice(right);
+    poseidon_bytes_flat_native(&concat)
 }
 
-/// Compute the L7 root over `proof_block_refs` (shape-mirror). Pads to
+/// Native: L7 root computation matching production
+/// `compute_referenced_blocks_root` byte-for-byte. Pads the input to
 /// `MAX_PROOF_BLOCK_REFS` with an inactive padding leaf
-/// (`fr_to_bytes(Fr::from(0))` — the dense-tree convention).
-///
-/// For byte-for-byte GQL parity use [`proof_block_refs_root_bytes_flat_native`].
+/// (`fr_to_bytes(Fr::from(0))`).
 pub fn proof_block_refs_root_native(proof_block_refs: &[[u8; 32]]) -> [u8; 32] {
     assert!(
         proof_block_refs.len() <= MAX_PROOF_BLOCK_REFS,
@@ -300,7 +318,6 @@ pub fn proof_block_refs_root_native(proof_block_refs: &[[u8; 32]]) -> [u8; 32] {
             if i < proof_block_refs.len() {
                 ref_leaf_hash_native(i, &proof_block_refs[i])
             } else {
-                // Padding leaf — matches dense-tree convention (zero Fr).
                 fr_to_bytes(Fr::from(0u64))
             }
         })
@@ -316,8 +333,8 @@ pub fn proof_block_refs_root_native(proof_block_refs: &[[u8; 32]]) -> [u8; 32] {
     layer[0]
 }
 
-/// Open `proof_block_refs[ref_index]` against the L7 root. Returns
-/// `MAX_PROOF_BLOCK_REFS_DEPTH` siblings.
+/// Native: opening of `proof_block_refs[ref_index]` against the L7 root.
+/// Returns `MAX_PROOF_BLOCK_REFS_DEPTH` siblings.
 pub fn proof_block_ref_inner_path_native(
     proof_block_refs: &[[u8; 32]],
     ref_index: usize,
@@ -380,161 +397,7 @@ pub fn verify_proof_block_ref_inner_path(
 }
 
 // ---------------------------------------------------------------------------
-// Production-parity helpers (byte-flat Poseidon sponge)
-// ---------------------------------------------------------------------------
-//
-// Byte-for-byte mirrors of `tvm-sdk` `PoseidonSponge::hash_bytes_flat` and
-// `acki-nacki/node/libs/history-proof::compute_referenced_blocks_root`.
-// Use these whenever a hash must equal a live-GQL value.
-//
-// Sponge params (`T=3, RATE=2, R_F=8, R_P=57`) and the LE-bytes→Fr decoding
-// are identical to tvm-sdk; the only difference vs. the shape-mirror family
-// is that here the full `tag ‖ block_id` byte stream is chunked(31) and
-// absorbed, rather than tag and block_id being packed separately.
-
-/// Native: Poseidon sponge over a raw byte stream, identical to
-/// `PoseidonSponge::hash_bytes_flat` in tvm-sdk.
-///
-/// Chunks `bytes` into 31-byte windows, zero-pads the last to 32, interprets
-/// each chunk as a little-endian `Fr`, and absorbs the resulting `Vec<Fr>`
-/// through `poseidon_hash_native`.
-pub fn poseidon_bytes_flat_native(bytes: &[u8]) -> [u8; 32] {
-    const CHUNK: usize = 31;
-    let mut inputs: Vec<Fr> = Vec::with_capacity((bytes.len() + CHUNK - 1) / CHUNK);
-    for window in bytes.chunks(CHUNK) {
-        let mut buf = [0u8; 32];
-        buf[..window.len()].copy_from_slice(window);
-        inputs.push(bytes_to_fr(&buf));
-    }
-    if inputs.is_empty() {
-        // Match production: empty input still goes through one chunk of zeros.
-        inputs.push(bytes_to_fr(&[0u8; 32]));
-    }
-    fr_to_bytes(poseidon_hash_native(&inputs))
-}
-
-/// Native: per-ref leaf hash matching `history-proof::compute_referenced_block_leaf_hash`
-/// **byte-for-byte**. Index 0 uses the parent tag, ≥1 uses the ref tag, and
-/// the entire `tag ‖ block_id` byte stream is fed through
-/// `poseidon_bytes_flat_native`.
-pub fn ref_leaf_hash_bytes_flat_native(index: usize, block_id: &[u8; 32]) -> [u8; 32] {
-    let tag_bytes: &[u8] = if index == 0 {
-        REFERENCED_PARENT_BLOCK_TAG
-    } else {
-        REFERENCED_REF_BLOCK_TAG
-    };
-    let mut concat = Vec::with_capacity(tag_bytes.len() + 32);
-    concat.extend_from_slice(tag_bytes);
-    concat.extend_from_slice(block_id);
-    poseidon_bytes_flat_native(&concat)
-}
-
-/// Native: pairwise combiner matching production's `dense_combine`
-/// (`hash_bytes_flat(left ‖ right)`).
-pub fn ref_inner_combine_bytes_flat_native(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
-    let mut concat = [0u8; 64];
-    concat[..32].copy_from_slice(left);
-    concat[32..].copy_from_slice(right);
-    poseidon_bytes_flat_native(&concat)
-}
-
-/// Native: L7 root computation matching production
-/// `proof_block_refs_root`/`compute_referenced_blocks_root` byte-for-byte.
-/// Pads the input to `MAX_PROOF_BLOCK_REFS` with an inactive padding leaf
-/// (`fr_to_bytes(Fr::from(0))`).
-pub fn proof_block_refs_root_bytes_flat_native(proof_block_refs: &[[u8; 32]]) -> [u8; 32] {
-    assert!(
-        proof_block_refs.len() <= MAX_PROOF_BLOCK_REFS,
-        "proof_block_refs len {} exceeds MAX_PROOF_BLOCK_REFS {}",
-        proof_block_refs.len(),
-        MAX_PROOF_BLOCK_REFS
-    );
-
-    let mut layer: Vec<[u8; 32]> = (0..MAX_PROOF_BLOCK_REFS)
-        .map(|i| {
-            if i < proof_block_refs.len() {
-                ref_leaf_hash_bytes_flat_native(i, &proof_block_refs[i])
-            } else {
-                fr_to_bytes(Fr::from(0u64))
-            }
-        })
-        .collect();
-
-    while layer.len() > 1 {
-        let mut next = Vec::with_capacity(layer.len() / 2);
-        for pair in layer.chunks(2) {
-            next.push(ref_inner_combine_bytes_flat_native(&pair[0], &pair[1]));
-        }
-        layer = next;
-    }
-    layer[0]
-}
-
-/// Native: opening of `proof_block_refs[ref_index]` against the
-/// byte-flat-Poseidon L7 root.
-pub fn proof_block_ref_inner_path_bytes_flat_native(
-    proof_block_refs: &[[u8; 32]],
-    ref_index: usize,
-) -> [[u8; 32]; MAX_PROOF_BLOCK_REFS_DEPTH] {
-    assert!(
-        ref_index < proof_block_refs.len(),
-        "ref_index {ref_index} ≥ proof_block_refs.len() {}",
-        proof_block_refs.len()
-    );
-    assert!(
-        proof_block_refs.len() <= MAX_PROOF_BLOCK_REFS,
-        "proof_block_refs len {} exceeds MAX_PROOF_BLOCK_REFS {}",
-        proof_block_refs.len(),
-        MAX_PROOF_BLOCK_REFS
-    );
-
-    let mut layer: Vec<[u8; 32]> = (0..MAX_PROOF_BLOCK_REFS)
-        .map(|i| {
-            if i < proof_block_refs.len() {
-                ref_leaf_hash_bytes_flat_native(i, &proof_block_refs[i])
-            } else {
-                fr_to_bytes(Fr::from(0u64))
-            }
-        })
-        .collect();
-
-    let mut idx = ref_index;
-    let mut siblings = [[0u8; 32]; MAX_PROOF_BLOCK_REFS_DEPTH];
-    for d in 0..MAX_PROOF_BLOCK_REFS_DEPTH {
-        let sib_idx = idx ^ 1;
-        siblings[d] = layer[sib_idx];
-        let mut next = Vec::with_capacity(layer.len() / 2);
-        for pair in layer.chunks(2) {
-            next.push(ref_inner_combine_bytes_flat_native(&pair[0], &pair[1]));
-        }
-        layer = next;
-        idx /= 2;
-    }
-    siblings
-}
-
-/// Verify a `proof_block_ref_inner_path_bytes_flat_native` opening.
-pub fn verify_proof_block_ref_inner_path_bytes_flat(
-    root: &[u8; 32],
-    leaf: &[u8; 32],
-    ref_index: usize,
-    siblings: &[[u8; 32]; MAX_PROOF_BLOCK_REFS_DEPTH],
-) -> bool {
-    let mut cur = *leaf;
-    let mut idx = ref_index;
-    for sib in siblings {
-        cur = if idx % 2 == 0 {
-            ref_inner_combine_bytes_flat_native(&cur, sib)
-        } else {
-            ref_inner_combine_bytes_flat_native(sib, &cur)
-        };
-        idx /= 2;
-    }
-    &cur == root
-}
-
-// ---------------------------------------------------------------------------
-// Unit tests (shape-only — no production-wire-format parity)
+// Unit tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -596,57 +459,15 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // Tests for production-parity (bytes-flat) family
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn bytes_flat_root_and_inner_path_roundtrip() {
-        let refs: Vec<[u8; 32]> = (0..5).map(|i| [i as u8 + 200; 32]).collect();
-        let root = proof_block_refs_root_bytes_flat_native(&refs);
-        for (i, r) in refs.iter().enumerate() {
-            let leaf = ref_leaf_hash_bytes_flat_native(i, r);
-            let siblings = proof_block_ref_inner_path_bytes_flat_native(&refs, i);
-            assert!(
-                verify_proof_block_ref_inner_path_bytes_flat(&root, &leaf, i, &siblings),
-                "ref {i} bytes-flat inner-path should verify"
-            );
-        }
-    }
-
-    #[test]
-    fn bytes_flat_parent_and_ref_tags_distinct() {
-        let block_id = [0xBBu8; 32];
-        let parent = ref_leaf_hash_bytes_flat_native(0, &block_id);
-        let refl = ref_leaf_hash_bytes_flat_native(1, &block_id);
-        assert_ne!(parent, refl);
-    }
-
-    /// The two families MUST differ — proves the byte-flat variant is a
-    /// genuinely new hashing convention, not an alias.
-    #[test]
-    fn bytes_flat_differs_from_shape_mirror() {
-        let block_id = [0x77u8; 32];
-        let shape = ref_leaf_hash_native(0, &block_id);
-        let flat = ref_leaf_hash_bytes_flat_native(0, &block_id);
-        assert_ne!(
-            shape, flat,
-            "shape-mirror and byte-flat variants must produce different hashes — \
-             they differ at the byte→Fr chunking boundary"
-        );
-    }
-
-    /// `poseidon_bytes_flat_native` on a 32-byte input that fits in one
-    /// 31-byte chunk + 1 leftover byte should produce the same result as
-    /// running the same chunking by hand.
+    /// `poseidon_bytes_flat_native` on a 32-byte input chunks into 31 + 1 byte
+    /// pieces — verify that the function output matches running the chunking
+    /// by hand.
     #[test]
     fn poseidon_bytes_flat_chunks_match_manual() {
         let input = [0xCCu8; 32];
         let manual = {
-            // chunk 0 (31 bytes from input[0..31], zero-padded to 32)
             let mut c0 = [0u8; 32];
             c0[..31].copy_from_slice(&input[..31]);
-            // chunk 1 (1 byte from input[31..32], zero-padded to 32)
             let mut c1 = [0u8; 32];
             c1[0] = input[31];
             fr_to_bytes(poseidon_hash_native(&[bytes_to_fr(&c0), bytes_to_fr(&c1)]))

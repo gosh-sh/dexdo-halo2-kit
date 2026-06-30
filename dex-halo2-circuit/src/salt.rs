@@ -15,9 +15,11 @@
 //! - [`domain_tag_hop_salt_fr`] — packs the tag into a single `Fr` constant
 //! - [`compute_salt_native`] — `salt = Poseidon([tag_fr, sk_u])`
 //! - [`compute_salt_commitment_native`] — `salt_commitment = Poseidon([salt])`
-//! - [`compute_salted_block_id_native`] — `Poseidon([salt, bytes_to_fr(block_id)])`
+//! - [`compute_salted_block_id_native`] —
+//!   `hash_bytes_flat(fr_to_bytes(salt) ‖ block_id)`
 
-use gosh_dense_balanced_tree::{bytes_to_fr, poseidon_hash_native};
+use crate::multi_hop_witness::poseidon_bytes_flat_native;
+use gosh_dense_balanced_tree::{bytes_to_fr, fr_to_bytes, poseidon_hash_native};
 use halo2_base::halo2_proofs::halo2curves::bn256::Fr;
 
 /// Domain-tag byte string used to bind the voucher's `sk_u` into the per-bundle
@@ -55,14 +57,18 @@ pub fn compute_salt_commitment_native(salt: Fr) -> Fr {
     poseidon_hash_native(&[salt])
 }
 
-/// Native: `salted_block_id = Poseidon([salt, bytes_to_fr(block_id_le)])`.
+/// Native: `salted_block_id = hash_bytes_flat(fr_to_bytes(salt) ‖ block_id_le)`.
 ///
-/// Note: the dex circuit packs `self.block_id` into Fr via `bytes_to_fr`
-/// without any byte-reverse. So callers feeding `self.block_id` here will
-/// produce a value identical to the in-circuit computation, regardless of
-/// whether the underlying bytes are "true" BE or LE.
+/// The salt is serialised as its 32-byte LE field-element representation
+/// (top byte < `0x40` because `salt < Fr_modulus`), concatenated with the
+/// 32-byte block_id, and the 64-byte stream is fed through the byte-flat
+/// Poseidon sponge. Every absorbed Fr chunk is guaranteed `< Fr_modulus`,
+/// so no silent mod-p reduction.
 pub fn compute_salted_block_id_native(salt: Fr, block_id_le: &[u8; 32]) -> Fr {
-    poseidon_hash_native(&[salt, bytes_to_fr(block_id_le)])
+    let mut concat = [0u8; 64];
+    concat[..32].copy_from_slice(&fr_to_bytes(salt));
+    concat[32..].copy_from_slice(block_id_le);
+    bytes_to_fr(&poseidon_bytes_flat_native(&concat))
 }
 
 #[cfg(test)]
