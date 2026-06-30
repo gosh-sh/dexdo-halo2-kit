@@ -83,12 +83,13 @@
 //! 3. **Salt math** — `salt = Poseidon([DOMAIN_TAG_HOP_SALT_FR, sk_u])` and
 //!    `salt_commitment = Poseidon([salt])` (Fr-vector, both inputs canonical
 //!    Fr). The salted endpoints use the byte-flat encoding of
-//!    `fr_to_bytes(salt) ‖ other(32 B)`: `salt_fr` is decomposed once into
-//!    `chunk0(31 B) + salt_hi(1 B) · 2^248` (range-checked, algebraically
-//!    linked), then reused for both endpoints. `chunk1 = salt_hi + 256 ·
-//!    inner_product(other[0..30], 256^[0..30])` and `chunk2 =
-//!    inner_product(other[30..32], 256^[0..2])` are computed for
-//!    `other = ref_block_id` (start) and `other = block_id` (end). This is the
+//!    `fr_to_bytes(salt) ‖ endpoint_id_bytes(32 B)`: `salt_fr` is decomposed
+//!    once into `chunk0(31 B) + salt_hi(1 B) · 2^248` (range-checked,
+//!    algebraically linked), then reused for both endpoints. `chunk1 =
+//!    salt_hi + 256 · inner_product(endpoint_id_bytes[0..30], 256^[0..30])`
+//!    and `chunk2 = inner_product(endpoint_id_bytes[30..32], 256^[0..2])` are
+//!    computed for `endpoint_id_bytes = ref_block_id` (start) and
+//!    `endpoint_id_bytes = block_id` (end). This is the
 //!    production rule of `compute_salted_block_id_native`.
 
 use gosh_dense_balanced_tree::{
@@ -472,10 +473,10 @@ impl Circuit<Fr> for HopProofCircuit {
                 }
 
                 // === Salted endpoints (byte-flat) ===
-                // Data = fr_to_bytes(salt)(32 B) || other(32 B); chunks 31+31+2:
+                // Data = fr_to_bytes(salt)(32 B) || endpoint_id_bytes(32 B); chunks 31+31+2:
                 //   chunk0 = LE(salt[0..31])                        (shared)
-                //   chunk1 = salt_hi + 256 · LE(other[0..30])
-                //   chunk2 = LE(other[30..32])
+                //   chunk1 = salt_hi + 256 · LE(endpoint_id_bytes[0..30])
+                //   chunk2 = LE(endpoint_id_bytes[30..32])
                 // salt is an Fr (Poseidon output) — decompose once:
                 //   salt_fr == salt_chunk0 + salt_hi · 2^248
                 //   range_check(salt_chunk0, 248) + range_check(salt_hi, 8)
@@ -514,10 +515,10 @@ impl Circuit<Fr> for HopProofCircuit {
 
                 // Helper closure body inlined twice (ref_block_id, block_id).
                 let salted_endpoint = |ctx: &mut halo2_base::Context<Fr>,
-                                       other: &[AssignedValue<Fr>]|
+                                       endpoint_id_bytes: &[AssignedValue<Fr>]|
                  -> AssignedValue<Fr> {
-                    let other_lo30 = {
-                        let cells: Vec<QuantumCell<Fr>> = other[0..30]
+                    let endpoint_id_lo30 = {
+                        let cells: Vec<QuantumCell<Fr>> = endpoint_id_bytes[0..30]
                             .iter()
                             .map(|c| QuantumCell::Existing(*c))
                             .collect();
@@ -525,12 +526,12 @@ impl Circuit<Fr> for HopProofCircuit {
                     };
                     let chunk1 = gate.mul_add(
                         ctx,
-                        QuantumCell::Existing(other_lo30),
+                        QuantumCell::Existing(endpoint_id_lo30),
                         QuantumCell::Existing(pow_256),
                         QuantumCell::Existing(salt_hi),
                     );
                     let chunk2 = {
-                        let cells: Vec<QuantumCell<Fr>> = other[30..32]
+                        let cells: Vec<QuantumCell<Fr>> = endpoint_id_bytes[30..32]
                             .iter()
                             .map(|c| QuantumCell::Existing(*c))
                             .collect();

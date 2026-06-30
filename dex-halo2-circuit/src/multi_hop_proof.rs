@@ -57,7 +57,8 @@
 //!   `(cur_bytes[i] - block_id_bytes[i]) * is_active == 0`.
 //! - **Salted endpoints** — `start_computed` and `end_computed` are derived
 //!   unconditionally via the byte-flat `Poseidon([salt_chunk0,
-//!   salt_hi + 256·LE(other[0..30]), LE(other[30..32])])` rule. Equality vs
+//!   salt_hi + 256·LE(endpoint_id_bytes[0..30]),
+//!   LE(endpoint_id_bytes[30..32])])` rule. Equality vs
 //!   the witnessed `salted_*_block_id` is active-gated:
 //!   `(salted_start_block_id - start_computed) * is_active == 0` (and
 //!   similarly for end).
@@ -555,16 +556,16 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                         gate.assert_is_const(ctx, &gated, &Fr::zero());
                     }
 
-                    // Byte-flat salted endpoints (data = salt || other, 31+31+2).
+                    // Byte-flat salted endpoints (data = salt || endpoint_id_bytes, 31+31+2).
                     // Computed unconditionally — only the equality vs the
                     // witnessed salted_*_block_id is gated.
                     let salted_endpoint = |ctx: &mut halo2_base::Context<Fr>,
-                                           other: &[AssignedValue<Fr>],
+                                           endpoint_id_bytes: &[AssignedValue<Fr>],
                                            powers_le_30: &[QuantumCell<Fr>],
                                            powers_le_2: &[QuantumCell<Fr>]|
                      -> AssignedValue<Fr> {
-                        let other_lo30 = {
-                            let cells: Vec<QuantumCell<Fr>> = other[0..30]
+                        let endpoint_id_lo30 = {
+                            let cells: Vec<QuantumCell<Fr>> = endpoint_id_bytes[0..30]
                                 .iter()
                                 .map(|c| QuantumCell::Existing(*c))
                                 .collect();
@@ -572,12 +573,12 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                         };
                         let chunk1 = gate.mul_add(
                             ctx,
-                            QuantumCell::Existing(other_lo30),
+                            QuantumCell::Existing(endpoint_id_lo30),
                             QuantumCell::Existing(pow_256),
                             QuantumCell::Existing(salt_hi),
                         );
                         let chunk2 = {
-                            let cells: Vec<QuantumCell<Fr>> = other[30..32]
+                            let cells: Vec<QuantumCell<Fr>> = endpoint_id_bytes[30..32]
                                 .iter()
                                 .map(|c| QuantumCell::Existing(*c))
                                 .collect();
