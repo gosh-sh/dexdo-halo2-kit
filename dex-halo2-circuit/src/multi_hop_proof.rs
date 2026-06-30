@@ -1,4 +1,15 @@
-//! Phase 4 MultiHopProof circuit — Stage 2c Phase A (single-hop, all-active).
+//! MultiHopProof circuit — three variants of increasing scope.
+//!
+//! Three circuit structs live in this file, each strictly extending the
+//! previous:
+//!
+//! - [`MultiHopProofCircuit`] (Phase A) — single hop, all-active. The
+//!   detailed scope/layout/witness/constraints below describe this variant.
+//! - [`MultiHopProofCircuitB`] (Phase B, see L375) — `H_HOPS_PER_PROOF = 5`
+//!   hops, all active, with intra-snark continuity
+//!   `hops[i].salted_end_block_id == hops[i+1].salted_start_block_id`.
+//! - [`MultiHopProofCircuitC`] (Phase C, see L655) — H=5 with an `is_active`
+//!   selector for inactive padding hops (the production-shape variant).
 //!
 //! ## Scope (Phase A)
 //!
@@ -42,18 +53,20 @@
 //!    `Poseidon([cur, sibling])` calls walk to the L7 root (ref-index 0:
 //!    current always on the left). Final Fr is constrained equal to the
 //!    LE-byte-packed L7 value.
-//! 3. **Salt math** — `salt`, `salt_commitment`, `salted_start_block_id`, `salted_end_block_id`
-//!    all derived via `PoseidonHasher::hash_fix_len_array` using the
+//! 3. **Salt math** — `salt`, `salt_commitment`, `salted_start_block_id`,
+//!    `salted_end_block_id` all derived via
+//!    `PoseidonHasher::hash_fix_len_array` using the
 //!    `gosh_dense_balanced_tree::{T,RATE,R_F,R_P}` parameters.
 //!
-//! ## Not yet covered (later phases)
+//! ## Production-parity gaps
 //!
-//! - `TODO(stage-2c-phase-b)`: extend to H=5 with internal hop continuity
-//!   (`ctx.constrain_equal(hops[i].salted_end_block_id, hops[i+1].salted_start_block_id)`).
-//! - `TODO(stage-2c-phase-c)`: `is_active` selector + inactive padding.
-//! - `TODO(stage-2c-suffix)`: byte-flat-Poseidon variant of the ref-tree
-//!   walk (production-wire parity against live GQL L7 roots).
-//! - `TODO(phase-4-prod)`: bump `MAX_PROOF_BLOCK_REFS` from 16 → 256.
+//! - **Byte-flat Poseidon in-circuit** — the ref-tree walk uses Fr-vector
+//!   Poseidon, not the byte-flat sponge that `history-proof` uses. Native
+//!   parity helpers exist in `multi_hop_witness::*_bytes_flat_native`, but
+//!   no in-circuit byte-flat chip is wired yet, so circuit-produced L7
+//!   roots will not equal live-GQL L7 roots.
+//! - **`MAX_PROOF_BLOCK_REFS = 16`** — first-cut testing value; production
+//!   needs 256 (spec §10.1). Bumping only enlarges the L7-inner-path padding.
 
 use gosh_dense_balanced_tree::{bytes_to_fr, R_F, R_P, RATE, T};
 use gosh_sha256_chip::Sha256Chip;
@@ -370,7 +383,6 @@ impl Circuit<Fr> for MultiHopProofCircuit {
 //   salt_commitment]`
 //
 // Phase A remains in this file as a regression-checked single-hop scaffold.
-// Phase C (later) will add an `is_active` selector for padding slots.
 
 pub struct MultiHopProofCircuitB {
     /// Private witness: voucher secret.
