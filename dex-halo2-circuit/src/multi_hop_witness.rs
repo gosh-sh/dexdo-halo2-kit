@@ -303,6 +303,35 @@ pub fn ref_leaf_tag_chunk1_lo_fr() -> Fr {
     bytes_to_fr(&buf)
 }
 
+/// Byte-flat ref-leaf chunk0 constant for the **ref-tag** layout (ref_index ≥ 1):
+/// LE-pack of `REFERENCED_REF_BLOCK_TAG[0..31]`.
+///
+/// Used when the ref-leaf is opened at a non-parent slot. The byte-flat
+/// encoding of `tag(34 B) ‖ id(32 B)` (66 bytes total) splits into three
+/// 31-byte chunks: `chunk0 = data[0..31]` is the tag's first 31 bytes —
+/// entirely constant.
+pub fn ref_leaf_ref_tag_chunk0_fr() -> Fr {
+    let bytes = REFERENCED_REF_BLOCK_TAG;
+    let mut buf = [0u8; 32];
+    buf[..31].copy_from_slice(&bytes[..31]);
+    bytes_to_fr(&buf)
+}
+
+/// Byte-flat ref-leaf chunk1 constant-tail for the **ref-tag** layout:
+/// LE-pack of `REFERENCED_REF_BLOCK_TAG[31..34]`.
+///
+/// `chunk1 = data[31..62]` covers the last 3 tag bytes followed by
+/// `id[0..28]`. The constant-tail (these 3 bytes packed at LE positions
+/// 0..3 of the chunk) is loaded once; the witness contribution (`id[0..28]`
+/// packed at LE positions 3..31) is added in-circuit via
+/// `inner_product(id[0..28], [256^3, ..., 256^30])`.
+pub fn ref_leaf_ref_tag_chunk1_lo_fr() -> Fr {
+    let bytes = REFERENCED_REF_BLOCK_TAG;
+    let mut buf = [0u8; 32];
+    buf[..3].copy_from_slice(&bytes[31..34]);
+    bytes_to_fr(&buf)
+}
+
 /// Native: per-ref leaf hash matching
 /// `history-proof::compute_referenced_block_leaf_hash` byte-for-byte. Index 0
 /// uses the parent tag, ≥1 uses the ref tag, and the entire `tag ‖ block_id`

@@ -60,6 +60,7 @@ fn hop_to_multi_hop(
         block_id: h.block.block_id,
         l7: h.block.block_merkle_tree_leaves[7],
         block_merkle_leaf_proof_l7: h.block_merkle_leaf_proof_l7,
+        ref_index: h.ref_index,
         proof_block_ref_inner_path: h.proof_block_ref_inner_path,
         salted_start_block_id: h.salted_start_block_id,
         salted_end_block_id: h.salted_end_block_id,
