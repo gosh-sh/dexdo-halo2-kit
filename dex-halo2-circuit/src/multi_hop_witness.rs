@@ -282,7 +282,7 @@ pub fn poseidon_bytes_flat_native(bytes: &[u8]) -> [u8; 32] {
 /// splits into three 31-byte chunks: `chunk0 = data[0..31]` is the tag's
 /// first 31 bytes — entirely constant, so callers load it once via
 /// `ctx.load_constant`.
-pub fn ref_leaf_tag_chunk0_fr() -> Fr {
+pub fn ref_leaf_parent_tag_chunk0_fr() -> Fr {
     let bytes = REFERENCED_PARENT_BLOCK_TAG;
     let mut buf = [0u8; 32];
     buf[..31].copy_from_slice(&bytes[..31]);
@@ -296,7 +296,7 @@ pub fn ref_leaf_tag_chunk0_fr() -> Fr {
 /// positions 0..6 of the chunk) is loaded once; the witness contribution
 /// (`parent_id[0..25]` packed at LE positions 6..31) is added in-circuit
 /// via `inner_product(parent_id[0..25], [256^6, ..., 256^30])`.
-pub fn ref_leaf_tag_chunk1_lo_fr() -> Fr {
+pub fn ref_leaf_parent_tag_chunk1_lo_fr() -> Fr {
     let bytes = REFERENCED_PARENT_BLOCK_TAG;
     let mut buf = [0u8; 32];
     buf[..6].copy_from_slice(&bytes[31..37]);

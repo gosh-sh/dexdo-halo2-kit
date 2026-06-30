@@ -93,7 +93,8 @@ use std::cell::RefCell;
 
 use crate::multi_hop_witness::{
     ref_leaf_hash_native, ref_leaf_ref_tag_chunk0_fr, ref_leaf_ref_tag_chunk1_lo_fr,
-    ref_leaf_tag_chunk0_fr, ref_leaf_tag_chunk1_lo_fr, BLOCK_MERKLE_DEPTH, H_HOPS_PER_PROOF,
+    ref_leaf_parent_tag_chunk0_fr, ref_leaf_parent_tag_chunk1_lo_fr, BLOCK_MERKLE_DEPTH,
+    H_HOPS_PER_PROOF,
     MAX_PROOF_BLOCK_REFS_DEPTH,
 };
 use crate::salt::{compute_salt_native, domain_tag_hop_salt_fr};
@@ -266,9 +267,9 @@ impl Circuit<Fr> for MultiHopProofCircuit {
 
                 // === Byte-flat constants (reused across all hops) ===
                 // Parent-tag (37 B) chunk constants.
-                let ref_leaf_c0_const_p = ctx.load_constant(ref_leaf_tag_chunk0_fr());
+                let ref_leaf_c0_const_p = ctx.load_constant(ref_leaf_parent_tag_chunk0_fr());
                 let ref_leaf_tag_lo_const_p =
-                    ctx.load_constant(ref_leaf_tag_chunk1_lo_fr());
+                    ctx.load_constant(ref_leaf_parent_tag_chunk1_lo_fr());
                 // Ref-tag (34 B) chunk constants.
                 let ref_leaf_c0_const_r =
                     ctx.load_constant(ref_leaf_ref_tag_chunk0_fr());

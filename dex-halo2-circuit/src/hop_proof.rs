@@ -110,7 +110,7 @@ use std::cell::RefCell;
 
 use crate::multi_hop_witness::{
     ref_leaf_hash_native, ref_leaf_ref_tag_chunk0_fr, ref_leaf_ref_tag_chunk1_lo_fr,
-    ref_leaf_tag_chunk0_fr, ref_leaf_tag_chunk1_lo_fr, BLOCK_MERKLE_DEPTH,
+    ref_leaf_parent_tag_chunk0_fr, ref_leaf_parent_tag_chunk1_lo_fr, BLOCK_MERKLE_DEPTH,
     MAX_PROOF_BLOCK_REFS_DEPTH,
 };
 use crate::salt::{compute_salt_native, domain_tag_hop_salt_fr};
@@ -331,9 +331,9 @@ impl Circuit<Fr> for HopProofCircuit {
                 //   c2_r = LE(ref_block_id[28..32])     ip(., 256^[0..4])
                 // Both layouts are computed unconditionally; the final triple
                 // is `select`ed on `is_parent_slot`.
-                let ref_leaf_c0_p = ctx.load_constant(ref_leaf_tag_chunk0_fr());
+                let ref_leaf_c0_p = ctx.load_constant(ref_leaf_parent_tag_chunk0_fr());
                 let ref_leaf_c0_r = ctx.load_constant(ref_leaf_ref_tag_chunk0_fr());
-                let ref_leaf_tag_lo_p = ctx.load_constant(ref_leaf_tag_chunk1_lo_fr());
+                let ref_leaf_tag_lo_p = ctx.load_constant(ref_leaf_parent_tag_chunk1_lo_fr());
                 let ref_leaf_tag_lo_r = ctx.load_constant(ref_leaf_ref_tag_chunk1_lo_fr());
                 let pow_256_6 = ctx.load_constant(Fr::from(256u64).pow([6u64]));
                 let pow_256_3 = ctx.load_constant(Fr::from(256u64).pow([3u64]));
