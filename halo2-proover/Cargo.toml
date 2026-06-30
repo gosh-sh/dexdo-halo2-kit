@@ -21,7 +21,7 @@ sha2 = "0.10"
 gosh-dark-dex-halo2-new-circuit = { path = "../dex-halo2-circuit", package = "dex-halo2-circuit" }
 gosh-dense-balanced-tree = { git = "https://github.com/gosh-sh/gosh-halo2-crypto-lib", branch = "main" }
 halo2-base = { git = "https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381", branch = "main", default-features = false, features = ["halo2-axiom", "test-utils"] }
-tvm_types = { git = "https://github.com/tvmlabs/tvm-sdk.git", package = "tvm_types" }
-tvm_block = { git = "https://github.com/tvmlabs/tvm-sdk.git", package = "tvm_block" }
+tvm_types = { git = "https://github.com/tvmlabs/tvm-sdk.git", tag = "v3.0.3-rc.an", package = "tvm_types" }
+tvm_block = { git = "https://github.com/tvmlabs/tvm-sdk.git", tag = "v3.0.3-rc.an", package = "tvm_block" }
 pse-poseidon = { git = "https://github.com/axiom-crypto/pse-poseidon.git" }
 failure = "0.1"
