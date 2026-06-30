@@ -7,7 +7,8 @@
 //! hop's `salted_end_block_id`, and the bundle's `salt_commitment` as
 //! public instances.
 //!
-//! For the elementary single-hop building block, see
+//! For a standalone single-hop example circuit (not used here, but with
+//! the same per-hop constraint shape), see
 //! [`crate::hop_proof::HopProofCircuit`].
 //!
 //! ## Public instance layout (3 Fr — `MULTI_HOP_PUBLIC_LEN`)

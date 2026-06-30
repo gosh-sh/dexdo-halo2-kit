@@ -7,10 +7,14 @@
 //! `ref_index`. Exposes the two salted endpoints and the bundle's
 //! `salt_commitment` as public instances.
 //!
-//! [`HopProofCircuit`] is the elementary building block; the bundle-scope
-//! production circuit is [`crate::multi_hop_proof::MultiHopProofCircuit`],
-//! which proves `H_HOPS_PER_PROOF` hops at once and adds an `is_active`
-//! padding selector.
+//! [`HopProofCircuit`] is a standalone single-hop example and is **not**
+//! used by the production bundle-scope circuit
+//! [`crate::multi_hop_proof::MultiHopProofCircuit`] — they share the same
+//! per-hop constraint shape (salted endpoints, ref-tree opening, SHA-256
+//! L7 path) but are independent `Circuit<Fr>` impls. The production
+//! circuit proves `H_HOPS_PER_PROOF` hops at once and adds an
+//! `is_active` padding selector; this single-hop version exists as a
+//! self-contained reference / MockProver target.
 //!
 //! ## Scope
 //!
