@@ -24,11 +24,11 @@
 //! - `is_active`: bool selector. Inactive hops skip ref-tree / SHA-256 /
 //!   salted-endpoint equality enforcement and instead propagate the bundle's
 //!   terminal salted value.
-//! - `parent_id`, `block_id`, `l7`, `block_merkle_leaf_proof_l7`,
+//! - `ref_block_id`, `block_id`, `l7`, `block_merkle_leaf_proof_l7`,
 //!   `ref_index`, `proof_block_ref_inner_path`: same shape as
 //!   [`crate::hop_proof::HopProofWitness`]. `ref_index` is a private
 //!   per-hop witness in `0..MAX_PROOF_BLOCK_REFS` selecting which slot of
-//!   the on-chain `proof_block_refs` list holds `parent_id` (index 0 ⇒
+//!   the on-chain `proof_block_refs` list holds `ref_block_id` (index 0 ⇒
 //!   parent tag, ≥1 ⇒ ref tag).
 //! - `salted_start_block_id`, `salted_end_block_id`: explicit authoritative
 //!   endpoints (the synth chain's terminal values for inactive padding,
@@ -45,7 +45,7 @@
 //! Per hop:
 //! - `is_active` is range-constrained to `{0, 1}` via `gate.assert_bit`.
 //! - **Ref-tree** — `ref_leaf = Poseidon([c0, c1, c2])` (byte-flat chunks of
-//!   `tag ‖ parent_id`, see [`crate::hop_proof`]) is walked through
+//!   `tag ‖ ref_block_id`, see [`crate::hop_proof`]) is walked through
 //!   `dense_merkle_root_circuit` to produce `computed_l7_fr`. The internal
 //!   range checks and chunk-link constraints inside the walk are
 //!   unconditional decomposition constraints. Only the final equality
@@ -108,15 +108,15 @@ pub const MULTI_HOP_PUBLIC_LEN: usize = 3;
 /// `salted_end_block_id` for the hop (the synth chain's endpoints — needed
 /// because inactive padding hops carry the bundle's terminal value, not
 /// `Poseidon(salt, 0)` which would be derived from zeroed
-/// `parent_id`/`block_id` witness bytes).
+/// `ref_block_id`/`block_id` witness bytes).
 #[derive(Clone, Debug)]
 pub struct MultiHopWitness {
     pub is_active: bool,
-    pub parent_id: [u8; 32],
+    pub ref_block_id: [u8; 32],
     pub block_id: [u8; 32],
     pub l7: [u8; 32],
     pub block_merkle_leaf_proof_l7: [[u8; 32]; BLOCK_MERKLE_DEPTH],
-    /// Position of `parent_id` within the on-chain `proof_block_refs` list
+    /// Position of `ref_block_id` within the on-chain `proof_block_refs` list
     /// (`0..MAX_PROOF_BLOCK_REFS`). Drives per-hop tag selection (index 0 ⇒
     /// parent tag, ≥1 ⇒ ref tag) and the orientation bits inside
     /// `dense_merkle_root_circuit`.
@@ -186,7 +186,7 @@ impl Circuit<Fr> for MultiHopProofCircuit {
     fn without_witnesses(&self) -> Self {
         let dummy_hop = || MultiHopWitness {
             is_active: false,
-            parent_id: [0u8; 32],
+            ref_block_id: [0u8; 32],
             block_id: [0u8; 32],
             l7: [0u8; 32],
             block_merkle_leaf_proof_l7: [[0u8; 32]; BLOCK_MERKLE_DEPTH],
@@ -391,69 +391,69 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                         gate.inner_product(ctx, cells, powers_le_32)
                     };
 
-                    // parent_id as 32 byte cells (range-checked 8 bits each).
-                    let parent_id_bytes: Vec<AssignedValue<Fr>> = hop
-                        .parent_id
+                    // ref_block_id as 32 byte cells (range-checked 8 bits each).
+                    let ref_block_id_bytes: Vec<AssignedValue<Fr>> = hop
+                        .ref_block_id
                         .iter()
                         .map(|&b| ctx.load_witness(Fr::from(b as u64)))
                         .collect();
-                    for cell in &parent_id_bytes {
+                    for cell in &ref_block_id_bytes {
                         range.range_check(ctx, *cell, 8);
                     }
 
                     // Byte-flat ref-leaf chunks, two layouts selected on
                     // `is_parent_slot`:
                     //   Parent layout (tag 37 B): chunks 31+31+7
-                    //     c1_p = tag_p_lo (6 B) + parent_id_lo25 · 256^6
-                    //     c2_p = LE(parent_id[25..32])
+                    //     c1_p = tag_p_lo (6 B) + ref_block_id_lo25 · 256^6
+                    //     c2_p = LE(ref_block_id[25..32])
                     //   Ref layout (tag 34 B): chunks 31+31+4
-                    //     c1_r = tag_r_lo (3 B) + parent_id_lo28 · 256^3
-                    //     c2_r = LE(parent_id[28..32])
+                    //     c1_r = tag_r_lo (3 B) + ref_block_id_lo28 · 256^3
+                    //     c2_r = LE(ref_block_id[28..32])
                     // Parent-layout chunks.
-                    let parent_id_lo25 = {
-                        let cells: Vec<QuantumCell<Fr>> = parent_id_bytes[0..25]
+                    let ref_block_id_lo25 = {
+                        let cells: Vec<QuantumCell<Fr>> = ref_block_id_bytes[0..25]
                             .iter()
                             .map(|c| QuantumCell::Existing(*c))
                             .collect();
                         gate.inner_product(ctx, cells, powers_le_25)
                     };
-                    let parent_id_lo25_shifted = gate.mul(
+                    let ref_block_id_lo25_shifted = gate.mul(
                         ctx,
-                        QuantumCell::Existing(parent_id_lo25),
+                        QuantumCell::Existing(ref_block_id_lo25),
                         QuantumCell::Existing(pow_256_6),
                     );
                     let ref_leaf_c1_p = gate.add(
                         ctx,
                         QuantumCell::Existing(ref_leaf_tag_lo_const_p),
-                        QuantumCell::Existing(parent_id_lo25_shifted),
+                        QuantumCell::Existing(ref_block_id_lo25_shifted),
                     );
                     let ref_leaf_c2_p = {
-                        let cells: Vec<QuantumCell<Fr>> = parent_id_bytes[25..32]
+                        let cells: Vec<QuantumCell<Fr>> = ref_block_id_bytes[25..32]
                             .iter()
                             .map(|c| QuantumCell::Existing(*c))
                             .collect();
                         gate.inner_product(ctx, cells, powers_le_7)
                     };
                     // Ref-layout chunks.
-                    let parent_id_lo28 = {
-                        let cells: Vec<QuantumCell<Fr>> = parent_id_bytes[0..28]
+                    let ref_block_id_lo28 = {
+                        let cells: Vec<QuantumCell<Fr>> = ref_block_id_bytes[0..28]
                             .iter()
                             .map(|c| QuantumCell::Existing(*c))
                             .collect();
                         gate.inner_product(ctx, cells, powers_le_28)
                     };
-                    let parent_id_lo28_shifted = gate.mul(
+                    let ref_block_id_lo28_shifted = gate.mul(
                         ctx,
-                        QuantumCell::Existing(parent_id_lo28),
+                        QuantumCell::Existing(ref_block_id_lo28),
                         QuantumCell::Existing(pow_256_3),
                     );
                     let ref_leaf_c1_r = gate.add(
                         ctx,
                         QuantumCell::Existing(ref_leaf_tag_lo_const_r),
-                        QuantumCell::Existing(parent_id_lo28_shifted),
+                        QuantumCell::Existing(ref_block_id_lo28_shifted),
                     );
                     let ref_leaf_c2_r = {
-                        let cells: Vec<QuantumCell<Fr>> = parent_id_bytes[28..32]
+                        let cells: Vec<QuantumCell<Fr>> = ref_block_id_bytes[28..32]
                             .iter()
                             .map(|c| QuantumCell::Existing(*c))
                             .collect();
@@ -490,7 +490,7 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                     // for any leaf/sibling input (active or padded). Only the
                     // final equality against `l7_fr` is gated by `is_active`.
                     let ref_leaf_native_bytes =
-                        ref_leaf_hash_native(hop.ref_index, &hop.parent_id);
+                        ref_leaf_hash_native(hop.ref_index, &hop.ref_block_id);
                     let ref_proof = preprocess_dense_proof_padded(
                         ref_leaf_native_bytes,
                         &hop.proof_block_ref_inner_path,
@@ -589,7 +589,7 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                     };
                     let start_computed = salted_endpoint(
                         ctx,
-                        &parent_id_bytes,
+                        &ref_block_id_bytes,
                         &powers_le_30,
                         &powers_le_2,
                     );
@@ -685,14 +685,14 @@ mod tests {
     fn hop_to_multi_hop(
         h: &crate::multi_hop_witness::HopWitness,
     ) -> MultiHopWitness {
-        let parent_id = if h.block.proof_block_refs.is_empty() {
+        let ref_block_id = if h.block.proof_block_refs.is_empty() {
             [0u8; 32]
         } else {
-            h.block.proof_block_refs[0]
+            h.block.proof_block_refs[h.ref_index]
         };
         MultiHopWitness {
             is_active: h.is_active,
-            parent_id,
+            ref_block_id,
             block_id: h.block.block_id,
             l7: h.block.block_merkle_tree_leaves[7],
             block_merkle_leaf_proof_l7: h.block_merkle_leaf_proof_l7,

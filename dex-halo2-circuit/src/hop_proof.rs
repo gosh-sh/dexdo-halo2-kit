@@ -1,7 +1,7 @@
 //! HopProof circuit — single-hop proof.
 //!
 //! Proves that a single block `block_id` has a referenced predecessor
-//! `parent_id` recorded at `proof_block_refs[ref_index]` of its on-chain
+//! `ref_block_id` recorded at `proof_block_refs[ref_index]` of its on-chain
 //! ref list, by opening the production-shape merkle path: block-merkle
 //! SHA-256 leaf 7 down to the Poseidon ref-tree leaf at the witnessed
 //! `ref_index`. Exposes the two salted endpoints and the bundle's
@@ -19,7 +19,7 @@
 //!   Index `0` uses `REFERENCED_PARENT_BLOCK_TAG` (37 B); index ≥ 1 uses
 //!   `REFERENCED_REF_BLOCK_TAG` (34 B). The two tags have different lengths,
 //!   so the byte-flat 31-byte chunking absorbs differently many bytes from
-//!   `parent_id` in each chunk; the circuit computes both chunk layouts and
+//!   `ref_block_id` in each chunk; the circuit computes both chunk layouts and
 //!   selects via `is_parent_slot = is_zero(ref_index)`.
 //! - **`leaf_index = 7`** (L7 sits at block-merkle leaf index 7, so all 3
 //!   SHA-256 levels put the current node on the right).
@@ -29,7 +29,7 @@
 //!
 //! | idx | name | derivation |
 //! |---|---|---|
-//! | 0 | `salted_start_block_id` | `bytes_to_fr(hash_bytes_flat(fr_to_bytes(salt) ‖ parent_id))` |
+//! | 0 | `salted_start_block_id` | `bytes_to_fr(hash_bytes_flat(fr_to_bytes(salt) ‖ ref_block_id))` |
 //! | 1 | `salted_end_block_id`   | `bytes_to_fr(hash_bytes_flat(fr_to_bytes(salt) ‖ block_id))` |
 //! | 2 | `salt_commitment`       | `Poseidon([salt])` |
 //!
@@ -37,7 +37,7 @@
 //!
 //! - `sk_u`: drives `salt = Poseidon([DOMAIN_TAG_HOP_SALT_FR, sk_u])` and
 //!   `salt_commitment = Poseidon([salt])`.
-//! - `parent_id` (32 B): the predecessor block referenced by the hop. Feeds
+//! - `ref_block_id` (32 B): the predecessor block referenced by the hop. Feeds
 //!   the ref-tree leaf computation and `salted_start_block_id`.
 //! - `block_id` (32 B): the hop's target block. Feeds the SHA-256 path
 //!   target and `salted_end_block_id`.
@@ -47,7 +47,7 @@
 //! - `proof_block_ref_inner_path`: `MAX_PROOF_BLOCK_REFS_DEPTH` byte-flat
 //!   Poseidon siblings opening the ref-leaf against L7 at the witnessed
 //!   `ref_index`.
-//! - `ref_index`: position of `parent_id` within `proof_block_refs`
+//! - `ref_index`: position of `ref_block_id` within `proof_block_refs`
 //!   (`0..MAX_PROOF_BLOCK_REFS`). Drives the tag selection and is range-
 //!   checked to `MAX_PROOF_BLOCK_REFS_DEPTH` bits in-circuit.
 //!
@@ -59,14 +59,14 @@
 //!    `block_id` byte-by-byte.
 //! 2. **Ref-tree path (byte-flat)** —
 //!    - `ref_leaf = Poseidon([c0, c1, c2])` where `(c0, c1, c2)` are the
-//!      31-byte chunks of `tag ‖ parent_id`. Two layouts coexist, selected
+//!      31-byte chunks of `tag ‖ ref_block_id`. Two layouts coexist, selected
 //!      by `is_parent_slot = is_zero(ref_index)`:
 //!      - **Parent layout** (tag is 37 B): `c0 = tag_p[0..31]`,
-//!        `c1 = tag_p[31..37] (6 B) ‖ parent_id[0..25] (25 B)`,
-//!        `c2 = inner_product(parent_id[25..32], 256^[0..7])`.
+//!        `c1 = tag_p[31..37] (6 B) ‖ ref_block_id[0..25] (25 B)`,
+//!        `c2 = inner_product(ref_block_id[25..32], 256^[0..7])`.
 //!      - **Ref layout** (tag is 34 B): `c0 = tag_r[0..31]`,
-//!        `c1 = tag_r[31..34] (3 B) ‖ parent_id[0..28] (28 B)`,
-//!        `c2 = inner_product(parent_id[28..32], 256^[0..4])`.
+//!        `c1 = tag_r[31..34] (3 B) ‖ ref_block_id[0..28] (28 B)`,
+//!        `c2 = inner_product(ref_block_id[28..32], 256^[0..4])`.
 //!      Both are computed unconditionally and the final `(c0, c1, c2)`
 //!      triple is `select`ed on `is_parent_slot`.
 //!    - Ref-tree walk uses `gosh_dense_balanced_tree::dense_merkle_root_circuit`
@@ -84,7 +84,7 @@
 //!    linked), then reused for both endpoints. `chunk1 = salt_hi + 256 ·
 //!    inner_product(other[0..30], 256^[0..30])` and `chunk2 =
 //!    inner_product(other[30..32], 256^[0..2])` are computed for
-//!    `other = parent_id` (start) and `other = block_id` (end). This is the
+//!    `other = ref_block_id` (start) and `other = block_id` (end). This is the
 //!    production rule of `compute_salted_block_id_native`.
 
 use gosh_dense_balanced_tree::{
@@ -121,13 +121,13 @@ pub const HOP_PROOF_PUBLIC_LEN: usize = 3;
 /// the fields this circuit doesn't consume.
 #[derive(Clone, Debug)]
 pub struct HopProofWitness {
-    pub parent_id: [u8; 32],
+    pub ref_block_id: [u8; 32],
     pub block_id: [u8; 32],
     pub l7: [u8; 32],
     /// 3 SHA-256 siblings opening L7 to `block_id` at leaf 7. Order: bottom-up
     /// (siblings[0] = pair with L7 → next level up; etc).
     pub block_merkle_leaf_proof_l7: [[u8; 32]; BLOCK_MERKLE_DEPTH],
-    /// Position of `parent_id` within the on-chain `proof_block_refs` list.
+    /// Position of `ref_block_id` within the on-chain `proof_block_refs` list.
     /// Drives the tag selection (index 0 ⇒ parent tag, ≥1 ⇒ ref tag) and the
     /// orientation bits inside `dense_merkle_root_circuit`.
     pub ref_index: usize,
@@ -195,7 +195,7 @@ impl Circuit<Fr> for HopProofCircuit {
 
     fn without_witnesses(&self) -> Self {
         let dummy_hop = HopProofWitness {
-            parent_id: [0u8; 32],
+            ref_block_id: [0u8; 32],
             block_id: [0u8; 32],
             l7: [0u8; 32],
             block_merkle_leaf_proof_l7: [[0u8; 32]; BLOCK_MERKLE_DEPTH],
@@ -291,17 +291,17 @@ impl Circuit<Fr> for HopProofCircuit {
                     gate.inner_product(ctx, cells, powers_le_32)
                 };
 
-                // === parent_id as 32 byte cells (range-checked 8 bits each) ===
+                // === ref_block_id as 32 byte cells (range-checked 8 bits each) ===
                 // Byte-flat encoding needs byte-level access at two
                 // different split points (byte 25 for ref-leaf, byte 30 for
                 // salted-start), so we witness all 32 bytes once.
-                let parent_id_bytes: Vec<AssignedValue<Fr>> = self
+                let ref_block_id_bytes: Vec<AssignedValue<Fr>> = self
                     .hop
-                    .parent_id
+                    .ref_block_id
                     .iter()
                     .map(|&b| ctx.load_witness(Fr::from(b as u64)))
                     .collect();
-                for cell in &parent_id_bytes {
+                for cell in &ref_block_id_bytes {
                     range.range_check(ctx, *cell, 8);
                 }
 
@@ -319,12 +319,12 @@ impl Circuit<Fr> for HopProofCircuit {
                 // === Byte-flat ref-leaf = Poseidon([c0, c1, c2]) ===
                 // Parent layout (tag 37 B, id 32 B = 69 B → chunks 31+31+7):
                 //   c0_p = LE(tag_p[0..31])                              [const]
-                //   c1_p = tag_p_lo (6 B const) + parent_id_lo25 · 256^6
-                //   c2_p = LE(parent_id[25..32])     ip(., 256^[0..7])
+                //   c1_p = tag_p_lo (6 B const) + ref_block_id_lo25 · 256^6
+                //   c2_p = LE(ref_block_id[25..32])     ip(., 256^[0..7])
                 // Ref layout    (tag 34 B, id 32 B = 66 B → chunks 31+31+4):
                 //   c0_r = LE(tag_r[0..31])                              [const]
-                //   c1_r = tag_r_lo (3 B const) + parent_id_lo28 · 256^3
-                //   c2_r = LE(parent_id[28..32])     ip(., 256^[0..4])
+                //   c1_r = tag_r_lo (3 B const) + ref_block_id_lo28 · 256^3
+                //   c2_r = LE(ref_block_id[28..32])     ip(., 256^[0..4])
                 // Both layouts are computed unconditionally; the final triple
                 // is `select`ed on `is_parent_slot`.
                 let ref_leaf_c0_p = ctx.load_constant(ref_leaf_tag_chunk0_fr());
@@ -347,25 +347,25 @@ impl Circuit<Fr> for HopProofCircuit {
                     .collect();
 
                 // Parent-layout chunks.
-                let parent_id_lo25 = {
-                    let cells: Vec<QuantumCell<Fr>> = parent_id_bytes[0..25]
+                let ref_block_id_lo25 = {
+                    let cells: Vec<QuantumCell<Fr>> = ref_block_id_bytes[0..25]
                         .iter()
                         .map(|c| QuantumCell::Existing(*c))
                         .collect();
                     gate.inner_product(ctx, cells, powers_le_25)
                 };
-                let parent_id_lo25_shifted = gate.mul(
+                let ref_block_id_lo25_shifted = gate.mul(
                     ctx,
-                    QuantumCell::Existing(parent_id_lo25),
+                    QuantumCell::Existing(ref_block_id_lo25),
                     QuantumCell::Existing(pow_256_6),
                 );
                 let ref_leaf_c1_p = gate.add(
                     ctx,
                     QuantumCell::Existing(ref_leaf_tag_lo_p),
-                    QuantumCell::Existing(parent_id_lo25_shifted),
+                    QuantumCell::Existing(ref_block_id_lo25_shifted),
                 );
                 let ref_leaf_c2_p = {
-                    let cells: Vec<QuantumCell<Fr>> = parent_id_bytes[25..32]
+                    let cells: Vec<QuantumCell<Fr>> = ref_block_id_bytes[25..32]
                         .iter()
                         .map(|c| QuantumCell::Existing(*c))
                         .collect();
@@ -373,25 +373,25 @@ impl Circuit<Fr> for HopProofCircuit {
                 };
 
                 // Ref-layout chunks.
-                let parent_id_lo28 = {
-                    let cells: Vec<QuantumCell<Fr>> = parent_id_bytes[0..28]
+                let ref_block_id_lo28 = {
+                    let cells: Vec<QuantumCell<Fr>> = ref_block_id_bytes[0..28]
                         .iter()
                         .map(|c| QuantumCell::Existing(*c))
                         .collect();
                     gate.inner_product(ctx, cells, powers_le_28)
                 };
-                let parent_id_lo28_shifted = gate.mul(
+                let ref_block_id_lo28_shifted = gate.mul(
                     ctx,
-                    QuantumCell::Existing(parent_id_lo28),
+                    QuantumCell::Existing(ref_block_id_lo28),
                     QuantumCell::Existing(pow_256_3),
                 );
                 let ref_leaf_c1_r = gate.add(
                     ctx,
                     QuantumCell::Existing(ref_leaf_tag_lo_r),
-                    QuantumCell::Existing(parent_id_lo28_shifted),
+                    QuantumCell::Existing(ref_block_id_lo28_shifted),
                 );
                 let ref_leaf_c2_r = {
-                    let cells: Vec<QuantumCell<Fr>> = parent_id_bytes[28..32]
+                    let cells: Vec<QuantumCell<Fr>> = ref_block_id_bytes[28..32]
                         .iter()
                         .map(|c| QuantumCell::Existing(*c))
                         .collect();
@@ -429,7 +429,7 @@ impl Circuit<Fr> for HopProofCircuit {
                 // algebra + Poseidon at each level, with each bit loaded as
                 // a witness cell (asserted bit + `cond_swap`).
                 let ref_leaf_native_bytes =
-                    ref_leaf_hash_native(self.hop.ref_index, &self.hop.parent_id);
+                    ref_leaf_hash_native(self.hop.ref_index, &self.hop.ref_block_id);
                 let ref_proof = preprocess_dense_proof_padded(
                     ref_leaf_native_bytes,
                     &self.hop.proof_block_ref_inner_path,
@@ -508,7 +508,7 @@ impl Circuit<Fr> for HopProofCircuit {
                     ctx.constrain_equal(&reconstructed, &salt_assigned);
                 }
 
-                // Helper closure body inlined twice (parent_id, block_id).
+                // Helper closure body inlined twice (ref_block_id, block_id).
                 let salted_endpoint = |ctx: &mut halo2_base::Context<Fr>,
                                        other: &[AssignedValue<Fr>]|
                  -> AssignedValue<Fr> {
@@ -536,7 +536,7 @@ impl Circuit<Fr> for HopProofCircuit {
                 };
 
                 let salted_start_block_id =
-                    salted_endpoint(ctx, &parent_id_bytes);
+                    salted_endpoint(ctx, &ref_block_id_bytes);
                 let salted_end_block_id = salted_endpoint(ctx, &block_id_bytes);
 
                 (salted_start_block_id, salted_end_block_id, salt_commitment)
@@ -572,11 +572,11 @@ mod tests {
     fn hop_proof_single_hop_mock_prover() {
         // === Hand-build the hop witness ===
         let sk_u = Fr::from(0xCAFEu64);
-        let parent_id: [u8; 32] = [0x11u8; 32];
+        let ref_block_id: [u8; 32] = [0x11u8; 32];
 
-        // Block: proof_block_refs = [parent_id]; L7 = ref-tree root; leaves
+        // Block: proof_block_refs = [ref_block_id]; L7 = ref-tree root; leaves
         // [0..7] sentinels; leaves[7] = L7; block_id = block_merkle_root.
-        let proof_block_refs: Vec<[u8; 32]> = vec![parent_id];
+        let proof_block_refs: Vec<[u8; 32]> = vec![ref_block_id];
         let l7 = proof_block_refs_root_native(&proof_block_refs);
         let mut leaves = [[0u8; 32]; BLOCK_MERKLE_LEAF_COUNT];
         for (j, slot) in leaves.iter_mut().enumerate().take(7) {
@@ -590,7 +590,7 @@ mod tests {
             proof_block_ref_inner_path_native(&proof_block_refs, 0);
 
         let hop = HopProofWitness {
-            parent_id,
+            ref_block_id,
             block_id,
             l7,
             block_merkle_leaf_proof_l7,
@@ -601,7 +601,7 @@ mod tests {
         // === Expected publics ===
         let salt = compute_salt_native(sk_u);
         let salt_commitment = compute_salt_commitment_native(salt);
-        let salted_start_block_id = compute_salted_block_id_native(salt, &parent_id);
+        let salted_start_block_id = compute_salted_block_id_native(salt, &ref_block_id);
         let salted_end_block_id = compute_salted_block_id_native(salt, &block_id);
 
         // === Circuit params ===

@@ -58,14 +58,14 @@ fn synthetic_dex_final(salt_commitment: Fr, bundle_head_salted: Fr) -> BundlePro
 fn hop_to_multi_hop(
     h: &dex_halo2_circuit::multi_hop_witness::HopWitness,
 ) -> MultiHopWitness {
-    let parent_id = if h.block.proof_block_refs.is_empty() {
+    let ref_block_id = if h.block.proof_block_refs.is_empty() {
         [0u8; 32]
     } else {
-        h.block.proof_block_refs[0]
+        h.block.proof_block_refs[h.ref_index]
     };
     MultiHopWitness {
         is_active: h.is_active,
-        parent_id,
+        ref_block_id,
         block_id: h.block.block_id,
         l7: h.block.block_merkle_tree_leaves[7],
         block_merkle_leaf_proof_l7: h.block_merkle_leaf_proof_l7,
