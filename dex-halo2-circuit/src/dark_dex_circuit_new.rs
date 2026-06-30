@@ -181,6 +181,93 @@ fn poseidon_hash_96_circuit(
     hasher.hash_fix_len_array(ctx, gate, &[c0, c1, c2, c3])
 }
 
+/// Byte-flat Poseidon over `a ‖ b ‖ c` (96 bytes total) — sound sibling of
+/// `poseidon_hash_96_circuit`.
+///
+/// Unlike `poseidon_hash_96_circuit`, this takes the byte cells directly
+/// (with per-byte `range_check 8`), so each chunk is uniquely determined
+/// by the witness. No `chunks_int ≡ Fr (mod p)` malleability: the integer
+/// formed by `a_bytes ‖ b_bytes ‖ c_bytes` is fully pinned by the per-byte
+/// range checks, and every chunk is < 2^248 < p so equals its integer
+/// value in Fp.
+///
+/// Chunk layout (matching `hash_bytes_flat` / `chunk_96_bytes_to_fr`):
+///   c0 = LE(buf[0..31])   c1 = LE(buf[31..62])
+///   c2 = LE(buf[62..93])  c3 = LE(buf[93..96])
+fn poseidon_hash_96_circuit_bytes(
+    ctx: &mut Context<Fr>,
+    range: &impl RangeInstructions<Fr>,
+    hasher: &PoseidonHasher<Fr, T, RATE>,
+    a_bytes: &[AssignedValue<Fr>; 32],
+    b_bytes: &[AssignedValue<Fr>; 32],
+    c_bytes: &[AssignedValue<Fr>; 32],
+) -> AssignedValue<Fr> {
+    let gate = range.gate();
+
+    // Per-byte range checks pin each cell to [0, 256).
+    for cells in [a_bytes, b_bytes, c_bytes] {
+        for &cell in cells {
+            range.range_check(ctx, cell, 8);
+        }
+    }
+
+    // Powers of 256 LE, up to 30 (longest contiguous byte slice in any chunk).
+    let powers_le_31: Vec<QuantumCell<Fr>> = (0..31)
+        .map(|i| QuantumCell::Constant(Fr::from(256u64).pow([i as u64])))
+        .collect();
+
+    // c0 = LE(a[0..31])
+    let c0 = {
+        let cells: Vec<QuantumCell<Fr>> =
+            a_bytes[0..31].iter().map(|c| QuantumCell::Existing(*c)).collect();
+        gate.inner_product(ctx, cells, powers_le_31[..31].iter().cloned())
+    };
+
+    // c1 = a[31] + 256 · LE(b[0..30])
+    let c1 = {
+        let lo30 = {
+            let cells: Vec<QuantumCell<Fr>> =
+                b_bytes[0..30].iter().map(|c| QuantumCell::Existing(*c)).collect();
+            gate.inner_product(ctx, cells, powers_le_31[..30].iter().cloned())
+        };
+        gate.mul_add(
+            ctx,
+            QuantumCell::Existing(lo30),
+            QuantumCell::Constant(Fr::from(256u64)),
+            QuantumCell::Existing(a_bytes[31]),
+        )
+    };
+
+    // c2 = LE(b[30..32]) + 2^16 · LE(c[0..29])
+    let c2 = {
+        let hi_b = {
+            let cells: Vec<QuantumCell<Fr>> =
+                b_bytes[30..32].iter().map(|c| QuantumCell::Existing(*c)).collect();
+            gate.inner_product(ctx, cells, powers_le_31[..2].iter().cloned())
+        };
+        let lo29 = {
+            let cells: Vec<QuantumCell<Fr>> =
+                c_bytes[0..29].iter().map(|c| QuantumCell::Existing(*c)).collect();
+            gate.inner_product(ctx, cells, powers_le_31[..29].iter().cloned())
+        };
+        gate.mul_add(
+            ctx,
+            QuantumCell::Existing(lo29),
+            QuantumCell::Constant(Fr::from(1u64 << 16)),
+            QuantumCell::Existing(hi_b),
+        )
+    };
+
+    // c3 = LE(c[29..32])
+    let c3 = {
+        let cells: Vec<QuantumCell<Fr>> =
+            c_bytes[29..32].iter().map(|c| QuantumCell::Existing(*c)).collect();
+        gate.inner_product(ctx, cells, powers_le_31[..3].iter().cloned())
+    };
+
+    hasher.hash_fix_len_array(ctx, gate, &[c0, c1, c2, c3])
+}
+
 /// Extract `voucher_nominal` and `token_type` from the child cell of an event BOC,
 /// using big-endian byte-to-Fr conversion (matching the in-circuit extraction).
 pub fn extract_event_public_fields(entries: &[BocFlattenData; 2]) -> (Fr, Fr) {
@@ -596,26 +683,27 @@ impl Circuit<Fr> for DarkDexCircuitNew {
                     ctx, gate, &[salt_assigned],
                 );
 
-                // === a. Pack SHA-256 output to repr_hash_fr ===
-                // root_hash_bytes are 32 BE bytes from Sha256Chip.
-                // Pack into repr_hash_fr using LE byte-order weights (same encoding
-                // as bytes_to_fr in the dense tree module).
-                let powers: Vec<QuantumCell<Fr>> = (0..32)
-                    .map(|i| QuantumCell::Constant(Fr::from(256u64).pow([i as u64])))
-                    .collect();
-                let byte_cells: Vec<QuantumCell<Fr>> = root_hash_bytes
-                    .iter()
-                    .map(|b| QuantumCell::Existing(*b))
-                    .collect();
-                let repr_hash_fr = gate.inner_product(ctx, byte_cells, powers);
-
-                // === b. Compute ext_message_leaf in-circuit ===
-                let dapp_fr = ctx.load_witness(bytes_to_fr(&self.account_dapp_id));
-                let acc_fr = ctx.load_witness(bytes_to_fr(&self.account_id));
-                let ext_msg_leaf_fr = poseidon_hash_96_circuit(
+                // === a. Compute ext_message_leaf in-circuit ===
+                //
+                // Byte-flat: witness the dapp_id and account_id as 32 byte
+                // cells each (range_check 8 per byte inside the helper). The
+                // repr_hash already lives as 32 byte cells (`root_hash_bytes`
+                // from the SHA-256 chip), so it feeds straight in. This call
+                // is sound — each chunk is uniquely determined by the byte
+                // witnesses; no `chunks_int ≡ Fr (mod p)` malleability.
+                let dapp_id_bytes: [AssignedValue<Fr>; 32] = self
+                    .account_dapp_id
+                    .map(|b| ctx.load_witness(Fr::from(b as u64)));
+                let account_id_bytes: [AssignedValue<Fr>; 32] = self
+                    .account_id
+                    .map(|b| ctx.load_witness(Fr::from(b as u64)));
+                let root_hash_bytes_array: [AssignedValue<Fr>; 32] = root_hash_bytes
+                    .clone()
+                    .try_into()
+                    .expect("root_hash_bytes is exactly 32 cells");
+                let ext_msg_leaf_fr = poseidon_hash_96_circuit_bytes(
                     ctx, &range, &hasher,
-                    dapp_fr, acc_fr, repr_hash_fr,
-                    &self.account_dapp_id, &self.account_id, &self.entries[0].repr_hash,
+                    &dapp_id_bytes, &account_id_bytes, &root_hash_bytes_array,
                 );
 
                 // === c. Prove ext_msg_leaf → ext_out_messages_root ===
@@ -669,6 +757,16 @@ impl Circuit<Fr> for DarkDexCircuitNew {
                 } else {
                     fr_to_bytes(compute_root_native(&events_proof_native))
                 };
+                // TODO(byte-flat hardening): this still uses the Fr-input
+                // `poseidon_hash_96_circuit`. The (a, b) inputs `block_id_fr`
+                // / `envelope_hash_fr` are free witnesses and could be
+                // migrated to byte cells exactly like call site (b) above.
+                // The (c) input `ext_out_root` is the algebraic output of
+                // `dense_merkle_root_circuit_padded` (an Fr, no byte
+                // witness available) — fully eliminating the linking-equation
+                // malleability there needs a canonical-form (< p) byte
+                // decomposition of `ext_out_root`, which is a separate
+                // change.
                 let block_leaf_fr = poseidon_hash_96_circuit(
                     ctx, &range, &hasher,
                     block_id_fr, envelope_hash_fr, ext_out_root,
