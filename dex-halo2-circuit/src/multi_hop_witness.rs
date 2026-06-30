@@ -74,8 +74,10 @@ pub const N_BUNDLE: usize = 4;
 /// TODO: bump to 256 for production once cell-budget tuning is done.
 pub const MAX_PROOF_BLOCK_REFS: usize = 16;
 
-/// `ceil(log2(MAX_PROOF_BLOCK_REFS))`.
-pub const MAX_PROOF_BLOCK_REFS_DEPTH: usize = 4;
+/// `ceil(log2(MAX_PROOF_BLOCK_REFS))` — tracks `MAX_PROOF_BLOCK_REFS`
+/// automatically so bumping the cap requires no second edit here.
+pub const MAX_PROOF_BLOCK_REFS_DEPTH: usize =
+    MAX_PROOF_BLOCK_REFS.next_power_of_two().ilog2() as usize;
 
 /// Domain tag for the parent slot (index 0) in the ref-chain Poseidon tree.
 /// Must equal `history-proof::REFERENCED_PARENT_BLOCK_TAG`.
@@ -121,8 +123,10 @@ pub struct HopWitness {
     /// event_salted_block_id` and skips all openings below.
     pub is_active: bool,
 
-    /// The block this hop targets — i.e. the block in which the hop's
-    /// `referenced-block` link is *witnessed*.
+    /// The hop's **end** block: `block.block_id` is what
+    /// `salted_end_block_id` commits to, and the hop's **start** block
+    /// appears inside `block.proof_block_refs` (opened at `ref_index`
+    /// against L7 via `proof_block_ref_inner_path`).
     pub block: BlockWitness,
 
     /// L0..L6 SHA-256 merkle opening for `block.block_merkle_tree_leaves[7]`
