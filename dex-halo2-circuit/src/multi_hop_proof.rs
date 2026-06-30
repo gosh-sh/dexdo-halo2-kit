@@ -23,9 +23,9 @@
 //!
 //! | idx | name | derivation |
 //! |---|---|---|
-//! | 0 | `salted_start_block_id` | `Poseidon([salt, bytes_to_fr(parent_id)])` |
-//! | 1 | `salted_end_block_id`   | `Poseidon([salt, bytes_to_fr(block_id)])` |
-//! | 2 | `salt_commitment` | `Poseidon([salt])` |
+//! | 0 | `salted_start_block_id` | `bytes_to_fr(hash_bytes_flat(fr_to_bytes(salt) ‖ parent_id))` |
+//! | 1 | `salted_end_block_id`   | `bytes_to_fr(hash_bytes_flat(fr_to_bytes(salt) ‖ block_id))` |
+//! | 2 | `salt_commitment`       | `Poseidon([salt])` |
 //!
 //! ## Private witnesses
 //!
@@ -38,37 +38,46 @@
 //! - `l7` (32 B): the L7 ref-tree root sitting at `block_merkle_tree_leaves[7]`.
 //! - `block_merkle_leaf_proof_l7`: 3 SHA-256 siblings opening L7 against
 //!   `block_id` at leaf index 7.
-//! - `proof_block_ref_inner_path`: 4 Poseidon siblings opening the ref-leaf
-//!   against L7 at ref-index 0.
+//! - `proof_block_ref_inner_path`: 4 byte-flat-Poseidon siblings opening the
+//!   ref-leaf against L7 at ref-index 0.
 //!
-//! ## Constraints (shape-mirror, NOT byte-flat production parity)
+//! ## Constraints (byte-flat production parity)
 //!
 //! 1. **SHA-256 path** — three `Sha256Chip::digest_bytes` calls, each consuming
 //!    `sibling_bytes ‖ current_bytes` (leaf 7 puts the current node on the
 //!    right at every level). Final 32-byte digest is constrained equal to
 //!    `block_id` byte-by-byte.
-//! 2. **Ref-tree path** — `ref_leaf = Poseidon([parent_tag_chunk_0,
-//!    parent_tag_chunk_1, parent_id_fr])` (2 31-byte LE chunks of the 37-byte
-//!    `REFERENCED_PARENT_BLOCK_TAG`, then `bytes_to_fr(parent_id)`). Four
-//!    `Poseidon([cur, sibling])` calls walk to the L7 root (ref-index 0:
-//!    current always on the left). Final Fr is constrained equal to the
-//!    LE-byte-packed L7 value.
-//! 3. **Salt math** — `salt`, `salt_commitment`, `salted_start_block_id`,
-//!    `salted_end_block_id` all derived via
-//!    `PoseidonHasher::hash_fix_len_array` using the
-//!    `gosh_dense_balanced_tree::{T,RATE,R_F,R_P}` parameters.
+//! 2. **Ref-tree path (byte-flat)** —
+//!    - `ref_leaf = Poseidon([c0, c1, c2])` where `(c0, c1, c2)` are the
+//!      31-byte chunks of `tag(37 B) ‖ parent_id(32 B)`: `c0` is constant
+//!      (`tag[0..31]`), `c1` combines `tag[31..37]` (constant) with
+//!      `parent_id[0..25]` (witness bytes via `inner_product`), `c2 =
+//!      inner_product(parent_id[25..32], 256^[0..7])`.
+//!    - Ref-tree walk uses `gosh_dense_balanced_tree::dense_merkle_root_circuit`
+//!      (4 levels, ref-index = 0 ⇒ current always on the left). Internally
+//!      each level chunks `cur(32) ‖ sibling(32)` at 31+31+2 and Poseidons
+//!      the 3 chunks — byte-for-byte equal to production's
+//!      `dense_combine = hash_bytes_flat(left ‖ right)`.
+//! 3. **Salt math** — `salt = Poseidon([DOMAIN_TAG_HOP_SALT_FR, sk_u])` and
+//!    `salt_commitment = Poseidon([salt])` (Fr-vector, both inputs canonical
+//!    Fr). The salted endpoints use the byte-flat encoding of
+//!    `fr_to_bytes(salt) ‖ other(32 B)`: `salt_fr` is decomposed once into
+//!    `chunk0(31 B) + salt_hi(1 B) · 2^248` (range-checked, algebraically
+//!    linked), then reused for both endpoints. `chunk1 = salt_hi + 256 ·
+//!    inner_product(other[0..30], 256^[0..30])` and `chunk2 =
+//!    inner_product(other[30..32], 256^[0..2])` are computed for
+//!    `other = parent_id` (start) and `other = block_id` (end). This is the
+//!    production rule of `compute_salted_block_id_native`.
 //!
-//! ## Production-parity gaps
+//! ## Open scope items
 //!
-//! - **Byte-flat Poseidon in-circuit** — the ref-tree walk uses Fr-vector
-//!   Poseidon, not the byte-flat sponge that `history-proof` uses. Native
-//!   parity helpers exist in `multi_hop_witness::*_bytes_flat_native`, but
-//!   no in-circuit byte-flat chip is wired yet, so circuit-produced L7
-//!   roots will not equal live-GQL L7 roots.
 //! - **`MAX_PROOF_BLOCK_REFS = 16`** — first-cut testing value; production
 //!   needs 256 (spec §10.1). Bumping only enlarges the L7-inner-path padding.
 
-use gosh_dense_balanced_tree::{bytes_to_fr, R_F, R_P, RATE, T};
+use gosh_dense_balanced_tree::{
+    bytes_to_fr, dense_merkle_root_circuit, fr_to_bytes, preprocess_dense_proof_padded, R_F, R_P,
+    RATE, T,
+};
 use gosh_sha256_chip::Sha256Chip;
 use halo2_base::gates::circuit::builder::BaseCircuitBuilder;
 use halo2_base::gates::circuit::{BaseCircuitParams, BaseConfig};
@@ -83,9 +92,10 @@ use halo2_base::{AssignedValue, QuantumCell};
 use std::cell::RefCell;
 
 use crate::multi_hop_witness::{
-    BLOCK_MERKLE_DEPTH, H_HOPS_PER_PROOF, MAX_PROOF_BLOCK_REFS_DEPTH, REFERENCED_PARENT_BLOCK_TAG,
+    ref_leaf_hash_native, BLOCK_MERKLE_DEPTH, H_HOPS_PER_PROOF, MAX_PROOF_BLOCK_REFS_DEPTH,
+    REFERENCED_PARENT_BLOCK_TAG,
 };
-use crate::salt::domain_tag_hop_salt_fr;
+use crate::salt::{compute_salt_native, domain_tag_hop_salt_fr};
 
 const SHA256_HASH_LEN: usize = 32;
 
@@ -93,10 +103,10 @@ const SHA256_HASH_LEN: usize = 32;
 pub const MULTI_HOP_PUBLIC_LEN: usize = 3;
 
 /// Pack `REFERENCED_PARENT_BLOCK_TAG` (37 bytes) into 2 × 31-byte-LE Fr
-/// chunks. Used as `ctx.load_constant` inputs to the in-circuit ref-leaf
-/// Poseidon hash — must produce the same `Fr` values that
-/// `multi_hop_witness::pack_tag_chunks` produces natively, otherwise the
-/// in-circuit ref-leaf will not equal `ref_leaf_hash_native(0, parent_id)`.
+/// chunks. Used by Phase B / Phase C (legacy Fr-vector ref-leaf encoding —
+/// to be removed in the Phase 3 byte-flat port). Phase A no longer uses
+/// these chunks; it consumes the parent tag at byte granularity (see
+/// `ref_leaf_tag_chunk0_fr` / `ref_leaf_tag_chunk1_lo_fr`).
 fn parent_tag_fr_chunks() -> [Fr; 2] {
     let bytes = REFERENCED_PARENT_BLOCK_TAG;
     assert!(
@@ -109,6 +119,33 @@ fn parent_tag_fr_chunks() -> [Fr; 2] {
     let rem = bytes.len() - 31;
     c1[..rem].copy_from_slice(&bytes[31..]);
     [bytes_to_fr(&c0), bytes_to_fr(&c1)]
+}
+
+/// Byte-flat ref-leaf chunk0 constant: LE-pack of `REFERENCED_PARENT_BLOCK_TAG[0..31]`.
+///
+/// The byte-flat encoding of `tag(37B) || parent_id(32B)` (69 bytes total)
+/// splits into three 31-byte chunks: `chunk0 = data[0..31]` is the tag's
+/// first 31 bytes — entirely constant, so loaded once via
+/// `ctx.load_constant`.
+fn ref_leaf_tag_chunk0_fr() -> Fr {
+    let bytes = REFERENCED_PARENT_BLOCK_TAG;
+    let mut buf = [0u8; 32];
+    buf[..31].copy_from_slice(&bytes[..31]);
+    bytes_to_fr(&buf)
+}
+
+/// Byte-flat ref-leaf chunk1 constant-tail: LE-pack of `REFERENCED_PARENT_BLOCK_TAG[31..37]`.
+///
+/// `chunk1 = data[31..62]` covers the last 6 tag bytes followed by
+/// `parent_id[0..25]`. The constant-tail (these 6 bytes packed at LE
+/// positions 0..6 of the chunk) is loaded once; the witness contribution
+/// (`parent_id[0..25]` packed at LE positions 6..31) is added in-circuit
+/// via `inner_product(parent_id[0..25], [256^6, ..., 256^30])`.
+fn ref_leaf_tag_chunk1_lo_fr() -> Fr {
+    let bytes = REFERENCED_PARENT_BLOCK_TAG;
+    let mut buf = [0u8; 32];
+    buf[..6].copy_from_slice(&bytes[31..37]);
+    bytes_to_fr(&buf)
 }
 
 /// Phase A witness shape — one hop, ref_index=0, leaf_index=7.
@@ -264,7 +301,7 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                 let salt_commitment =
                     hasher.hash_fix_len_array(ctx, gate, &[salt_assigned]);
 
-                // === LE 32-byte powers (used twice: for L7 and block_id Fr packing) ===
+                // === LE 32-byte powers (only used for the L7 byte→Fr pack) ===
                 let powers_le_32: Vec<QuantumCell<Fr>> = (0..32)
                     .map(|i| QuantumCell::Constant(Fr::from(256u64).pow([i as u64])))
                     .collect();
@@ -281,31 +318,83 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                         .iter()
                         .map(|c| QuantumCell::Existing(*c))
                         .collect();
-                    gate.inner_product(ctx, cells, powers_le_32.clone())
+                    gate.inner_product(ctx, cells, powers_le_32)
                 };
 
-                // === parent_id_fr (witness Fr; not byte-level, only used in
-                //     ref-leaf and salted_start_block_id Poseidon inputs) ===
-                let parent_id_fr =
-                    ctx.load_witness(bytes_to_fr(&self.hop.parent_id));
+                // === parent_id as 32 byte cells (range-checked 8 bits each) ===
+                // Byte-flat encoding needs byte-level access at two
+                // different split points (byte 25 for ref-leaf, byte 30 for
+                // salted-start), so we witness all 32 bytes once.
+                let parent_id_bytes: Vec<AssignedValue<Fr>> = self
+                    .hop
+                    .parent_id
+                    .iter()
+                    .map(|&b| ctx.load_witness(Fr::from(b as u64)))
+                    .collect();
+                for cell in &parent_id_bytes {
+                    range.range_check(ctx, *cell, 8);
+                }
 
-                // === Ref-leaf = Poseidon([tag_c0, tag_c1, parent_id_fr]) ===
-                let tag_chunks = parent_tag_fr_chunks();
-                let tag_c0 = ctx.load_constant(tag_chunks[0]);
-                let tag_c1 = ctx.load_constant(tag_chunks[1]);
+                // === Byte-flat ref-leaf = Poseidon([c0, c1, c2]) ===
+                // chunk0 = LE(tag[0..31])                              [constant]
+                // chunk1 = LE(tag[31..37] || parent_id[0..25])
+                //        = tag_lo_const + parent_id_lo25 · 256^6
+                // chunk2 = LE(parent_id[25..32]) = inner_product(.., 256^[0..7])
+                let ref_leaf_c0 = ctx.load_constant(ref_leaf_tag_chunk0_fr());
+                let ref_leaf_tag_lo = ctx.load_constant(ref_leaf_tag_chunk1_lo_fr());
+                let pow_256_6 = ctx.load_constant(Fr::from(256u64).pow([6u64]));
+                let powers_le_25: Vec<QuantumCell<Fr>> = (0..25)
+                    .map(|i| QuantumCell::Constant(Fr::from(256u64).pow([i as u64])))
+                    .collect();
+                let powers_le_7: Vec<QuantumCell<Fr>> = (0..7)
+                    .map(|i| QuantumCell::Constant(Fr::from(256u64).pow([i as u64])))
+                    .collect();
+
+                let parent_id_lo25 = {
+                    let cells: Vec<QuantumCell<Fr>> = parent_id_bytes[0..25]
+                        .iter()
+                        .map(|c| QuantumCell::Existing(*c))
+                        .collect();
+                    gate.inner_product(ctx, cells, powers_le_25)
+                };
+                let parent_id_lo25_shifted = gate.mul(
+                    ctx,
+                    QuantumCell::Existing(parent_id_lo25),
+                    QuantumCell::Existing(pow_256_6),
+                );
+                let ref_leaf_c1 = gate.add(
+                    ctx,
+                    QuantumCell::Existing(ref_leaf_tag_lo),
+                    QuantumCell::Existing(parent_id_lo25_shifted),
+                );
+                let ref_leaf_c2 = {
+                    let cells: Vec<QuantumCell<Fr>> = parent_id_bytes[25..32]
+                        .iter()
+                        .map(|c| QuantumCell::Existing(*c))
+                        .collect();
+                    gate.inner_product(ctx, cells, powers_le_7)
+                };
                 let ref_leaf_fr = hasher.hash_fix_len_array(
                     ctx,
                     gate,
-                    &[tag_c0, tag_c1, parent_id_fr],
+                    &[ref_leaf_c0, ref_leaf_c1, ref_leaf_c2],
                 );
 
-                // === Ref-tree walk (4 levels, ref_index=0 → cur always on left) ===
-                let mut cur_fr = ref_leaf_fr;
-                for sib_bytes in &self.hop.proof_block_ref_inner_path {
-                    let sib_fr = ctx.load_witness(bytes_to_fr(sib_bytes));
-                    cur_fr = hasher.hash_fix_len_array(ctx, gate, &[cur_fr, sib_fr]);
-                }
-                ctx.constrain_equal(&cur_fr, &l7_fr);
+                // === Ref-tree walk (byte-flat dense Merkle, 4 levels) ===
+                // Native preprocess produces the chunk witnesses for each
+                // level; `dense_merkle_root_circuit` enforces the byte-flat
+                // chunking algebra + Poseidon at each level.
+                let ref_leaf_native_bytes =
+                    ref_leaf_hash_native(0, &self.hop.parent_id);
+                let ref_proof = preprocess_dense_proof_padded(
+                    ref_leaf_native_bytes,
+                    &self.hop.proof_block_ref_inner_path,
+                    0, // ref_index hardcoded to 0 in Phase A
+                    MAX_PROOF_BLOCK_REFS_DEPTH,
+                );
+                let computed_l7_fr =
+                    dense_merkle_root_circuit(ctx, &range, &hasher, &ref_proof, ref_leaf_fr);
+                ctx.constrain_equal(&computed_l7_fr, &l7_fr);
 
                 // === block_id bytes (output target of SHA-256 walk) ===
                 let block_id_bytes: Vec<AssignedValue<Fr>> = self
@@ -334,26 +423,77 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                     ctx.constrain_equal(&cur_bytes[i], &block_id_bytes[i]);
                 }
 
-                // === block_id_fr from byte cells (LE inner product) ===
-                let block_id_fr = {
-                    let cells: Vec<QuantumCell<Fr>> = block_id_bytes
-                        .iter()
-                        .map(|c| QuantumCell::Existing(*c))
-                        .collect();
-                    gate.inner_product(ctx, cells, powers_le_32)
+                // === Salted endpoints (byte-flat) ===
+                // Data = fr_to_bytes(salt)(32 B) || other(32 B); chunks 31+31+2:
+                //   chunk0 = LE(salt[0..31])                        (shared)
+                //   chunk1 = salt_hi + 256 · LE(other[0..30])
+                //   chunk2 = LE(other[30..32])
+                // salt is an Fr (Poseidon output) — decompose once:
+                //   salt_fr == salt_chunk0 + salt_hi · 2^248
+                //   range_check(salt_chunk0, 248) + range_check(salt_hi, 8)
+                let pow_248 =
+                    ctx.load_constant(Fr::from_raw([0u64, 0u64, 0u64, 1u64 << 56]));
+                let pow_256 = ctx.load_constant(Fr::from(256u64));
+                let powers_le_30: Vec<QuantumCell<Fr>> = (0..30)
+                    .map(|i| QuantumCell::Constant(Fr::from(256u64).pow([i as u64])))
+                    .collect();
+                let powers_le_2: Vec<QuantumCell<Fr>> = (0..2)
+                    .map(|i| QuantumCell::Constant(Fr::from(256u64).pow([i as u64])))
+                    .collect();
+
+                let salt_native = compute_salt_native(self.sk_u);
+                let salt_bytes_native = fr_to_bytes(salt_native);
+                let mut salt_chunk0_native_buf = [0u8; 32];
+                salt_chunk0_native_buf[..31]
+                    .copy_from_slice(&salt_bytes_native[..31]);
+                let salt_chunk0_native = bytes_to_fr(&salt_chunk0_native_buf);
+                let salt_hi_native = Fr::from(salt_bytes_native[31] as u64);
+
+                let salt_chunk0 = ctx.load_witness(salt_chunk0_native);
+                let salt_hi = ctx.load_witness(salt_hi_native);
+                range.range_check(ctx, salt_chunk0, 248);
+                range.range_check(ctx, salt_hi, 8);
+                {
+                    // salt_chunk0 + salt_hi · 2^248 == salt_assigned
+                    let reconstructed = gate.mul_add(
+                        ctx,
+                        QuantumCell::Existing(salt_hi),
+                        QuantumCell::Existing(pow_248),
+                        QuantumCell::Existing(salt_chunk0),
+                    );
+                    ctx.constrain_equal(&reconstructed, &salt_assigned);
+                }
+
+                // Helper closure body inlined twice (parent_id, block_id).
+                let salted_endpoint = |ctx: &mut halo2_base::Context<Fr>,
+                                       other: &[AssignedValue<Fr>]|
+                 -> AssignedValue<Fr> {
+                    let other_lo30 = {
+                        let cells: Vec<QuantumCell<Fr>> = other[0..30]
+                            .iter()
+                            .map(|c| QuantumCell::Existing(*c))
+                            .collect();
+                        gate.inner_product(ctx, cells, powers_le_30.clone())
+                    };
+                    let chunk1 = gate.mul_add(
+                        ctx,
+                        QuantumCell::Existing(other_lo30),
+                        QuantumCell::Existing(pow_256),
+                        QuantumCell::Existing(salt_hi),
+                    );
+                    let chunk2 = {
+                        let cells: Vec<QuantumCell<Fr>> = other[30..32]
+                            .iter()
+                            .map(|c| QuantumCell::Existing(*c))
+                            .collect();
+                        gate.inner_product(ctx, cells, powers_le_2.clone())
+                    };
+                    hasher.hash_fix_len_array(ctx, gate, &[salt_chunk0, chunk1, chunk2])
                 };
 
-                // === Salted endpoints ===
-                let salted_start_block_id = hasher.hash_fix_len_array(
-                    ctx,
-                    gate,
-                    &[salt_assigned, parent_id_fr],
-                );
-                let salted_end_block_id = hasher.hash_fix_len_array(
-                    ctx,
-                    gate,
-                    &[salt_assigned, block_id_fr],
-                );
+                let salted_start_block_id =
+                    salted_endpoint(ctx, &parent_id_bytes);
+                let salted_end_block_id = salted_endpoint(ctx, &block_id_bytes);
 
                 (salted_start_block_id, salted_end_block_id, salt_commitment)
             };
