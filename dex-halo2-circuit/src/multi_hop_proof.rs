@@ -681,13 +681,13 @@ mod tests {
             assert_eq!(snark0.hops[i].salted_end_block_id, snark0.hops[i + 1].salted_start_block_id);
         }
 
-        const K: u32 = 19;
+        const K: u32 = 17;
         let params = BaseCircuitParams {
             k: K as usize,
-            num_advice_per_phase: vec![56],
+            num_advice_per_phase: vec![110],
             num_fixed: 1,
-            num_lookup_advice_per_phase: vec![4],
-            lookup_bits: Some(18),
+            num_lookup_advice_per_phase: vec![8],
+            lookup_bits: Some(16),
             num_instance_columns: 1,
         };
 
@@ -718,13 +718,13 @@ mod tests {
         let multi_hops: [MultiHopWitness; H_HOPS_PER_PROOF] =
             std::array::from_fn(|i| hop_to_multi_hop(&snark0.hops[i]));
 
-        const K: u32 = 19;
+        const K: u32 = 17;
         let params = BaseCircuitParams {
             k: K as usize,
-            num_advice_per_phase: vec![56],
+            num_advice_per_phase: vec![110],
             num_fixed: 1,
-            num_lookup_advice_per_phase: vec![4],
-            lookup_bits: Some(18),
+            num_lookup_advice_per_phase: vec![8],
+            lookup_bits: Some(16),
             num_instance_columns: 1,
         };
 
