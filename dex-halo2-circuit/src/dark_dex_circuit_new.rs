@@ -24,7 +24,7 @@ use halo2_base::{
 use std::cell::RefCell;
 
 use crate::boc_helper::*;
-use crate::salt::domain_tag_hop_salt_fr;
+use crate::salt::{compute_salt_native, domain_tag_hop_salt_fr};
 use gosh_dense_balanced_tree::{
     bytes_to_fr, compute_root_native, dense_merkle_root_circuit,
     dense_merkle_root_circuit_padded, fr_to_bytes, poseidon_hash_native,
@@ -105,6 +105,13 @@ pub(crate) fn poseidon_hash_96_native(a: &[u8; 32], b: &[u8; 32], c: &[u8; 32]) 
 ///   low_b + hi_b · 2^240 = b_fr    (hi_b = b[30..32], 2 bytes)
 ///   c2 = hi_b + 2^16 · low_c       (low_c = c[0..29], 29 bytes)
 ///   low_c + c3 · 2^232 = c_fr      (c3 = c[29..32], 3 bytes)
+///
+/// ## Status
+/// Superseded by [`poseidon_hash_96_circuit_bytes`] (the byte-flat sibling).
+/// The Fr-input form admits `chunks_int ≡ Fr (mod p)` malleability for any
+/// caller that doesn't already pin the Fr inputs to a canonical byte form;
+/// all in-tree callers have migrated. Retained for documentation / parity.
+#[allow(dead_code)]
 fn poseidon_hash_96_circuit(
     ctx: &mut Context<Fr>,
     range: &impl RangeInstructions<Fr>,
@@ -739,17 +746,112 @@ impl Circuit<Fr> for DarkDexCircuitNew {
                     ext_msg_leaf_fr, num_events_levels,
                 );
 
-                // === d. Compute block_leaf in-circuit ===
-                let block_id_fr = ctx.load_witness(bytes_to_fr(&self.block_id));
-                let envelope_hash_fr = ctx.load_witness(bytes_to_fr(&self.envelope_hash_bytes));
+                // === d. Compute block_leaf in-circuit (byte-flat, sound) ===
+                //
+                // Witness the three 32-byte inputs as byte cells (range_check
+                // 8 inside `poseidon_hash_96_circuit_bytes` and additionally
+                // here for the linking inner products). The byte-flat sibling
+                // pins each chunk uniquely by the per-byte witnesses, so no
+                // `chunks_int ≡ Fr (mod p)` malleability.
+                let block_id_bytes: [AssignedValue<Fr>; 32] = self
+                    .block_id
+                    .map(|b| ctx.load_witness(Fr::from(b as u64)));
+                for &c in &block_id_bytes {
+                    range.range_check(ctx, c, 8);
+                }
+                let envelope_hash_bytes_cells: [AssignedValue<Fr>; 32] = self
+                    .envelope_hash_bytes
+                    .map(|b| ctx.load_witness(Fr::from(b as u64)));
+                for &c in &envelope_hash_bytes_cells {
+                    range.range_check(ctx, c, 8);
+                }
 
-                // === Phase 3: event_salted_block_id ===
-                // event_salted_block_id = Poseidon([salt, block_id_fr])
-                // Used by the orchestrator to splice the DexFinalProof's chain
-                // head onto the L7 hop chain produced by the MultiHopProofs.
-                let event_salted_block_id = hasher.hash_fix_len_array(
-                    ctx, gate, &[salt_assigned, block_id_fr],
-                );
+                // Reusable LE powers of 256 up to 31 (matches `inner_product`
+                // weights for a 32-byte LE integer decomposition).
+                let powers_le_32: Vec<QuantumCell<Fr>> = (0..32)
+                    .map(|i| QuantumCell::Constant(Fr::from(256u64).pow([i as u64])))
+                    .collect();
+
+                // === Phase 3 (byte-flat): event_salted_block_id ===
+                //
+                // Match `compute_salted_block_id_native(salt, block_id)` in
+                // `salt.rs`: chunk the 64-byte stream `fr_to_bytes(salt) ‖
+                // block_id` at 31-byte boundaries (top byte zero ⇒ Fr-safe).
+                //   chunk0 = LE(salt[0..31])
+                //   chunk1 = salt_hi + 256 · LE(block_id[0..30])     (31 B)
+                //   chunk2 = LE(block_id[30..32])                    (2 B)
+                //   event_salted_block_id = Poseidon([c0, c1, c2])
+                //
+                // Decompose `salt_assigned` once into salt_chunk0 + salt_hi · 2^248
+                // (matches the pattern in `multi_hop_proof.rs` so the on-chain
+                // RootPN salt-equality check holds across DexFinalProof and
+                // every MultiHopProof in the bundle).
+                let salt_native = compute_salt_native(self.sk_u);
+                let salt_bytes_native = fr_to_bytes(salt_native);
+                let mut salt_chunk0_native_buf = [0u8; 32];
+                salt_chunk0_native_buf[..31]
+                    .copy_from_slice(&salt_bytes_native[..31]);
+                let salt_chunk0_native = bytes_to_fr(&salt_chunk0_native_buf);
+                let salt_hi_native = Fr::from(salt_bytes_native[31] as u64);
+
+                let salt_chunk0 = ctx.load_witness(salt_chunk0_native);
+                let salt_hi = ctx.load_witness(salt_hi_native);
+                range.range_check(ctx, salt_chunk0, 248);
+                range.range_check(ctx, salt_hi, 8);
+                {
+                    let pow_248 = QuantumCell::Constant(Fr::from_raw([
+                        0u64,
+                        0u64,
+                        0u64,
+                        1u64 << 56,
+                    ]));
+                    let reconstructed = gate.mul_add(
+                        ctx,
+                        QuantumCell::Existing(salt_hi),
+                        pow_248,
+                        QuantumCell::Existing(salt_chunk0),
+                    );
+                    ctx.constrain_equal(&reconstructed, &salt_assigned);
+                }
+
+                let event_salted_block_id = {
+                    // chunk1 = salt_hi + 256 · LE(block_id[0..30])
+                    let block_id_lo30 = {
+                        let cells: Vec<QuantumCell<Fr>> = block_id_bytes[0..30]
+                            .iter()
+                            .map(|c| QuantumCell::Existing(*c))
+                            .collect();
+                        gate.inner_product(
+                            ctx,
+                            cells,
+                            powers_le_32[0..30].iter().cloned(),
+                        )
+                    };
+                    let chunk1 = gate.mul_add(
+                        ctx,
+                        QuantumCell::Existing(block_id_lo30),
+                        QuantumCell::Constant(Fr::from(256u64)),
+                        QuantumCell::Existing(salt_hi),
+                    );
+                    // chunk2 = LE(block_id[30..32])
+                    let chunk2 = {
+                        let cells: Vec<QuantumCell<Fr>> = block_id_bytes[30..32]
+                            .iter()
+                            .map(|c| QuantumCell::Existing(*c))
+                            .collect();
+                        gate.inner_product(
+                            ctx,
+                            cells,
+                            powers_le_32[0..2].iter().cloned(),
+                        )
+                    };
+                    hasher.hash_fix_len_array(
+                        ctx,
+                        gate,
+                        &[salt_chunk0, chunk1, chunk2],
+                    )
+                };
+
                 // When the events proof has 0 levels, the padded circuit returns
                 // the leaf unchanged. The native computation must match.
                 let ext_out_root_bytes = if self.merkle_proof_siblings.is_empty() {
@@ -757,20 +859,100 @@ impl Circuit<Fr> for DarkDexCircuitNew {
                 } else {
                     fr_to_bytes(compute_root_native(&events_proof_native))
                 };
-                // TODO(byte-flat hardening): this still uses the Fr-input
-                // `poseidon_hash_96_circuit`. The (a, b) inputs `block_id_fr`
-                // / `envelope_hash_fr` are free witnesses and could be
-                // migrated to byte cells exactly like call site (b) above.
-                // The (c) input `ext_out_root` is the algebraic output of
-                // `dense_merkle_root_circuit_padded` (an Fr, no byte
-                // witness available) — fully eliminating the linking-equation
-                // malleability there needs a canonical-form (< p) byte
-                // decomposition of `ext_out_root`, which is a separate
-                // change.
-                let block_leaf_fr = poseidon_hash_96_circuit(
+
+                // `ext_out_root` is the algebraic Fr output of
+                // `dense_merkle_root_circuit_padded` (a Poseidon image, so
+                // < p). To feed it into byte-flat Poseidon we need 32 byte
+                // cells with a CANONICAL decomposition: `V = sum bytes_i · 256^i`
+                // and `V < p`. Without the `<p` check, ~5 distinct byte
+                // strings would map to the same Fr value, regaining the
+                // `bytes_to_fr` malleability we just escaped.
+                let ext_out_root_bytes_cells: [AssignedValue<Fr>; 32] = {
+                    let v: Vec<AssignedValue<Fr>> = ext_out_root_bytes
+                        .iter()
+                        .map(|&b| ctx.load_witness(Fr::from(b as u64)))
+                        .collect();
+                    v.try_into()
+                        .expect("ext_out_root_bytes is exactly 32 bytes")
+                };
+                for &c in &ext_out_root_bytes_cells {
+                    range.range_check(ctx, c, 8);
+                }
+                // Linking equation (mod p): sum_i byte_i · 256^i == ext_out_root.
+                {
+                    let cells: Vec<QuantumCell<Fr>> = ext_out_root_bytes_cells
+                        .iter()
+                        .map(|c| QuantumCell::Existing(*c))
+                        .collect();
+                    let sum = gate.inner_product(ctx, cells, powers_le_32.clone());
+                    ctx.constrain_equal(&sum, &ext_out_root);
+                }
+                // Canonical-form check: V < p, with V = V_lo + V_hi · 2^128.
+                //   p = 0x30644E72_E131A029_B85045B6_8181585D
+                //       _2833E848_79B97091_43E1F593_F0000001
+                // V < p  iff  (V_hi < P_HI)  OR  (V_hi == P_HI  AND  V_lo < P_LO).
+                {
+                    let p_lo = Fr::from_raw([
+                        0x43e1_f593_f000_0001,
+                        0x2833_e848_79b9_7091,
+                        0,
+                        0,
+                    ]);
+                    let p_hi = Fr::from_raw([
+                        0xb850_45b6_8181_585d,
+                        0x3064_4e72_e131_a029,
+                        0,
+                        0,
+                    ]);
+                    let lo_cells: Vec<QuantumCell<Fr>> = ext_out_root_bytes_cells
+                        [0..16]
+                        .iter()
+                        .map(|c| QuantumCell::Existing(*c))
+                        .collect();
+                    let hi_cells: Vec<QuantumCell<Fr>> = ext_out_root_bytes_cells
+                        [16..32]
+                        .iter()
+                        .map(|c| QuantumCell::Existing(*c))
+                        .collect();
+                    let v_lo = gate.inner_product(
+                        ctx,
+                        lo_cells,
+                        powers_le_32[0..16].iter().cloned(),
+                    );
+                    let v_hi = gate.inner_product(
+                        ctx,
+                        hi_cells,
+                        powers_le_32[0..16].iter().cloned(),
+                    );
+                    // Each limb is 16 bytes · 8 bits = 128 bits, < 2^128 < p_hi/p_lo bound.
+                    let hi_less = range.is_less_than(
+                        ctx,
+                        QuantumCell::Existing(v_hi),
+                        QuantumCell::Constant(p_hi),
+                        128,
+                    );
+                    let hi_eq = gate.is_equal(
+                        ctx,
+                        QuantumCell::Existing(v_hi),
+                        QuantumCell::Constant(p_hi),
+                    );
+                    let lo_less = range.is_less_than(
+                        ctx,
+                        QuantumCell::Existing(v_lo),
+                        QuantumCell::Constant(p_lo),
+                        128,
+                    );
+                    let tail = gate.and(ctx, hi_eq, lo_less);
+                    let valid = gate.or(ctx, hi_less, tail);
+                    let one = ctx.load_constant(Fr::one());
+                    ctx.constrain_equal(&valid, &one);
+                }
+
+                let block_leaf_fr = poseidon_hash_96_circuit_bytes(
                     ctx, &range, &hasher,
-                    block_id_fr, envelope_hash_fr, ext_out_root,
-                    &self.block_id, &self.envelope_hash_bytes, &ext_out_root_bytes,
+                    &block_id_bytes,
+                    &envelope_hash_bytes_cells,
+                    &ext_out_root_bytes_cells,
                 );
 
                 // === e. Prove block_leaf → history window root (root_1) ===

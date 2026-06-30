@@ -640,7 +640,7 @@ MultiHopProof (3 fields):
 > [3] tokenTypeFr
 > [4] ephemeralPubkey
 > [5] salt_commitment       = Poseidon([Poseidon([DOMAIN_TAG_FR, sk_u])])
-> [6] event_salted_block_id = Poseidon([salt, bytes_to_fr(block_id)])
+> [6] event_salted_block_id = bytes_to_fr(hash_bytes_flat(fr_to_bytes(salt) ‖ block_id))
 > ```
 >
 > The Phase 4+ extension splits the single `event_salted_block_id` into the
@@ -842,6 +842,20 @@ These must be answered with the team before circuit-side implementation begins.
 
 8. **Re-merge of history-proof code into mainline.**
    This spec depends on the `poseidon_dex`-branch helpers (`compute_block_leaf_hash`, `compute_referenced_blocks_root`, `history_proofs_l0`, `HistoryBlockData::calculate_root_hash`, `proof_block_refs_root`, `proof_block_ref_proof`, etc.). Confirm with the team the timeline for these landing on `dev` so circuit work and protocol work can converge.
+
+9. **Poseidon byte-flat parity / in-circuit chip gap.**
+   Production at `acki-nacki/node/libs/history-proof/src/lib.rs:159` (`compute_referenced_block_leaf_hash`) does **`hash_bytes_flat(tag || block_id)`** — concatenates the 37-byte tag and 32-byte block_id into one 69-byte stream, then `PoseidonSponge::hash_bytes_flat` chunks the **whole stream** into 31-byte pieces (top byte zero ⇒ every chunk safely fits in Fr). Live GQL L7 roots commit to this byte-flat form. **Acki-nacki is sound here; this is not a production bug.**
+
+   **Resolution (Phase 4.B, 2026-06-30).** The kit's in-circuit path is now byte-flat end-to-end. The interim choice picked was Decision (b)-strong: every Poseidon input in the production paths of `multi_hop_proof.rs` (Phase B + C) and `dark_dex_circuit_new.rs` (`ext_msg_leaf`, `block_leaf`, `event_salted_block_id`) derives from byte cells with per-byte `range_check 8`, so each chunk is uniquely pinned by its byte witnesses and no `chunks_int ≡ Fr (mod p)` malleability exists. The two cases where a Poseidon input is itself an algebraic Fr (an in-circuit Poseidon output, e.g. `ext_out_root` and `salt`) are decomposed canonically: `salt` via the single high-byte split `salt_chunk0 + salt_hi · 2^248 == salt`, and `ext_out_root` via a 2-limb 128-bit decomposition plus a strict `V < p` cascade (`(V_hi < P_HI) OR (V_hi == P_HI AND V_lo < P_LO)`). With this, the kit's `event_salted_block_id`, the multi-hop `salted_{start,end}_block_id` endpoints, and the L7 ref-tree roots all match the byte-flat production rule in `acki-nacki/node/libs/history-proof/`, and the dark_dex tests that consume `compute_salted_block_id_native` as the expected public instance now all pass.
+
+   *Original 2026-06-… framing of the gap, retained for context:*
+   The current in-circuit Poseidon chip (`gosh_dense_balanced_tree::poseidon_hash_native`) only accepts `&[Fr]`. The kit's witness layer (`multi_hop_witness::ref_leaf_hash_native`, `ref_inner_combine_native`, `proof_block_refs_root_native`, and the `salted_*` Poseidon calls) was originally a kit-local re-implementation — **not a port of production** — that:
+   - correctly chunked the 37-byte tag at the 31-byte boundary via `pack_tag_chunks` (because the tag exceeds 31 bytes), but
+   - then collapsed the 32-byte block_id into a single Fr via `bytes_to_fr` (= `Fr::from_raw`, **silent mod-p reduction**). The chunking discipline applied to the tag was abandoned for the block_id.
+   Consequences (now resolved):
+   - The kit was self-consistent end-to-end (synth chain ↔ witness ↔ circuit) under that rule, but its L7 roots did **not** equal live-GQL roots. Tests that consume real-chain data could not bind to production.
+   - `Fr::from_raw` on a 32-byte input is collision-unsafe: BN254 Fr is ~254-bit, block_id is 256-bit, so distinct block_ids whose top bits push past Fr modulus collapse to the same Fr.
+   - The byte-for-byte production-equivalent helpers (`*_bytes_flat_native`) shipped first; the in-circuit byte-flat path (Phase 3 + 4) then swapped the witness layer over so the kit binds to live GQL.
 
 ### 10.3 Out of scope for this document
 

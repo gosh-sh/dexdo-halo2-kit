@@ -14,9 +14,9 @@ use crate::salt::{
 use dense_balanced_tree::{
     dense_merkle_proof, dense_merkle_root, PoseidonHasher as DensePoseidonHasher,
 };
-use gosh_dense_balanced_tree::{
-    bytes_to_fr, fr_to_bytes, poseidon_hash_native, DenseChainLink, MAX_CHAIN_LEN,
-};
+use gosh_dense_balanced_tree::{bytes_to_fr, poseidon_hash_native};
+#[cfg(test)]
+use gosh_dense_balanced_tree::{fr_to_bytes, DenseChainLink, MAX_CHAIN_LEN};
 use halo2_base::gates::circuit::BaseCircuitParams;
 use halo2_base::halo2_proofs::halo2curves::bn256::Fr;
 use halo2_base::halo2_proofs::halo2curves::ff::PrimeField;
