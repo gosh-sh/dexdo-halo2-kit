@@ -26,6 +26,8 @@ The canonical branch for this design is `poseidon_dex` on `acki-nacki`. All fiel
 | **`H`** | Hops packed per `MultiHopProof` snark. Locked at **5**. |
 | **`N_BUNDLE`** | Number of `MultiHopProof` snarks per bundle. Locked at **4**; may be dynamic per §7.5 dispatch. |
 
+**Poseidon input convention (reminder).** Poseidon here operates on BN254 Fr (`|p| ≈ 254 bits`). A byte stream is packed into Fr in **31-byte chunks** (little-endian, high byte implicitly zero) so every chunk is unambiguously `< p` and no modular reduction is needed. An N-byte input consumes `⌈N/31⌉` Fr elements. This applies uniformly to every `Poseidon(...)` in this spec — the tagged L7 leaves, the Poseidon96 block-leaf, dense-Merkle combines, and the salted-endpoint hashes.
+
 ---
 
 ## 1. Anchor model
