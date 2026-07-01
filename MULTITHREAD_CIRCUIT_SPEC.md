@@ -677,29 +677,37 @@ Must be answered with the team before circuit-side implementation begins.
 9. **Salt derivation domain.** `salt = Poseidon(DOMAIN_TAG_FR, voucher_secret_seed)`. Confirm `voucher_secret_seed` is collision-resistant and not reused for any non-voucher purpose in existing wallet code.
 10. **Re-merge of history-proof code into mainline.** Circuit work depends on `poseidon_dex`-branch helpers (`compute_block_leaf_hash`, `compute_referenced_blocks_root`, `HistoryBlockData::calculate_root_hash`, `proof_block_refs_root`, `proof_block_ref_proof`, and the widened `block_merkle_leaves()` producing the depth-4 tree). Confirm timeline.
 
-### 11.3 Out of scope
-
-- Recursive aggregation (`AggregationCircuit`) — see §9.
-- Off-device proving — explicitly excluded per smartphone requirement.
-- Circuit 4 / bridge-event-prove-circuit changes — separate.
-- Circuit 1A / 2 / 3 (bridge circuits) — separate.
 
 ---
 
 ## 12. Circuit implementation plan
 
-The following work packages bring `dex-halo2-circuit` into alignment with this specification. All packages assume Open Questions §11.2.1–5 are answered by the team first; the SHA-vs-Poseidon choice for the ext-out-messages tree (§11.2.1) is the primary implementation blocker.
+The following work packages bring `dex-halo2-circuit` into alignment with the spec as it now stands (§§1–11), incorporating the corrections established earlier in this document:
+
+- **Hop primitive is 4 SHA compressions per hop, not 6** (§5.3). `h8..15` is an opaque witness sibling in hops; L8 is never re-derived at hop level.
+- **Slot 0 (`parent_block_id`) is not a hop edge** (§5.1). Circuit uses a fixed tag (`REFERENCED_REF_BLOCK_TAG`) and range-checks `ref_index` to `1..=MAX_PROOF_BLOCK_REFS`.
+- **`DexFinalProof` is two disjoint sub-proofs** (§7.7). X-side (SHA-based event → block binding) + Y-side (Poseidon-based block → anchor). Uniformity for t = 0 is a shape property, not wasted work.
+- **L8 opening in `DexFinalProof` is 4 SHA compressions** (§7.7), one per level of the depth-4 tree.
+- **`RootPN.sol` is fail-fast** (§7.4): cheap public-input consistency (salt binding + chain continuity + anchor) first, expensive KZG verifications only after.
+- **Production ceiling is `L_MAX = 300`** (§5.4). Current prototyping point remains `L_MAX = 20` / `N_BUNDLE = 4`. Per-snark K is unaffected; scaling to prod grows the bundle to `N_BUNDLE = 60`.
+
+Open Questions §11.2.1–5 must be answered before circuit work lands; the SHA-vs-Poseidon choice for the ext-out-messages tree (§11.2.1) is the primary implementation blocker for §12.2/§12.3.
 
 ### 12.1 Protocol constants module
 
 **Files:** new `dex-halo2-circuit/src/block_id_tree.rs`.
 
-- Depth-4 constants: `BLOCK_ID_TREE_DEPTH = 4`, `BLOCK_ID_TREE_LEAVES = 16`, `L8_INDEX = 8`, `ZERO_LEAF = [0u8; 32]`.
-- Precomputed sibling constants for L8's opening path:
-  - `H10_11_CONST = sha256(ZERO_LEAF ‖ ZERO_LEAF)`
-  - `H12_15_CONST = sha256(H10_11_CONST ‖ H10_11_CONST)`
-- Native helper `compute_block_id_depth4(leaves: &[[u8;32];16]) -> [u8;32]` for test fixtures.
-- Unit test: round-trip against a hand-computed 15-SHA reference.
+Shared by `DexFinalProof` and `MultiHopProof`:
+
+- Depth-4 shape: `BLOCK_ID_TREE_DEPTH = 4`, `BLOCK_ID_TREE_LEAVES = 16`, `L8_INDEX = 8`, `L7_INDEX = 7`, `ZERO_LEAF = [0u8; 32]`.
+- Native helper `compute_block_id_depth4(leaves: &[[u8;32];16]) -> [u8;32]` — used by test fixtures on both sides.
+
+Consumed only by `DexFinalProof` (§12.3) — hops never touch these:
+
+- `H10_11_CONST = sha256(ZERO_LEAF ‖ ZERO_LEAF)`
+- `H12_15_CONST = sha256(H10_11_CONST ‖ H10_11_CONST)`
+
+Unit test: round-trip against a hand-computed 15-SHA reference.
 
 ### 12.2 Ext-out-messages Merkle gadget
 
@@ -722,59 +730,98 @@ The following work packages bring `dex-halo2-circuit` into alignment with this s
 
 ### 12.3 `DexFinalProof` — new circuit `DarkDexCircuitV2`
 
-**Files:** `dex-halo2-circuit/src/dark_dex_circuit_new.rs` (extend, keeping existing circuit intact — see feedback: add-don't-modify).
+**Files:** `dex-halo2-circuit/src/dark_dex_circuit_new.rs` (add sibling `DarkDexCircuitV2` alongside `DarkDexCircuitNew`; do not modify — feedback `add-don't-modify`).
 
-- Introduce `DarkDexCircuitV2` alongside the existing `DarkDexCircuitNew`. New witness struct groups:
-  - X-side: `x_block_id`, `x_l8_tracked_ext_out_messages_root`, `x_block_id_h07_sibling`, `x_event_leaf_index`, `x_ext_out_merkle_path`.
-  - Y-side: `y_block_id`, `y_envelope_hash`, `y_tracked_ext_out_messages_root`, `y_block_leaf_path`, `y_dense_chain_links` (identical to today's single-thread witness, renamed).
-- Gates per §7.7:
-  1. Depth-4 SHA-256 tree opening for L8 with three protocol-fixed sibling constants + one witness (`h0..7`).
-  2. Ext-out-messages Merkle opening from `event_hash` to L8 (gadget from §12.2).
-  3. Event → voucher binding (existing `ext_msg_leaf` Poseidon96 gadget reused; output becomes a leaf under L8's tree, not a direct block binding).
-  4. Y-side gates copied byte-for-byte from `DarkDexCircuitNew`.
-  5. Expose `salted_X_start` at inst[5] and `salted_Y_end` at inst[6] using the existing `event_salted_block_id` gadget applied to both `x_block_id` and `y_block_id`.
-- Target K=16; K=17 fallback if the ext-out gadget cell count blows the margin.
-- MockProver tests: (a) t=0 case with X = Y, (b) t ≠ 0 case with X ≠ Y.
+Circuit is organised as two structurally independent subcircuits glued by `salt` and voucher-payload publics (§7.7):
 
-### 12.4 `MultiHopProofCircuit` — depth-4 outer opening
+**X-side witness / gates** (SHA family, event → `X.block_id`):
+- Witnesses: `x_block_id`, `x_l8_tracked_ext_out_messages_root`, `x_block_id_h07_sibling`, `x_event_leaf_index`, `x_ext_out_merkle_path`, `event_hash`.
+- Gate 1 (depth-4 L8 opening; **4 SHA compressions**, one per level, using constants from §12.1):
+  ```
+  h89     = SHA(x_l8_tracked_ext_out_messages_root ‖ ZERO_LEAF)
+  h8_11   = SHA(h89   ‖ H10_11_CONST)
+  h8_15   = SHA(h8_11 ‖ H12_15_CONST)
+  x_block_id == SHA(x_block_id_h07_sibling ‖ h8_15)
+  ```
+- Gate 2 (ext-out Merkle opening from `event_hash` to L8, using §12.2 gadget).
+- Gate 3 (event → voucher binding — existing `ext_msg_leaf` Poseidon96 gadget reused; output is a leaf inside L8's tree).
+
+**Y-side witness / gates** (Poseidon family, `Y.block_id` → `finalLayerHistoricalHashRoot`):
+- Witnesses: `y_block_id`, `y_envelope_hash`, `y_tracked_ext_out_messages_root`, `y_block_leaf_path` (depth-8 dense-Merkle siblings + leaf index), `y_dense_chain_links` (≤ `MAX_CHAIN_LEN = 11`).
+- Gate 4: identical to today's single-thread `DarkDexCircuitNew` — reuse byte-for-byte after renaming.
+
+**Glue** (§7.3 salted-endpoints module, `dex-halo2-circuit/src/salt.rs`):
+- Gate 5:
+  - `salt == Poseidon([DOMAIN_TAG_FR, voucher_secret_seed])`
+  - `salt_commitment` at `inst[7] = Poseidon([salt])`
+  - `salted_X_start` at `inst[5] = Poseidon([salt, x_block_id])`
+  - `salted_Y_end`   at `inst[6] = Poseidon([salt, y_block_id])`
+- Gate 6: public voucher fields at `inst[0..4]` — unchanged from single-thread DEX.
+
+**Uniformity (t = 0)** — no branching in the circuit. The prover simply passes `x_block_id == y_block_id`; both sub-proofs still run and both publics collapse (`inst[5] == inst[6]`). See §7.5.
+
+Target K = 16; fallback K = 17 if the ext-out gadget cell count blows the margin.
+
+MockProver tests: (a) t = 0 with `X = Y`; (b) t ≠ 0 with `X ≠ Y`.
+
+### 12.4 `MultiHopProofCircuit` — depth-4 outer opening and slot-0 pruning
 
 **Files:** `dex-halo2-circuit/src/multi_hop_proof.rs`.
 
-- Extend `MultiHopWitness` with a 4-entry outer-siblings array `[L6, h45, h0..3, h8..15]` (32 bytes each). No `l8` field per hop — hops do not bind L8, so `h8..15` is carried as an opaque witness (see §5.2, §5.3).
-- Outer-tree reconstruction gains **1 SHA compression per hop** over the current depth-3 shape: one extra sibling combine at the new top level. `h8..15` is NOT re-derived from L8 in a hop — that's a `DexFinalProof`-only cost.
-- Reuse §12.1's constants module (L9..L15 zero-derived constants matter only for `DexFinalProof`'s L8 opening, not for hops).
-- Retune K to 17 (from current 17 — no change) and re-measure cell count; expected budget now ≈ 7.1 M cells at H = 5 → ~49 % margin.
-- Update MockProver tests + real-KZG tests (`test_bundle_e2e.rs`, `test_bundle_stress*.rs`) with the new witness layout.
+Two changes lift the existing circuit to the current spec:
 
-### 12.5 `bundle_verifier.rs` — tail-link check
+**(a) Depth-3 → depth-4 outer opening** (§5.3):
+- Extend `MultiHopWitness` with a 4-entry outer-siblings array `[L6, h45, h0..3, h8..15]` (32 bytes each). **No `l8` field per hop** — hops do not bind L8, so `h8..15` is carried as an opaque witness (§5.2, §5.3).
+- Outer-tree reconstruction gains exactly **1 SHA compression per hop** (one extra sibling combine at the new top level). Total per hop = 4 SHA (was 3 in the old depth-3 shape). `h8..15` is NOT re-derived from L8 here — that's a `DexFinalProof`-only cost.
+- Reuse the depth-4 constants from §12.1 (`H10_11_CONST` / `H12_15_CONST` are irrelevant here — hops don't open L8).
+
+**(b) Slot-0 pruning** (§5.1):
+- Drop the `ref_index == 0` branch in tag selection: the L7 tagged leaf is always `Poseidon(REFERENCED_REF_BLOCK_TAG ‖ A.block_id)`. Slot 0 (`parent_block_id`) is same-thread by producer construction and never traversed by a hop.
+- Change `ref_index` range-check from `0..=MAX_PROOF_BLOCK_REFS` to `1..=MAX_PROOF_BLOCK_REFS`. This is the "later simplification" flagged when §5 was rewritten.
+
+Budget & K:
+- K = 17 (unchanged). Expected cell budget at H = 5: 20 SHA × 354 K ≈ **7.1 M cells** → ~49 % margin (was ~24 % under the old 6-SHA/hop model).
+- Update MockProver tests + real-KZG tests (`test_bundle_e2e.rs`, `test_bundle_stress*.rs`) with the new witness layout and pruned tag logic.
+
+### 12.5 `bundle_verifier.rs` — tail-link check + fail-fast ordering
 
 **Files:** `dex-halo2-circuit/src/bundle_verifier.rs`.
 
-- Rename `HeadLinkBreak` → `XHeadLinkBreak` (dex_final head = inst[5], first hop start).
-- Add `TailLinkBreak { last_hop_end: Fr, dex_final_tail: Fr }` — asserts `MultiHop[N-1].salted_end_block_id == DexFinal.instance[6] (salted_Y_end)`.
-- Rewire `SaltCommitmentMismatch`, `ContinuityBreak`, `DexFinalNotFirst`, `DuplicateDexFinal` to keep semantic parity.
-- Extend `test_bundle_negative.rs` with a `TailLinkBreak` scenario.
+Bring the native-Rust verifier into byte-for-byte parity with §7.4's fail-fast Solidity ordering, so any bundle rejection in Solidity has an identical local counterpart:
+
+- **Phase 1 (public-input consistency, cheap):**
+  - Replay + `BundleTooShort` guards.
+  - `SaltCommitmentMismatch` — unchanged.
+  - Rename `HeadLinkBreak` → `XHeadLinkBreak` (asserts `MultiHop[0].salted_start == DexFinal.inst[5]`).
+  - **New:** `TailLinkBreak { last_hop_end: Fr, dex_final_tail: Fr }` — asserts `MultiHop[N-1].salted_end == DexFinal.inst[6]`. Fixes a pre-existing bundle-verifier bug (independent of the protocol update).
+  - `ContinuityBreak` (mid-chain) — unchanged.
+  - `DexFinalNotFirst`, `DuplicateDexFinal` — unchanged.
+- **Phase 2 (KZG verification, expensive):** only reached if phase 1 passes.
+- **Phase 3 (settle):** N/A off-chain, but the ordering makes the Solidity port trivial.
+
+Extend `test_bundle_negative.rs` with a `TailLinkBreak` scenario.
 
 ### 12.6 Synthetic chain helpers
 
 **Files:** `dex-halo2-circuit/src/test_helpers.rs`.
 
-- `synth_chain*` returns `bundle_head_salted` (matches DexFinal inst[5]) and `bundle_tail_salted` (matches DexFinal inst[6]).
-- `synthetic_dex_final(salt_commitment, salted_x_start, salted_y_end)` — new signature (was `(salt_commitment, bundle_head_salted)`).
+- `synth_chain*` returns both `bundle_head_salted` (matches `DexFinal.inst[5]`) and `bundle_tail_salted` (matches `DexFinal.inst[6]`).
+- `synthetic_dex_final(salt_commitment, salted_x_start, salted_y_end)` — new 3-arg signature (was `(salt_commitment, bundle_head_salted)`).
 - Update all bundle tests (`test_bundle_e2e.rs`, `test_bundle_negative.rs`, `test_bundle_stress*.rs`) to the new helper signatures.
 
 ### 12.7 K-budget final sizing
 
 Real-KZG runs after §12.1–6 land, on the reference laptop (release profile):
 
-1. `MultiHopProof` at K=17, H=5, depth-4 outer + L8-subtree — target ≤ 45 s prove / snark. If > 60 s, reduce H to 4 and bump `N_BUNDLE` to 5.
-2. `DexFinalProof` at K=16 — target ≤ 90 s prove.
-3. Lock the `(K, H, N_BUNDLE)` triple in §11.1 once measured.
+1. `MultiHopProof` at K = 17, H = 5, depth-4 outer, slot-0 pruned — target ≤ 45 s prove / snark. With the revised 49 % cell margin, H = 5 has meaningful headroom; if bench comfortably beats target, evaluate H = 6 (would reduce `N_BUNDLE` at fixed `L_MAX`).
+2. `DexFinalProof` at K = 16 (2 disjoint sub-proofs + salt gates) — target ≤ 90 s prove.
+3. Bundle stress: replay `test_bundle_stress_l300.rs` (already exercises `N_BUNDLE = 60`) to confirm the linear-in-`L_MAX` scaling still holds at the new per-snark cell count.
+4. Lock the `(K, H, N_BUNDLE)` triple in §11.1 once measured.
 
 ### 12.8 Off-tree work
 
-- **`RootPN.sol` orchestration.** Register `VK_DexFinal`, `VK_MultiHop`; implement §7.4 with the head + tail + salt-commitment checks. Solidity test harness against native-Rust bundle fixtures.
-- **Phone-side prover integration.** WASM / native build of all 5 snarks; parallel proving where possible (`tvm-sdk` + phone wallet).
+- **`RootPN.sol` orchestration.** Register `VK_DexFinal`, `VK_MultiHop`; implement §7.4 in phase order (public-input consistency → KZG verification → settle). Solidity test harness against native-Rust bundle fixtures from §12.6 — every rejection path in `bundle_verifier.rs` must have a matching Solidity revert.
+- **Phone-side prover integration.** WASM / native build of all snarks; parallel proving where possible (`tvm-sdk` + phone wallet). Given the raised `L_MAX = 300` production ceiling, quantify the phone-side worst-case wall time at `N_BUNDLE = 60` before locking the prod dispatch policy (§11.2.6).
 
 ---
 
