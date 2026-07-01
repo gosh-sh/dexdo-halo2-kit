@@ -502,10 +502,11 @@ witnesses:
   sk_u_commit, voucher_nominal, token_type, deposit_identifier_hash, ephemeral_pubkey, ...
 
 constraints:
-  1. X.block_id reconstruction (depth-4 SHA-256 tree, opening L8):
-        h_left  = SHA(L8 ‖ 0×32)                                        // 0×32 = L9 constant
-        h_right = SHA(h_left ‖ H12_15_CONST)                            // H12_15_CONST hard-coded
-        X.block_id == SHA(X_block_id_h07_sibling ‖ h_right)
+  1. X.block_id reconstruction (depth-4 SHA-256 tree, opening L8; 4 SHA compressions):
+        h89     = SHA(L8   ‖ 0×32)                                      // sibling: L9 = 0×32
+        h8_11   = SHA(h89  ‖ H10_11_CONST)                              // sibling: h10..11 constant
+        h8_15   = SHA(h8_11 ‖ H12_15_CONST)                             // sibling: h12..15 constant
+        X.block_id == SHA(X_block_id_h07_sibling ‖ h8_15)               // sibling: h0..7 witness
 
   2. Ext-out-messages Merkle path from event to L8:
         ext_out_tree_open(event_hash, X_event_leaf_index, X_ext_out_merkle_path)
@@ -531,7 +532,7 @@ constraints:
   7. Uniformity for t=0: the prover passes X = Y as identical witness bytes. All X-side and Y-side gates hold simultaneously; the bundle's MultiHopProofs are all inactive; salted_X_start == salted_Y_end trivially.
 ```
 
-Cell budget: X-side adds 4 SHA (L8 opening, with 3 sibling constants absorbing into 2 SHA computations plus the top-level combine) + up to 8 SHA (ext-out Merkle path at max depth) ≈ +4.2 M cells over the existing K=14 single-thread DEX baseline (≈ 1.7 M cells). Total ≈ 6 M cells. K = 16 provides ≈ 7 M cells with 110 advice columns → ~15 % margin. Estimated phone proving time: 2–3 minutes.
+Cell budget: X-side adds 4 SHA (L8 opening — one compression per level of the depth-4 tree; the three constant siblings save witness cells but not SHA compressions) + up to 8 SHA (ext-out Merkle path at max depth) ≈ +4.2 M cells over the existing K=14 single-thread DEX baseline (≈ 1.7 M cells). Total ≈ 6 M cells. K = 16 provides ≈ 7 M cells with 110 advice columns → ~15 % margin. Estimated phone proving time: 2–3 minutes.
 
 ### 7.8 Bundle size and proving time on phone
 
