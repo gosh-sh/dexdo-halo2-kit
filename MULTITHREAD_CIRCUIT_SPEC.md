@@ -233,22 +233,22 @@ Slot 0 of L7 (`parent_block_id`) is **not** used as a hop edge: per §2.3 it is 
 
 ### 5.2 What one hop constrains
 
-Inputs / witnesses for a hop B → A:
+The hop is a **building block, not a standalone snark** — it has no public inputs of its own. Block IDs and L7 material must stay hidden for DEX anonymity (§10.1); they only leave the circuit boundary through the salted endpoints of the enclosing `MultiHopProof` (see §7.3 — the outer snark exposes `salted_start_block_id` and `salted_end_block_id`, computed as `Poseidon(salt ‖ block_id)`).
+
+Inputs for a hop B → A (all private witnesses at the hop level):
 
 ```
-public:
-  current_block_id  = B.block_id        (32 bytes; internal, glued via salted endpoints at snark boundaries)
-  next_block_id     = A.block_id
-  is_active         = bool
-
-private witness:
-  B.L0..B.L7_root, B.L8                                    (all 9 opaque leaves needed to reconstruct B.block_id)
-  ref_index       (u16; range-checked to 1..=MAX_PROOF_BLOCK_REFS; slot 0 is excluded — see §5.1)
-  ref_count       (u16; range-checked to ≤ MAX_PROOF_BLOCK_REFS + 1)
-  L7_inner_path   (≤ 8 Poseidon sibling hashes; depth bounded by MAX_PROOF_BLOCK_REFS = 256)
+current_block_id  = B.block_id                          (32 bytes)
+next_block_id     = A.block_id                          (32 bytes)
+B.L0..B.L7_root, B.L8                                   (9 × 32 bytes; full leaf set needed to reconstruct B.block_id)
+ref_index         (u16; range-checked to 1..=MAX_PROOF_BLOCK_REFS; slot 0 excluded — see §5.1)
+ref_count         (u16; range-checked to ≤ MAX_PROOF_BLOCK_REFS + 1)
+L7_inner_path     (≤ 8 Poseidon sibling hashes; depth bounded by MAX_PROOF_BLOCK_REFS = 256)
 ```
 
-Constraints (when `is_active == 1`):
+An `is_active` flag also lives at the hop level, but only makes sense inside `MultiHopProof` where a fixed-width array of `H` hops must be padded with no-op hops when the true walk length is shorter than `H`. It is a private witness of `MultiHopProof`, not of the hop primitive as such (see §7.6).
+
+Constraints (single hop; the enclosing `MultiHopProof` gates them by its own `is_active[h]`):
 
 1. **SHA-256 depth-4 outer path.** Recompute `B.block_id` from `[L0, L1, L2, L3, L4, L5, L6, L7_root, L8, 0, 0, 0, 0, 0, 0, 0]` via the canonical 16-leaf SHA-256 Merkle. The path from L7 up to the root traverses `L7 → h67 → h4..7 → h0..7 → block_id`, combined at the top level with `h8..15` (which itself derives from L8 and the L9..L15 zero-constants — 2 additional SHA compressions).
 2. **Tagged leaf hash for A.** Since only `refs` slots (index ≥ 1) are opened, the tag is fixed:
@@ -258,7 +258,7 @@ Constraints (when `is_active == 1`):
    ```
 3. **Poseidon dense-Merkle opening.** Verify `B.L7_root == open(tag_hash, ref_index, L7_inner_path)` using the canonical dense-Merkle algorithm of `dense_merkle_verify` (`node/libs/history-proof/src/lib.rs`).
 
-When `is_active == 0`: the hop is a no-op, constrained to `next_block_id == current_block_id` and all witness validity constraints disabled by selector multiplication (same pattern as `DenseChainLink::inactive`).
+In `MultiHopProof`, hops carrying `is_active[h] == 0` are no-ops: the three constraints above are disabled by selector multiplication and `next_block_id == current_block_id` is enforced instead (same pattern as `DenseChainLink::inactive`). See §7.6.
 
 ### 5.3 What one hop costs
 
