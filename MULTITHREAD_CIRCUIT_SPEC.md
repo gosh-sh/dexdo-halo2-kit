@@ -263,7 +263,7 @@ In `MultiHopProof`, hops carrying `is_active[h] == 0` are no-ops: the three cons
 
 ### 5.3 What one hop costs
 
-- **4 SHA-256 compressions per hop** — one per level of the depth-4 outer path from L7 up to `block_id`. Hops do not bind L8, so `h8..15` is a witness sibling and no extra SHA is spent to derive it.
+- **4 SHA-256 compressions per hop** — one per level of the depth-4 outer path from L7 up to `block_id`.
 - ≤ 8 Poseidon hashes for the L7 inner path → a few thousand cells, negligible.
 - 1 Poseidon for tagged-leaf construction → negligible.
 - Range checks + selectors → ≈ 100 K cells.
