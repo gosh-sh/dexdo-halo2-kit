@@ -718,7 +718,7 @@ Unit test: round-trip against a hand-computed 15-SHA reference.
       root: &[AssignedValue<F>; 32],
   );
   ```
-- Byte-level Merkle walk, dense-tree with power-of-2 padding (mirrors the existing L1 dense-Merkle pattern in `dark_dex_circuit_new.rs`).
+- Byte-level Merkle walk, dense-tree with power-of-2 padding, opening `event_hash → L8`. The implementation pattern (dense byte-Merkle with `leaf_index`-driven sibling order) can be lifted from the existing dense-Merkle gadget in `dark_dex_circuit_new.rs`, but this gadget lives entirely on the X-side and is unrelated to the Y-side layer-1 batch tree.
 - MockProver test at K=15 with a synthetic 4-leaf tree.
 
 ### 12.3 `DexFinalProof` — new circuit `DarkDexCircuitV2`
