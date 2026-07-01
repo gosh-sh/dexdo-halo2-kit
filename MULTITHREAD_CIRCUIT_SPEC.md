@@ -478,10 +478,10 @@ Cell budget at H = 5: 20 SHA-256 compressions × 354 K ≈ **7.1 M advice cells*
 
 `DexFinalProof` is the extended voucher circuit at K = 16.
 
-**Two disjoint cryptographic subcircuits, glued by salt + voucher payload.** Reading constraints 1–4 below:
+**Two disjoint cryptographic subcircuits, glued by salt + voucher payload.** Reading constraints 1–5 below:
 
-- **X-side** (constraints 1, 2, 3): event → `X.block_id`. SHA-256-based (depth-4 L8 opening + ext-out Merkle path + Poseidon96 for `event_hash`).
-- **Y-side** (constraint 4): `Y.block_id` → `finalLayerHistoricalHashRoot`. Poseidon-based (Poseidon96 `block_leaf` + depth-8 Poseidon dense-Merkle to `#L1(M_Y)` + ≤ 11 dense-chain links).
+- **X-side** (constraints 1–4): event BOC → `X.block_id`. Raw BOC preimage bytes witnessed; SHA-256 in-circuit reconstructs `event_hash` (2 SHA), field extraction by byte-slice, Poseidon96 forms `ext_msg_leaf`, Poseidon dense-Merkle to L8, then depth-4 SHA opening (4 SHA) to `X.block_id`.
+- **Y-side** (constraint 5): `Y.block_id` → `finalLayerHistoricalHashRoot`. Poseidon-based (Poseidon96 `block_leaf` + depth-8 Poseidon dense-Merkle to `#L1(M_Y)` + ≤ 11 dense-chain links).
 
 The two sides share no block-side witness when `t ≠ 0`. When `t = 0` (X = Y), the same `block_id` value feeds both sides — but the sides still perform distinct work: X-side binds *event to block*, Y-side binds *block to anchor*. **No crypto is repeated.** What matters for uniformity (§7.5) is that the *shape* is identical in both cases: an observer cannot tell from the proof whether X = Y or X ≠ Y.
 
@@ -493,12 +493,20 @@ witnesses:
   voucher_secret_seed                               (1 Fr)
 
   # X-side (event block; thread t; may equal Y when t=0)
+  #
+  # The event BOC is passed in as raw preimage bytes for its two cells
+  # (root event cell + child voucher-payload cell). Prover-side
+  # `parse_voucher_boc` only flattens the BOC; every hash on the X-side
+  # is recomputed in-circuit.
+  x_root_cell_repr_data                             (variable length; SHA-256 preimage of root event cell)
+  x_child_cell_repr_data                            (variable length; SHA-256 preimage of child voucher-payload cell)
+  x_child_hash_offset_in_root                       (usize; structural constant per BOC layout)
+  x_account_dapp_id, x_account_id                   (32 bytes each; ext-out-message endpoint identity)
   X.block_id                                        (32 bytes)
   X.L8_tracked_ext_out_messages_root                (32 bytes)
   X_block_id_h07_sibling                            (32 bytes)          // the one live sibling of L8
   X_event_leaf_index                                (u32, range-checked)
-  X_ext_out_merkle_path                             (≤ EXT_OUT_DEPTH_MAX × 32 bytes)
-  event_hash                                        (32 bytes; derived from voucher event contents)
+  X_ext_out_merkle_path                             (≤ EXT_OUT_DEPTH_MAX × 32 bytes; Poseidon siblings)
 
   # Y-side (anchor block; thread 0; equals X when t=0)
   Y.block_id                                        (32 bytes)
@@ -517,31 +525,42 @@ constraints:
         h8_15   = SHA(h8_11 ‖ H12_15_CONST)                             // sibling: h12..15 constant
         X.block_id == SHA(X_block_id_h07_sibling ‖ h8_15)               // sibling: h0..7 witness
 
-  2. Ext-out-messages Merkle path from event to L8:
-        ext_out_tree_open(event_hash, X_event_leaf_index, X_ext_out_merkle_path)
-            == X.L8_tracked_ext_out_messages_root
+  2. BOC hash reconstruction + parent-child link (2 SHA compressions):
+        event_hash   =  SHA(x_root_cell_repr_data)                       // in-circuit
+        child_hash   =  SHA(x_child_cell_repr_data)                      // in-circuit
+        x_root_cell_repr_data[offset .. offset+32]  ==  child_hash        // root cell embeds child's repr_hash
 
-  3. Event → voucher binding (existing DarkDex Poseidon96 shape):
-        event_hash  =  Poseidon96( sk_u_commit ‖ voucher_nominal ‖ token_type ‖ deposit_identifier_hash ‖ ... )
-        (concrete layout preserved from current DarkDexCircuitNew ext_msg_leaf gadget)
+  3. BOC descriptor sanity + voucher-field extraction (byte-sliced from x_child_cell_repr_data):
+        d1 bits of root cell  ⇒  refs_count == 1
+        d1 bits of child cell ⇒  refs_count == 0
+        sk_u_commit           =  LE(x_child_cell_repr_data[6..38])
+        voucher_nominal       =  BE(x_child_cell_repr_data[38..70])
+        token_type            =  BE(x_child_cell_repr_data[70..74])
+        (sk_u_commit is also re-derived from sk_u via Poseidon and constrained equal
+        — inherited unchanged from single-thread DarkDexCircuitNew.)
 
-  4. Y-side anchor (existing single-thread flow):
+  4. Event → ext_out_tree leaf, then Poseidon-Merkle open to L8:
+        ext_msg_leaf =  Poseidon96( x_account_dapp_id ‖ x_account_id ‖ event_hash )    // byte-flat, §7.3
+        ext_out_tree_open(ext_msg_leaf, X_event_leaf_index, X_ext_out_merkle_path)
+            == X.L8_tracked_ext_out_messages_root                                       // Poseidon dense-Merkle
+
+  5. Y-side anchor (existing single-thread flow):
         block_leaf(Y)  =  Poseidon96( Y.block_id ‖ Y.envelope_hash ‖ Y.tracked_ext_out_messages_root )
         block_leaf(Y) -- depth-8 Poseidon dense-Merkle path --> #L1(M_Y)
         #L1(M_Y)      -- dense chain (≤ 11 links)          --> finalLayerHistoricalHashRoot
 
-  5. Salt + salted endpoints:
+  6. Salt + salted endpoints:
         salt                   == Poseidon([DOMAIN_TAG_FR, voucher_secret_seed])
         salt_commitment_pub    == Poseidon([salt])                                // instance [7]
         salted_X_start_pub     == Poseidon([salt, X.block_id])                     // instance [5]
         salted_Y_end_pub       == Poseidon([salt, Y.block_id])                     // instance [6]
 
-  6. Public voucher fields at instances [0..4] (unchanged from single-thread DEX).
+  7. Public voucher fields at instances [0..4] (unchanged from single-thread DEX).
 
-  7. Uniformity for t=0: the prover passes X = Y as identical witness bytes. All X-side and Y-side gates hold simultaneously; the bundle's MultiHopProofs are all inactive; salted_X_start == salted_Y_end trivially.
+  8. Uniformity for t=0: the prover passes X = Y as identical witness bytes. All X-side and Y-side gates hold simultaneously; the bundle's MultiHopProofs are all inactive; salted_X_start == salted_Y_end trivially.
 ```
 
-Cell budget: X-side adds 4 SHA (L8 opening — one compression per level of the depth-4 tree; the three constant siblings save witness cells but not SHA compressions) + up to 8 SHA (ext-out Merkle path at max depth) ≈ +4.2 M cells over the existing K=14 single-thread DEX baseline (≈ 1.7 M cells). Total ≈ 6 M cells. K = 16 provides ≈ 7 M cells with 110 advice columns → ~15 % margin. Estimated phone proving time: 2–3 minutes.
+Cell budget: X-side is **2 SHA (BOC hash reconstruction) + 4 SHA (L8 depth-4 opening) = 6 SHA compressions**, plus the ext-out Poseidon dense-Merkle walk (up to `EXT_OUT_DEPTH_MAX` Poseidon nodes, ≤ 1 M cells) and byte-slice field extraction (negligible). Adds ≈ +2.1 M SHA cells + ≈ 1 M Poseidon cells over the existing K = 14 single-thread DEX baseline (≈ 1.7 M cells). Total ≈ 5 M cells. K = 16 provides ≈ 7 M cells with 110 advice columns → ~30 % margin. Estimated phone proving time: 2–3 minutes.
 
 ### 7.8 Bundle size and proving time on phone
 
@@ -654,7 +673,7 @@ We estimate the practical phone ceiling at **K ≤ 17** (≈ 250 MB SRS, 1–3 G
 | `L_MAX` (max real chain length) | **20** (prototyping) → **300** (production, per node team) | Multi-proof design target |
 | `MAX_CHAIN_LEN` (thread-0 dense chain) | **11** | `gosh-dense-balanced-tree` |
 | `MultiHopProof` K | **17** | Cell-budget sizing (~24 % margin) |
-| `DexFinalProof` K | **16** | Cell-budget sizing (~15 % margin) |
+| `DexFinalProof` K | **16** | Cell-budget sizing (~30 % margin — 6 SHA + Poseidon ext-out walk + Y-side, see §7.7) |
 | `DOMAIN_TAG_BYTES` | `b"acki-nacki:voucher-hop-salt:v1"` (30 B) | `dex-halo2-circuit/src/salt.rs` |
 | SHA-256 chip | `gosh-sha256-chip` | Existing dependency |
 | Phone K ceiling | ≤ 17 | §9.1 |
@@ -727,17 +746,36 @@ Unit test: round-trip against a hand-computed 15-SHA reference.
 
 Circuit is organised as two structurally independent subcircuits glued by `salt` and voucher-payload publics (§7.7):
 
-**X-side witness / gates** (SHA family, event → `X.block_id`):
-- Witnesses: `x_block_id`, `x_l8_tracked_ext_out_messages_root`, `x_block_id_h07_sibling`, `x_event_leaf_index`, `x_ext_out_merkle_path`, `event_hash`.
-- Gate 1 (depth-4 L8 opening; **4 SHA compressions**, one per level, using constants from §12.1):
+**X-side witness / gates** (SHA family, event BOC → `X.block_id`):
+
+The BOC is *not* condensed to an opaque `event_hash` before entering the circuit. Its two cells (root event cell + child voucher-payload cell) are passed in as **raw preimage bytes** and every hash on the X-side is recomputed in-circuit. Prover-side, `parse_voucher_boc` only flattens the BOC into two `cell_repr_data` byte vectors and records the child-hash byte offset inside the root preimage; no crypto is trusted from that step.
+
+- Witnesses (X-side BOC + tree openings):
+  - `x_root_cell_repr_data: [u8; len_root]` — root event cell preimage bytes.
+  - `x_child_cell_repr_data: [u8; len_child]` — child voucher-payload cell preimage bytes.
+  - `x_child_hash_offset_in_root: usize` (structural constant per BOC layout).
+  - `x_account_dapp_id: [u8; 32]`, `x_account_id: [u8; 32]` (ext-out-message endpoint identity).
+  - `x_ext_out_merkle_siblings`, `x_ext_out_merkle_position`, `x_num_ext_out_levels` (padded to `MAX_EVENTS_TREE_DEPTH`).
+  - `x_block_id: [u8; 32]`, `x_l8_tracked_ext_out_messages_root: [u8; 32]`, `x_block_id_h07_sibling: [u8; 32]`.
+- Gate 1 (**BOC hash reconstruction**, 2 SHA compressions): compute `event_hash = SHA(x_root_cell_repr_data)` and `child_hash = SHA(x_child_cell_repr_data)` via `Sha256Chip::digest_bytes`; constrain the 32 bytes of `x_root_cell_repr_data[offset .. offset+32]` equal to `child_hash` (this is the BOC parent→child link, exactly as done today in `dark_dex_circuit_new.rs:454-467`).
+- Gate 2 (**BOC descriptor sanity**): decompose d1 byte of each cell to 8 bits, assert `refs_count == 1` for the root and `refs_count == 0` for the child (as in `dark_dex_circuit_new.rs:516-564`).
+- Gate 3 (**voucher-field extraction**, byte-sliced from `x_child_cell_repr_data`):
+  - `x_sk_u_commit` — bytes `[6..38]`, LE-Fr recombine (32 B).
+  - `x_voucher_nominal` — bytes `[38..70]`, BE recombine (32 B).
+  - `x_token_type` — bytes `[70..74]`, BE recombine (4 B).
+  - Range-checks and inner-product reconstructions match the existing `EVENT_*_START/END` constants (`dark_dex_circuit_new.rs:469-514`).
+- Gate 4 (**`ext_msg_leaf` Poseidon96**): `ext_msg_leaf = Poseidon96(x_account_dapp_id, x_account_id, event_hash)` (byte-flat convention, §7.3 / `poseidon_hash_96_circuit_bytes`).
+- Gate 5 (**ext-out Merkle opening** from `ext_msg_leaf` to `x_l8_tracked_ext_out_messages_root`, using the §12.2 gadget; `num_ext_out_levels` witnessed and range-checked in `[0, MAX_EVENTS_TREE_DEPTH]`).
+- Gate 6 (**depth-4 L8 opening** — reconstruct `x_block_id` from `x_l8_tracked_ext_out_messages_root`; **4 SHA compressions**, one per level, using constants from §12.1):
   ```
   h89     = SHA(x_l8_tracked_ext_out_messages_root ‖ ZERO_LEAF)
   h8_11   = SHA(h89   ‖ H10_11_CONST)
   h8_15   = SHA(h8_11 ‖ H12_15_CONST)
   x_block_id == SHA(x_block_id_h07_sibling ‖ h8_15)
   ```
-- Gate 2 (ext-out Merkle opening from `event_hash` to L8, using §12.2 gadget).
-- Gate 3 (event → voucher binding — existing `ext_msg_leaf` Poseidon96 gadget reused; output is a leaf inside L8's tree).
+- Gate 7 (**voucher public glue**): the four voucher publics at `inst[0..4]` (voucher_nominal, token_type, sk_u_commit, plus the fourth entry that today is the Poseidon of the tuple) are wired from the extracted / recomputed cells above — no free-standing witness bypass.
+
+X-side SHA budget: **2 (BOC) + 4 (L8 opening) = 6 SHA compressions**, plus the ext-out Merkle walk (Poseidon, §12.2). Byte-slice extraction is nearly free (a handful of inner products).
 
 **Y-side witness / gates** (Poseidon family, `Y.block_id` → `finalLayerHistoricalHashRoot`):
 - Witnesses: `y_block_id`, `y_envelope_hash`, `y_tracked_ext_out_messages_root`, `y_block_leaf_path` (depth-8 dense-Merkle siblings + leaf index), `y_dense_chain_links` (≤ `MAX_CHAIN_LEN = 11`).
