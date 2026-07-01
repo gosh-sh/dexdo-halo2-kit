@@ -31,11 +31,11 @@ The canonical branch for this design is `poseidon_dex` on `acki-nacki`. All fiel
 
 ### 1.1 Where events happen vs. where they anchor
 
-The voucher-generation event may be emitted in **any** thread of Acki Nacki — typically the user's own account thread, which is not under the prover's control. The event's block X is therefore of arbitrary thread `t`.
+The voucher-generation event may be emitted in **any** thread of Acki Nacki. The event's block X is therefore of arbitrary thread `t`.
 
 The **anchor**, in contrast, must land in **thread 0**. Under this protocol only thread 0 produces layer trees: `history_proofs` are populated exclusively on thread-0 key blocks, and `GlobalHistoricalData[thread 0]` is the sole populated per-thread window. No other thread has a layer-N batch tree the contract can query. It follows that the anchor block Y must itself be a thread-0 block.
 
-When `t = 0`, event and anchor coincide (`X = Y`) and no cross-thread bridging is needed. This is the "single-thread" case that the current `dark_dex_circuit_new.rs` targets — and, by construction, is the *only* case it handles: the existing circuit collapses X and Y into one block field, so it cannot represent a proof in which the event lives in a non-thread-0 block. This is precisely why the new spec introduces a separate X-side / Y-side split and an explicit L7 walk.
+When `t = 0`, event and anchor coincide (`X = Y`) and no cross-thread bridging is needed. This is the "single-thread" case. 
 
 When `t ≠ 0`, the proof must chain the event's block X, via cross-thread L7 reference edges (§5), to some thread-0 block Y that transitively references X. Only Y — a thread-0 block — can be anchored to `GlobalHistoricalData[thread 0]`.
 

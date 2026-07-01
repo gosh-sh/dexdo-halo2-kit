@@ -169,7 +169,7 @@ fn poseidon_hash_96_circuit_bytes(
     };
 
     // c3 = LE(c[29..32])
-    let c3 = {
+    let c3: AssignedValue<Fr> = {
         let cells: Vec<QuantumCell<Fr>> =
             c_bytes[29..32].iter().map(|c| QuantumCell::Existing(*c)).collect();
         gate.inner_product(ctx, cells, powers_le_31[..3].iter().cloned())
