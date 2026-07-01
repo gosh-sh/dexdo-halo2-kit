@@ -379,6 +379,8 @@ inst[7] = salt_commitment                                             // bundle 
 
 ### 7.4 RootPN orchestration
 
+Ordering rationale: cheap consistency checks over public inputs first (fail-fast on any structural break — replay, salt mismatch, chain break, anchor mismatch), and only then the expensive Halo2 KZG verifications.
+
 ```solidity
 function claimVoucher(
     DexFinalProofData calldata dexProof,
@@ -386,21 +388,17 @@ function claimVoucher(
     uint8 layerNumber
 ) external {
     require(!claimed[dexProof.publicInputs[0]], ERR_ALREADY_CLAIMED);
+    require(hopProofs.length >= 1, ERR_BUNDLE_TOO_SHORT);
 
-    // 1. verify each Halo2 snark independently (no aggregation)
-    require(verify_dex_final(dexProof), ERR_INVALID_DEX_PROOF);
-    for (uint i = 0; i < hopProofs.length; ++i) {
-        require(verify_multi_hop(hopProofs[i]), ERR_INVALID_HOP_PROOF);
-    }
+    // === Phase 1: cheap public-input consistency ===============================
 
-    // 2. salt binding: every proof of the bundle commits to the same salt
+    // 1a. salt binding: every proof of the bundle commits to the same salt
     bytes32 saltCommit = dexProof.publicInputs[7];
     for (uint i = 0; i < hopProofs.length; ++i) {
         require(hopProofs[i].publicInputs[2] == saltCommit, ERR_SALT_MISMATCH);
     }
 
-    // 3. chain continuity: head → hops → tail, all glued via salted endpoints
-    require(hopProofs.length >= 1, ERR_BUNDLE_TOO_SHORT);
+    // 1b. chain continuity: head → hops → tail, all glued via salted endpoints
     require(hopProofs[0].publicInputs[0] == dexProof.publicInputs[5], ERR_X_HEAD_MISMATCH);
     for (uint i = 0; i + 1 < hopProofs.length; ++i) {
         require(
@@ -413,19 +411,27 @@ function claimVoucher(
         ERR_Y_TAIL_MISMATCH
     );
 
-    // 4. anchor: thread-0 history-data check
+    // 1c. anchor: thread-0 history-data check (still cheap — a single VM callback)
     require(
         gosh.check_layer_hash(dexProof.publicInputs[1], layerNumber),
         ERR_INVALID_HISTORY_PROOF
     );
 
-    // 5. settle voucher
+    // === Phase 2: expensive Halo2 KZG verifications ============================
+    // Only reached after all public inputs are structurally consistent.
+
+    require(verify_dex_final(dexProof), ERR_INVALID_DEX_PROOF);
+    for (uint i = 0; i < hopProofs.length; ++i) {
+        require(verify_multi_hop(hopProofs[i]), ERR_INVALID_HOP_PROOF);
+    }
+
+    // === Phase 3: settle =======================================================
     _mintAndSendVoucher(dexProof);
     claimed[dexProof.publicInputs[0]] = true;
 }
 ```
 
-All checks are cheap on EVM (field comparisons + N+1 Halo2 KZG verifications).
+Phase 1 is cheap (field comparisons + one VM callback); phase 2 is the only heavy work (N+1 Halo2 KZG verifications).
 
 ### 7.5 Uniformity: single-thread and multi-thread proofs look identical
 
