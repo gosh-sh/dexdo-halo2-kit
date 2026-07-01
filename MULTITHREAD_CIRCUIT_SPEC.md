@@ -15,6 +15,7 @@ The canonical branch for this design is `poseidon_dex` on `acki-nacki`. All fiel
 | **`#L<N>(M)`** | Layer-N batch hash for batch M of thread 0. Layer-1 is built over the blocks of batch M; layer-(N+1) is built over `BWS` consecutive layer-N hashes. |
 | **X** | The **event block** — the block, in some thread t (t may or may not be 0), in which the voucher-generation event was emitted. Hidden witness. |
 | **Y** | The **anchor block** — a block **in thread 0** that lies at the tail of a chain of cross-thread reference edges emanating from X. When t = 0, Y = X (uniformity case). Hidden witness. |
+| **X-side / Y-side** | The portions of the DEX proof concerned with block X (event binding, in thread t) and block Y (thread-0 anchor) respectively. When t ≠ 0 they are separate; when t = 0 they collapse onto the same block. |
 | **`event_hash`** | 32-byte hash of the voucher event message. Included as a leaf of X's `tracked_ext_out_messages` Merkle tree. |
 | **Block leaf** (thread 0, layer-1) | `block_leaf = Poseidon96(block_id ‖ envelope_hash ‖ tracked_ext_out_messages_root)`. Feeds the per-batch layer-1 Poseidon dense-Merkle tree in thread 0. |
 | **GlobalHistoricalData** | Node-side per-thread map (`HashMap<ThreadIdentifier, HistoryLayerData>`) of layer-N window hashes queried by the contract via `gosh.check_layer_hash(root, N)`. Under this protocol only thread 0's entry is populated. |
