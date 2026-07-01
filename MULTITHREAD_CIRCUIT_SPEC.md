@@ -52,11 +52,11 @@ require(
 
 `finalLayerHistoricalHashRoot` is exposed as instance 1 of the DEX proof's public-input vector. The callback must resolve the query against thread 0's window regardless of which thread RootPN itself executes in — the layer-tree data lives only there. (Concretely: the node's `check_history_proof_hash` callback looks up `GlobalHistoricalData[thread_id]`; only thread 0's entry is populated, so verification succeeds only when the anchored root belongs to thread 0.)
 
-### 1.3 Anchoring is anonymity-carrying
+### 1.3 Anchoring simple strategy
 
-The DEX circuit does not anchor against a single fixed layer. It anchors against `#L<N>(M)` for some `(N, M)` chosen by the prover, subject only to the node still retaining that root in `GlobalHistoricalData[thread 0][N]`. The prover normally targets the smallest N (N = 1, cheapest in-circuit) and falls back to higher N if the layer-1 root containing the event has aged out.
+The DEX circuit does not anchor against a single fixed layer. It anchors against `#L<N>(M)` for some `(N, M)` chosen by the prover, subject only to the node still retaining that root in `GlobalHistoricalData[thread 0][N]`. The prover for simplicity targets the smallest N (N = 1, cheapest in-circuit) and falls back to higher N if the layer-1 root containing the event has aged out.
 
-Anchoring hides the concrete block in which the voucher event happened — both the block's id / height (which would identify a small anonymity set) and, in the multi-thread case, the thread `t` of that block. The verifier learns only the pair `(finalLayerHistoricalHashRoot, layerNumber)`, which subsumes a full batch (N = 1) or higher-layer aggregate (N > 1) of recent thread-0 history; the witness — X's block id, X's thread id `t`, and all cross-thread chain hops — stays inside the proof and is never revealed. Anchoring at a higher layer N (a larger anonymity set) is sometimes preferable even when a layer-1 anchor is still available.
+In single thread setting (or if we consider what happen in thread 0 when we gonna prove detected block Y) anchoring hides the concrete block in which the voucher event happened — both the block's id / height (which would identify a small anonymity set) and, in the multi-thread case, the thread `t` of that block. The verifier learns the pair `(finalLayerHistoricalHashRoot, layerNumber)`, which subsumes a full batch (N = 1) or higher-layer aggregate (N > 1) of recent thread-0 history. Anchoring at a higher layer N (a larger anonymity set) is sometimes preferable even when a layer-1 anchor is still available. But this is not exhaustive discussion yet about anonymity. See below sections devoted to extra salting of onvolved block ids. Because in multithreading setting anchoring itself does not provide anonymity at all, only together with extra salt application. 
 
 ### 1.4 Uniformity between t = 0 and t ≠ 0
 
