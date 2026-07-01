@@ -4,6 +4,24 @@ Target embodiment: `dexdo-halo2-kit/dex-halo2-circuit` (DEX voucher circuit).
 
 This document describes the cryptographic mechanism for proving, in zero knowledge, that a voucher-generation event in **any thread t** of Acki Nacki is anchored against a layer-N batch hash that the node still retains in its **global historical data** for thread 0, and how the DEX circuit embodies that mechanism.
 
+---
+
+> ## ⚠️ PROTOCOL UPDATE — 2026-07-01 (no-C, L8-event-binding variant)
+>
+> The Acki Nacki team is committing to a variant of the protocol in which:
+>
+> 1. **Only thread 0 carries historical data.** No `history_proofs` will be populated on any block in thread `t ≠ 0`. There is therefore **no key block C in thread t** — the "next layer-1 key block of thread t after X's batch" no longer exists as a witness the circuit can extract from.
+> 2. **Block-id construction is widened.** The 8-leaf SHA-256 block-id tree of §1 grows to **16 leaves at depth 4**:
+>    - L0..L7 unchanged (same definitions as today);
+>    - **L8 = `tracked_ext_out_messages_root`** (the same 32-byte value that today only appears via L1's opaque bincode);
+>    - L9..L15 = 32 zero bytes (padding).
+>    Combine rule unchanged: SHA-256(left ‖ right) at every level. Total: **15 SHA-256 invocations** to fold 16 leaves (up from 7 today).
+> 3. **Event hash is a leaf under L8.** `tracked_ext_out_messages_root` is itself the root of an ext-out-messages Merkle tree; the voucher event lives as one of its leaves. Proving that the event is a message of block X therefore reduces to (a) opening leaf L8 of X's block-id tree, and (b) opening the event leaf of the tree rooted at L8. **`DarkDexCircuitNew` will carry both openings.**
+> 4. **Cross-thread anchoring is a pure L7 walk from X directly to Y.**  Chain shape becomes `X = B_0 → B_1 → ... → B_L = Y` with `Y` in thread 0. There is no C-extraction step and no `#L1(M_X)` on the thread-t side. The multi-hop bundle carries the walk; `DexFinalProof` (a) binds the event at X, (b) anchors Y to `finalLayerHistoricalHashRoot` via the existing thread-0 dense-Merkle + dense-chain path, and (c) exposes the salted X / Y endpoints on the bundle's public inputs.
+> 5. **Uniformity for `t = 0`.** When X is already in thread 0, the multi-hop bundle collapses to `L = 0` (all `MultiHopProof`s inactive, `X = Y`). `DexFinalProof` performs both bindings on the same block.
+>
+> **Superseded sections (kept for historical reference, marked `[SUPERSEDED]` in place):** §1.2 (L0-based C extraction), §5 (C→Y binding scheme), §6.7 (DexFinalProof with C-reconstruction), the `salted_C_start` naming in §6.3 / §6.9 / §10.1, and open questions §10.2.4/5 that assume C. See the new authoritative sections **§12** (updated cryptographic chain), **§13** (updated `DexFinalProof`), **§14** (updated public inputs), and **§15** (circuit-fix plan) at the end of this document.
+
 ### Anchor model
 
 On-chain contract `RootPN.sol` (`acki-nacki/contracts/dex/RootPN.sol`) consumes the proof together with a pair `(finalLayerHistoricalHashRoot, layerNumber)` and gates verification by:
@@ -47,6 +65,8 @@ Adopted from `History proofs proposal.docx` and the `poseidon_dex` implementatio
 ---
 
 ## 1. block_id construction (recap)
+
+> **Update (2026-07-01):** under the new protocol, the tree widens to **16 leaves at depth 4** (L0..L7 unchanged + L8 = `tracked_ext_out_messages_root` + L9..L15 = zero). The description below is the current (depth-3, 8-leaf) shape and remains accurate for existing blocks; the depth-4 shape is specified in §12. Everything about L0..L7 and the SHA-256 combine rule is preserved by the update.
 
 Every block has `block_id = root of an 8-leaf SHA-256 Merkle tree`. The 8 leaves are produced by `block_merkle_leaves()` at `node/src/types/ackinacki_block/mod.rs:261`.
 
@@ -106,7 +126,9 @@ block_keeper_set_change_proof_data : Option<...>
 
 `tracked_ext_out_messages_root` does not appear in L0 or L7. It is committed only via L1 (bincode + SHA-256) and via the per-thread layer-1 batch tree (Poseidon96, see §2).
 
-### 1.2 L0 in detail
+### 1.2 L0 in detail  `[SUPERSEDED by §12 for cross-thread event binding]`
+
+> **Note (2026-07-01):** L0 remains defined as below for every block that is a layer-1 key block **of thread 0**. Under the new protocol, non-thread-0 blocks never populate `history_proofs`; the circuit no longer extracts `#L1(M_X)` from L0 on the thread-t side. §5's use of L0 → P → `P[2..34]` is dead. L0 remains relevant only inside `DexFinalProof`'s Y-side path if the anchor block Y itself happens to be a layer-1 key block (Y's L0 is not opened by the circuit either — the anchor uses L7 for cross-thread edges and the block-leaf path for the thread-0 batch tree).
 
 Helper: `history_proofs_l0` at `node/libs/history-proof/src/lib.rs:181`.
 
@@ -355,7 +377,9 @@ Reference off-chain implementation: `helpers/proof_helper/src/gql_proof.rs` on t
 
 ---
 
-## 5. Full multi-thread binding scheme
+## 5. Full multi-thread binding scheme  `[SUPERSEDED by §12 as of 2026-07-01]`
+
+> **Superseded.** The chain below relies on extracting `#L1(M_X)` from key block C in thread t. The new protocol (§12) removes C entirely: X anchors its event via L8 of its own block-id tree, and the L7 walk goes directly `X → ... → Y`.
 
 Reading the chain from the event back to the anchor, the proof must establish:
 
@@ -562,7 +586,9 @@ constraints:
 
 Cell-count budget at H = 5: 15 SHA-256 compressions × 354 K ≈ **5.3 M advice cells**. K = 16 with ~110 columns provides ≈ 7.2 M cells → ~25 % margin. Proving time on a high-end phone: estimated 3–4 minutes per snark.
 
-### 6.7 `DexFinalProof` circuit detail
+### 6.7 `DexFinalProof` circuit detail  `[SUPERSEDED by §13]`
+
+> **Superseded (2026-07-01):** the new `DexFinalProof` no longer performs C-extraction. It performs (i) X-side L8 event binding via the widened depth-4 block-id tree, and (ii) Y-side thread-0 anchor via the existing block-leaf → dense-Merkle → dense-chain path. See §13 for the authoritative gate list.
 
 `DexFinalProof` is the extended voucher circuit at K = 15. It contains the existing single-thread DEX logic plus C-extraction:
 
@@ -868,4 +894,355 @@ These may run partially in parallel.
 
 ---
 
-*End of specification. Reviewers: please direct comments on locked parameters (§10.1) and open questions (§10.2) to the spec author before circuit-side implementation begins.*
+---
+
+## 12. Updated cryptographic chain (no-C, L8-event-binding) — 2026-07-01
+
+This section supersedes §5. The protocol update above (top banner) is realized concretely as follows.
+
+### 12.1 Widened block-id tree (depth 4, 16 leaves)
+
+Every block's `block_id` is now the root of a **16-leaf SHA-256 Merkle tree** of depth 4:
+
+```
+                                     block_id  (SHA-256, depth 4)
+                                    /                          \
+                              h0..7                              h8..15
+                             /      \                          /        \
+                          h0..3     h4..7                   h8..11    h12..15
+                          /  \      /  \                    /   \      /   \
+                        h01 h23   h45 h67                 h89 h10-11 h12-13 h14-15
+                        / \ / \   / \ / \                / \  / \    / \    / \
+                       L0 L1L2 L3 L4 L5L6 L7            L8 L9 L10 L11 L12 L13 L14 L15
+```
+
+- **L0..L7** — unchanged from §1.1 (same producers, same hash families).
+- **L8** = `tracked_ext_out_messages_root` (32 bytes). This is the **root of the block's ext-out-messages Merkle tree** — the same value that today feeds into `block_leaf` via Poseidon96 and into L1 opaquely via bincode.
+- **L9..L15** = `[0u8; 32]` × 7 (fixed zero padding).
+
+Combine rule at every level: `SHA-256(left_32B ‖ right_32B)`. Total: **15 SHA-256 invocations** to fold 16 leaves into `block_id` (up from 7 in the depth-3 tree).
+
+**Depth-4 opening cost.** Opening a single leaf costs 4 sibling SHA-256 compressions (one per tree level). Opening L8 in particular walks the right-hand subtree only, so the 4 siblings are: L9 (constant zero), `h10-11` (constant, since L10..L15 are all zero), `h12..15` (constant), and `h0..7` (opaque witness). Three of the four siblings are protocol-fixed constants — the circuit can hard-code them and only witness `h0..7`. **Effective opening cost: 4 SHA-256 compressions ≈ 4 × 354 K = 1.4 M advice cells.** (If we did not hard-code the zero-padding siblings, the cost would be the same 4 compressions but with witness rather than constant siblings — either way, 4 blocks.)
+
+### 12.2 Ext-out-messages tree — L8's contents
+
+The ext-out-messages Merkle tree (rooted at L8) is the same structure the producer already builds when populating `tracked_ext_out_messages_root`. The DEX circuit treats it as an opaque Merkle tree with:
+
+- **Leaf format:** the event hash (32 bytes) is the leaf value for the voucher event. Other messages are opaque siblings.
+- **Combine rule:** to be confirmed with the team (SHA-256 dense Merkle assumed, matching L7's Poseidon-dense pattern but with SHA-256; **Open Question §12.5.1**).
+- **Depth bound:** ≤ 8 (256 leaves max per block); Open Question §12.5.2.
+
+The circuit opens **one Merkle path** from `event_hash` up to `L8 = tracked_ext_out_messages_root`.
+
+### 12.3 Chain diagram (new authoritative)
+
+```
+voucher_event(X)  →  event_hash
+   ↓ (Merkle path inside X's ext-out-messages tree, depth ≤ 8)
+tracked_ext_out_messages_root(X)   ← this is L8(X)
+   ↓ (Merkle path inside X's block-id tree, depth 4, opening L8)
+X.block_id
+   ↓ (L7 walk: L hops, L ∈ [0, L_MAX])
+Y.block_id                                    (Y is in thread 0; when t=0, X = Y and L = 0)
+   ↓ (Poseidon96)
+block_leaf(Y) = Poseidon(Y.block_id ‖ Y.envelope_hash ‖ Y.tracked_ext_out_messages_root)
+   ↓ (Poseidon dense-Merkle path of depth 8, thread-0 layer-1 batch tree)
+#L1(M_Y)
+   ↓ (dense chain, ≤ MAX_CHAIN_LEN = 11 layered steps)
+#L<N>(...) = finalLayerHistoricalHashRoot   (checked by gosh.check_layer_hash)
+```
+
+**Key properties.**
+
+- **Event binding on the X side is fully algebraic and self-contained.** No cross-thread history witnesses are consumed on the thread-t side. The prover only needs (a) X's ext-out-messages Merkle path and (b) X's block-id-tree path for L8.
+- **The L7 walk is unchanged in shape** — same hop primitive of §4, same Poseidon dense-Merkle openings for the inner ref tree, same SHA-256 depth-3 opening of the outer block-id tree for the L7 slot. However: **the outer opening must now be depth-4** to match the widened block-id tree of §12.1. Every hop pays one additional SHA-256 compression (roughly +7% per hop in cell terms; see §12.4).
+- **Y is a thread-0 block** and carries its own `history_proofs`, so the existing single-thread anchor path of §3 is reused verbatim inside `DexFinalProof`. Y's `envelope_hash` and `tracked_ext_out_messages_root` remain unconstrained witnesses — Y's only job is to lift into thread-0 layer-1.
+- **Uniformity `t = 0`.** When X is in thread 0, X = Y and the L7 walk is fully inactive (all hops `is_active = 0`). `DexFinalProof` performs both the X-side and Y-side bindings on the same block; `salted_X_start == salted_Y_end`. The bundle shape stays constant.
+
+### 12.4 Cost delta from depth 3 → depth 4
+
+| Component | Depth 3 (today) | Depth 4 (new) | Δ |
+|---|---|---|---|
+| Block-id tree SHA-256 blocks per full block-id reconstruction | 7 (from any leaf) | 15 | +8 |
+| Block-id tree SHA-256 blocks per **single leaf opening** | 3 | 4 | +1 |
+| Per-hop L7-outer opening (`MultiHopProof`) | 3 SHA blocks | 4 SHA blocks | +1 |
+| `MultiHopProof` total SHA blocks (H=5 hops) | 15 | 20 | +5 |
+| `MultiHopProof` cell budget (approx.) | 5.3 M | 7.1 M | +1.8 M |
+| `MultiHopProof` K (working target) | 16 | **17** ⚠ | +1 |
+| `DexFinalProof` — X-side L8 opening | n/a | 4 SHA blocks | +4 |
+| `DexFinalProof` — ext-out-messages Merkle (depth ≤ 8) | n/a | ~2–4 SHA blocks (assuming SHA-dense; TBD in §12.5.1) | +2..+4 |
+| `DexFinalProof` — Y-side block-id opening | (used to open C's L0, 3 blocks) | not required (Y's block_id is a direct witness that feeds block_leaf) | -3 |
+| `DexFinalProof` total SHA delta | -3 (drop C ext) + 4 (L8) + 2..4 (event tree) = **+3..+5** | +3..+5 | |
+| `DexFinalProof` K (working target) | 15 | **15 or 16** — margin analysis in §15.5 | 0..+1 |
+
+The `MultiHopProof` K bump from 16 → 17 is inside the smartphone budget (§8.1: K ≤ 17). It aligns with the K=17 layout already validated end-to-end in `test_bundle_e2e.rs` and the L=300 stress test.
+
+### 12.5 Open questions specific to §12
+
+1. **Ext-out-messages tree combine rule.** SHA-256 dense-Merkle (assumed above) vs Poseidon dense-Merkle vs something else. Impacts K sizing of `DexFinalProof` significantly (Poseidon ≈ negligible, SHA ≈ 4 blocks). **Blocking for implementation.**
+2. **Ext-out-messages tree depth bound.** Assumed ≤ 8 (256 leaves per block) matching L7. Confirm with the team.
+3. **Ext-out-messages tree leaf construction.** Is the leaf raw `event_hash` (32 bytes) or is there a tag prefix analogous to L7's `REFERENCED_*_TAG`? Impacts leaf-computation gadget in `DexFinalProof`.
+4. **Salted endpoint direction.** Under the new scheme the chain endpoints are `X` (thread-t event block, chain head) and `Y` (thread-0 anchor, chain tail). Should `salted_X_start` go at `inst[5]` and `salted_Y_end` at `inst[6]` (natural head→tail), or does the on-chain contract expect the opposite order? Choose one; document once.
+5. **Padding leaf values.** L9..L15 = `[0u8; 32]`. Confirm this matches the team's canonical widened `block_merkle_leaves()` — not, e.g., `SHA-256(b"padding")` or a domain-tagged constant. If the team uses non-zero padding, hard-coded sibling constants in §12.1's optimization must be updated.
+
+---
+
+## 13. Updated `DexFinalProof` circuit detail — 2026-07-01
+
+Supersedes §6.7. `DexFinalProof` at K ∈ {15, 16} contains:
+
+```
+new witnesses (over today's K=14 single-thread DEX):
+  salt                                                        (1 Fr — same as MultiHopProof)
+  voucher_secret_seed                                         (1 Fr — already witnessed today)
+
+  # X-side (event block, thread t; may equal Y when t=0)
+  X.block_id                                                  (32 bytes; committed by SHA-256 depth-4 reconstruction)
+  X.L8_tracked_ext_out_messages_root                          (32 bytes; opened via L8 sibling path)
+  X_block_id_L8_siblings                                      (4 × 32 bytes; three are hard-coded protocol constants — L9, h10-11, h12..15 — leaving one live witness h0..7)
+  X_event_leaf_index                                          (range-checked to ≤ 2^EXT_OUT_DEPTH_MAX)
+  X_ext_out_merkle_path                                       (≤ EXT_OUT_DEPTH_MAX × 32 bytes)
+  event_hash                                                  (32 bytes; derived from voucher event contents)
+
+  # Y-side (anchor block, thread 0; equals X when t=0)
+  Y.block_id                                                  (32 bytes)
+  Y.envelope_hash                                             (32 bytes; unconstrained content)
+  Y.tracked_ext_out_messages_root                             (32 bytes; unconstrained content)
+  Y_block_leaf_path                                           (depth 8 Poseidon-dense siblings + leaf index for Y's layer-1 batch tree of thread 0)
+  Y_dense_chain_links                                         (≤ MAX_CHAIN_LEN = 11)
+
+new constraints:
+  1. X.block_id reconstruction (depth 4 SHA-256 tree):
+        # Level-3 (leaf → h??): h_left(L8) := SHA(L8 ‖ L9), where L9 = 0 constant
+        # Level-2: h10..11 = SHA(0 ‖ 0)   (constant)
+        # Level-1: h12..15 = SHA(h10..11 ‖ h10..11)   (constant if L10..L15 = 0)
+        # h8..11 = SHA(h_left(L8) ‖ h10..11)
+        # h8..15 = SHA(h8..11 ‖ h12..15)
+        # X.block_id = SHA(h0..7 ‖ h8..15)   where h0..7 is a live witness
+        sha256_tree_open(L8, siblings=[L9=0, h10-11=const, h12..15=const, h0..7=witness]) == X.block_id
+
+  2. Ext-out-messages Merkle path (see Open Q §12.5.1):
+        ext_out_tree_open(event_hash, X_event_leaf_index, X_ext_out_merkle_path) == X.L8_tracked_ext_out_messages_root
+
+  3. Event → voucher binding (unchanged from today's DarkDexCircuitNew semantics):
+        event_hash derives from (sk_u_commit || voucher_nominal || token_type || depositIdentifierHash || ephemeralPubkey || ...)
+        # Concrete Poseidon96 layout preserved from current DarkDexCircuitNew ext_msg_leaf gadget.
+
+  4. Y-side anchor (unchanged from today's single-thread flow):
+        block_leaf(Y) = Poseidon96(Y.block_id ‖ Y.envelope_hash ‖ Y.tracked_ext_out_messages_root)
+        block_leaf(Y) -- depth-8 Poseidon dense-Merkle path --> #L1(M_Y)
+        #L1(M_Y) -- dense chain (≤ 11 links) --> finalLayerHistoricalHashRoot   // instance [1]
+
+  5. Salt + salted endpoints:
+        salt                     == Poseidon([DOMAIN_TAG_FR, voucher_secret_seed])
+        salt_commitment_pub      == Poseidon([salt])              // instance [7]
+        salted_X_start_pub       == Poseidon([salt, X.block_id])   // instance [5]
+        salted_Y_end_pub         == Poseidon([salt, Y.block_id])   // instance [6]
+
+  6. Voucher public fields (unchanged from today):
+        depositIdentifierHash / voucherNominalFr / tokenTypeFr / ephemeralPubkey at instances [0..4].
+
+  7. Uniformity for t = 0:
+        No explicit gate. When X = Y is passed as a witness (both variables driven by the same 32-byte value), all X-side and Y-side gates hold simultaneously and the bundle's MultiHopProofs are all set to inactive. The circuit does not need to know whether X = Y — the bundle's continuity check on-chain sees salted_X_start == salted_Y_end iff X = Y, and that is a legitimate configuration.
+```
+
+Cell budget: today's single-thread DEX ≈ 1.7 M cells at K=14. Adding 4 SHA (L8 opening) + 2–4 SHA (ext-out-messages path, TBD) + Poseidon layer (negligible) → ≈ 3.5–4.1 M cells. Fits K = 15 (≈ 3.5 M, tight) or K = 16 (≈ 7 M, comfortable). Recommend targeting **K = 16** for `DexFinalProof` given the margin and to leave headroom for the still-unknown ext-out-messages tree cost. K = 16 still fits the phone budget.
+
+---
+
+## 14. Updated public-input vectors — 2026-07-01
+
+Supersedes §6.9.
+
+```
+DexFinalProof (8 fields):
+  [0] depositIdentifierHash
+  [1] finalLayerHistoricalHashRoot
+  [2] voucherNominalFr
+  [3] tokenTypeFr
+  [4] ephemeralPubkey
+  [5] salted_X_start = Poseidon(salt, X.block_id)     ← chain HEAD (thread-t event block)
+  [6] salted_Y_end   = Poseidon(salt, Y.block_id)     ← chain TAIL (thread-0 anchor)
+  [7] salt_commitment
+
+MultiHopProof (3 fields):
+  [0] salted_start_block_id = Poseidon(salt, hop.first.current_block_id)
+  [1] salted_end_block_id   = Poseidon(salt, hop.last.next_block_id)
+  [2] salt_commitment
+```
+
+**Rename summary (old → new):** `salted_C_start` → `salted_X_start`. Everything else keeps its slot.
+
+### 14.1 Updated RootPN orchestration checks
+
+Supersedes §6.4 solidity pseudocode; only the naming and one added check change.
+
+```solidity
+// Salt binding (unchanged in shape):
+require(hopProofs[i].publicInputs[2] == saltCommit, ERR_SALT_MISMATCH);
+
+// Head link: dexProof.salted_X_start == hopProofs[0].salted_start_block_id
+require(hopProofs[0].publicInputs[0] == dexProof.publicInputs[5], ERR_X_HEAD_MISMATCH);
+
+// Continuity (unchanged):
+require(hopProofs[i].publicInputs[1] == hopProofs[i+1].publicInputs[0], ERR_CHAIN_BREAK);
+
+// Tail link (was already spec'd in §6.4 but missing from the current bundle_verifier.rs — see §15):
+require(hopProofs[N-1].publicInputs[1] == dexProof.publicInputs[6], ERR_Y_TAIL_MISMATCH);
+```
+
+The head/tail names change from `C_MISMATCH`/`Y_MISMATCH` to `X_HEAD_MISMATCH`/`Y_TAIL_MISMATCH`.
+
+---
+
+## 15. Circuit-fix plan — 2026-07-01
+
+This is the ordered plan to bring `dex-halo2-circuit` into alignment with §§12–14. It is a **plan**, not landed code. Each step lists the files touched, the primary risk, and the observable test that must go green.
+
+### 15.1 Prep — protocol constants and helpers
+
+**Files:** `dex-halo2-circuit/src/lib.rs` (add module), new `dex-halo2-circuit/src/block_id_tree.rs`.
+
+- Add compile-time constants for the depth-4 block-id tree:
+  - `BLOCK_ID_TREE_DEPTH: usize = 4;`
+  - `BLOCK_ID_TREE_LEAVES: usize = 16;`
+  - `L8_INDEX: usize = 8;`
+  - `L9_L15_ZERO_LEAF: [u8; 32] = [0u8; 32];`
+- Precompute the three constant siblings of L8:
+  - `H10_11_CONST = sha256(0x00×32 ‖ 0x00×32)`
+  - `H12_15_CONST = sha256(H10_11_CONST ‖ H10_11_CONST)`
+  - `H_RIGHT_CONST = sha256(H10_11_CONST ‖ H12_15_CONST)`  (i.e. `h8..15` when L8 = 0; the *actual* value depends on L8, so this specific constant is not used — we compute at runtime with L8 as one input).
+  Only the first two are compile-time constants; `h_left(L8)` and `h8..15` depend on the witness L8.
+- Native (Rust, non-circuit) helper `compute_block_id_depth4(leaves: &[[u8;32];16]) -> [u8;32]` for producing test fixtures.
+
+**Risk:** The team's `block_merkle_leaves()` update may use non-zero padding. Blocking on §12.5.5.
+**Observable test:** unit test round-trips the native helper against a hand-computed 15-SHA reference.
+
+### 15.2 Ext-out-messages Merkle gadget (X-side event opening)
+
+**Files:** new `dex-halo2-circuit/src/ext_out_merkle.rs`.
+
+- Depends on §12.5.1 (SHA vs Poseidon). Implement both if needed, gated by a `const` at the top of the module; commit only one to production once the team confirms.
+- Interface:
+  ```rust
+  pub fn verify_ext_out_merkle_path<F: PrimeField>(
+      ctx: &mut Context<F>,
+      hasher: &Sha256Chip<F>,        // or Poseidon
+      event_hash: &[AssignedValue<F>; 32],
+      leaf_index: AssignedValue<F>,
+      siblings: &[[AssignedValue<F>; 32]],
+      root: &[AssignedValue<F>; 32],
+  );
+  ```
+- Reuse the byte-level Merkle walk pattern already established in `dark_dex_circuit_new.rs` for the L1 dense chain (the shape is identical — dense Merkle with power-of-2 padding).
+
+**Risk:** Unknown depth bound (§12.5.2). Take it as a `const EXT_OUT_DEPTH_MAX: usize = 8` for now and revisit.
+**Observable test:** MockProver at K = 15 with a synthetic 4-leaf tree.
+
+### 15.3 Rework `DarkDexCircuitNew` — X-side additions
+
+**Files:** `dex-halo2-circuit/src/dark_dex_circuit_new.rs` (major changes).
+
+Following the "add-don't-modify" principle recorded in `feedback_add_dont_modify.md`, introduce a **new circuit** `DarkDexCircuitV2` alongside `DarkDexCircuitNew` rather than mutating the existing struct. The V2 witness struct gets two new field groups:
+
+```rust
+pub struct DarkDexV2Witness {
+    // ... all existing fields from DarkDexNewWitness ...
+
+    // X-side additions (event block, thread t; may equal anchor when t=0):
+    pub x_block_id: [u8; 32],
+    pub x_l8_tracked_ext_out_messages_root: [u8; 32],
+    pub x_block_id_h07_sibling: [u8; 32],          // the one live sibling of L8 in the depth-4 tree
+    pub x_event_leaf_index: u32,
+    pub x_ext_out_merkle_path: Vec<[u8; 32]>,       // len ≤ EXT_OUT_DEPTH_MAX
+
+    // The renamed "anchor" side (what today is confusingly called `block_id`):
+    pub y_block_id: [u8; 32],                        // = current struct's block_id
+    // envelope_hash, tracked_ext_out_messages_root, block_merkle_leaf_proof_l7,
+    // block_merkle_tree_leaves, dense_merkle_proof_of_root_1, block_ref_inner_path,
+    // etc. all belong to Y in V2. Field renames only, no semantic change.
+}
+```
+
+Circuit gates added:
+1. Widen block-id reconstruction from depth 3 → depth 4 for X (§13, constraint 1). Reuse the existing `sha256_tree_open` pattern but with 4 levels.
+2. Insert ext-out-messages Merkle opening (§13, constraint 2) — the gadget from §15.2.
+3. Rewire event-hash construction: today's `ext_msg_leaf` becomes the *leaf* under L8's tree. The Poseidon96 shape stays the same but its output is a Merkle leaf, not a direct binding to the block.
+4. Expose `salted_X_start` at instance [5] (via existing `event_salted_block_id` gadget applied to `x_block_id`).
+5. Expose `salted_Y_end` at instance [6] (same gadget applied to `y_block_id`).
+6. All Y-side gates (block_leaf → root_1 → dense chain → final_root) remain byte-for-byte identical.
+
+**Risk:** Cell count exceeds K=15 budget. Fallback: raise `DexFinalProof` K to 16 (still smartphone-feasible).
+**Observable test:** `MockProver` round-trip at K=15 (and K=16 fallback) with hand-crafted X = Y witnesses (t=0 case) and X ≠ Y witnesses.
+
+### 15.4 `MultiHopProofCircuit` — depth-4 outer opening
+
+**Files:** `dex-halo2-circuit/src/multi_hop_proof.rs`.
+
+The hop primitive of §4.2 opens `B.block_id` from its 8 leaves via a depth-3 SHA-256 tree. Under the new protocol, every block-id opens via a depth-4 tree. Change:
+
+1. `MultiHopWitness` gets one new field: `l8: [u8; 32]` (the L8 sibling required to reconstruct the depth-4 block_id from L7 or from any other leaf in the left half).
+2. `block_merkle_leaf_proof_l7` semantically becomes "path from L7 up to `h0..7`" — its length stays 3 (it never traverses the L8 side). What changes is the final combine step: instead of `h0..3 → h0..7 → block_id` being 2 SHA steps, we now do `h0..3 → h0..7`, then `h0..7 ‖ h8..15 → block_id`. The `h8..15` value needs to be computed from L8 + the constants.
+3. Reuse §15.1's constants module for `H10_11_CONST` and `H12_15_CONST`. `h8..15` = `sha256(h_left(L8) ‖ h12..15)` where `h_left(L8) = sha256(L8 ‖ 0×32)`. Two SHA blocks per hop for the L8-side subtree.
+
+**Net cell impact per hop:** +2 SHA blocks (the L8-side subtree reconstruction) − 0 (L7-side path unchanged since we no longer chain into an outer combine at depth 3). Actually **+1 SHA block net** because in depth-3 the L7-side path went L7 → h67 → h4..7 → h0..7 → block_id (3 combines) and in depth-4 it goes L7 → h67 → h4..7 → h0..7 → block_id (3 combines) + additional L8-side subtree (2 combines). Wait — reread §12.4: **+1 SHA per hop**.
+
+Actually §12.4's table says depth 3 opening = 3 SHA, depth 4 opening = 4 SHA. Confirming: an L7 opening under depth-4 traces L7 → h67 → h4..7 → h0..7 → **[combine with h8..15]** → block_id. That is 4 SHA combines. So +1 per hop. The `h8..15` value is itself computable from L8 via 2 more SHA combines (`h_left(L8)`, then `h8..15`), but that's the *sibling-computation* cost, not the *path-opening* cost. In circuits both count as advice cells.
+
+So **per hop cost delta is +3 SHA compressions** (one for the extra opening level + two for computing `h8..15`). At H=5 hops, `MultiHopProof` gains +15 SHA compressions = +5.3 M advice cells. **This tips it from K=17-with-margin into K=17-tight territory.** Alternative: hard-code `h8..15` as a per-hop witness that the caller precomputes, and only verify it in one place per snark (not per hop). If all 5 hops of a snark are on the same block-id opening... wait, they're not: each hop opens a *different* block's block_id. So `h8..15` differs per hop.
+
+Actually more precise: L8 = tracked_ext_out_messages_root differs per hop's B block. But L9..L15 are all constant zero for every block. So `h8..15 = f(L8_B)` differs per hop.
+
+**Cell budget recheck:** H=5 hops × (4 SHA outer opening + 2 SHA L8-side subtree) = 30 SHA compressions ≈ **10.6 M cells**. K=17 provides ≈ 14 M cells with 110 advice columns. **Margin drops from ~26% to ~24% — still viable.** K bump not needed if H stays at 5.
+
+**Risk:** If the ext-out-messages tree is SHA-based and eats into `DexFinalProof` budget, we may need to reduce H (bump N_BUNDLE) to give the Multi-hop margin. Track under §15.7.
+**Observable test:** `multi_hop_proof.rs` MockProver at K=17, 5 active hops, depth-4 block-id reconstruction.
+
+### 15.5 `bundle_verifier.rs` — add tail-link check
+
+**Files:** `dex-halo2-circuit/src/bundle_verifier.rs`.
+
+Read of the file today reveals: head-link is checked (`DexFinal.instance[6] == MultiHop[0].salted_start_block_id`), continuity is checked, but the **tail link** (`MultiHop[N-1].salted_end_block_id == DexFinal.salted_Y_end`) is **missing** — the multi-hop chain tail dangles. This is a live bug independent of the protocol update.
+
+Fix (small):
+1. Add a new `BundleError::TailLinkBreak { mh_end: Fr, dex_y_end: Fr }` variant.
+2. Under the new naming (§14): DexFinal instance [5] = `salted_X_start` (chain head), instance [6] = `salted_Y_end` (chain tail). Head check: `MultiHop[0].salted_start_block_id == DexFinal.instance[5]`. Tail check: `MultiHop[N-1].salted_end_block_id == DexFinal.instance[6]`.
+3. Rename `HeadLinkBreak { dex_final_head, first_hop_start }` internals to reflect X (breaking API change — coordinate with test files).
+
+**Risk:** Test files in `dex-halo2-circuit/tests/test_bundle_negative.rs` reference `HeadLinkBreak` and would need renaming. Handle as part of §15.6 test refresh.
+**Observable test:** `test_bundle_negative.rs::TailLinkBreak` new scenario — construct a bundle where the last MultiHop's end != DexFinal instance [6]; assert the new error variant fires.
+
+### 15.6 Test-suite refresh
+
+**Files:** `dex-halo2-circuit/tests/test_bundle_e2e.rs`, `test_bundle_negative.rs`, all `test_bundle_stress_*.rs`.
+
+- Rename `salted_C_start` → `salted_X_start` in test-side witness construction (grep `dex_final.instances[6]`, `chain.bundle_head_salted`).
+- The `chain` struct produced by `synth_chain*` returns `bundle_head_salted` and `salt_commitment`. Add a `bundle_tail_salted` field derived from the last-hop end so the tail-link check has a synthetic value to match against.
+- Extend negative scenarios: add `TailLinkBreak` explicitly. Extend `HeadLinkBreak` scenario naming to `XHeadLinkBreak`.
+- Update `synthetic_dex_final(salt_commitment, bundle_head_salted)` helper signature to `synthetic_dex_final(salt_commitment, salted_x_start, salted_y_end)` — instance [5] and [6] now carry different values in the t≠0 case.
+
+### 15.7 K-budget final sizing
+
+After §15.1–15.6 land, remeasure with real KZG:
+1. `MultiHopProof` at K=17, H=5, depth-4 outer + L8-subtree. Target: prove ≤ 45 s on laptop per snark (was 32 s at depth 3). If it exceeds 60 s, reduce H to 4 and bump N_BUNDLE.
+2. `DexFinalProof` at K=15 first, K=16 fallback. Depends on §12.5.1 outcome.
+3. Lock the (K, H, N_BUNDLE) triple in §10.1 once measured.
+
+### 15.8 Spec cross-references to fix
+
+After code lands:
+- Remove "SUPERSEDED" tags on §5, §6.7, §1.2 and replace with plain deletions **once §12–§15 are ratified by the team** (keep them until ratification for auditability of the design change).
+- Update §10.1 (locked parameters): change block-id tree depth from 3 → 4, rename `salted_C_start` → `salted_X_start`.
+- Rewrite §10.2 open questions §10.2.4 (L7 walk direction — still valid), delete §10.2.5 (C-extraction first-hop ownership — obsolete). Add §12.5's four questions as §10.2.10–13.
+- Update §6.11 measured performance table (add "post depth-4" row once §15.7 completes).
+
+### 15.9 Non-goals of this fix
+
+- **No aggregation added.** §8 rejection still stands.
+- **No changes to `RootPN.sol`** in this repo's scope. `acki-nacki/contracts/dex/RootPN.sol` orchestration update (naming rename, tail-link check) is a separate PR against the acki-nacki repo.
+- **No changes to Circuit 1A/2/3/4** (bridge circuits). This is DEX-only.
+- **No changes to salt derivation** (§6.3 salt formula unchanged).
+
+---
+
+*End of specification. Reviewers: please direct comments on the 2026-07-01 protocol update banner, §§12–14 (new authoritative sections), and §15 (fix plan) to the spec author before circuit-side implementation begins. Superseded sections (§1.2, §5, §6.7 tagged `[SUPERSEDED]`) are retained for audit trail and will be pruned once the update is ratified.*
