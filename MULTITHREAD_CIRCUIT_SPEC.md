@@ -108,7 +108,7 @@ Combine rule at every level: `SHA-256(left_32B ‖ right_32B)`. Fifteen SHA-256 
   - `h12..15 = SHA-256(h12-13 ‖ h14-15) = SHA-256(h10-11 ‖ h10-11)`  — constant
   - `L9 = 0×32`  — constant
   These four constants are hard-coded into the circuit as fixed cells; the prover does not witness them. Only the L8 leaf itself and its left-half cousin `h0..7` are live witnesses when opening L8.
-- **Opening any leaf costs 4 SHA-256 compressions** — one per tree level. In particular, opening L8 walks `L8 → h89 → h8..11 → h8..15 → block_id`; three of the four siblings (`L9`, `h10-11`, `h12..15`) are the constants above, one (`h0..7`) is a witness. Opening L7 walks `L7 → h67 → h4..7 → h0..7 → block_id`; three siblings are witness values from the left subtree, one (`h8..15`) is derived at runtime from the block's live L8.
+- **Opening any leaf costs 4 SHA-256 compressions** — one per tree level. In particular, opening L8 walks `L8 → h89 → h8..11 → h8..15 → block_id`; three of the four siblings (`L9`, `h10-11`, `h12..15`) are the constants above, one (`h0..7`) is a witness. Opening L7 walks `L7 → h67 → h4..7 → h0..7 → block_id`; all four siblings (`L6`, `h45`, `h0..3`, `h8..15`) are witnesses. In `DexFinalProof` (§7.7), the same circuit also opens L8 for the event block, so `h8..15` there is re-derived at runtime from the block's live `L8` (+2 SHA compressions). In the L7 walk (§5), hops do **not** bind L8, so `h8..15` is left as an opaque witness sibling and no extra SHA is spent.
 
 ### 2.2 CommonSection — fields feeding L0, L1, L7, L8
 
@@ -240,7 +240,8 @@ Inputs for a hop B → A (all private witnesses at the hop level):
 ```
 current_block_id  = B.block_id                          (32 bytes)
 next_block_id     = A.block_id                          (32 bytes)
-B.L0..B.L7_root, B.L8                                   (9 × 32 bytes; full leaf set needed to reconstruct B.block_id)
+B.L7_root                                               (32 bytes; the L7 root being opened against B.block_id)
+outer_siblings    = [L6, h45, h0..3, h8..15]            (4 × 32 bytes; depth-4 SHA path from L7 up to block_id — all opaque, incl. h8..15)
 ref_index         (u16; range-checked to 1..=MAX_PROOF_BLOCK_REFS; slot 0 excluded — see §5.1)
 ref_count         (u16; range-checked to ≤ MAX_PROOF_BLOCK_REFS + 1)
 L7_inner_path     (≤ 8 Poseidon sibling hashes; depth bounded by MAX_PROOF_BLOCK_REFS = 256)
@@ -250,7 +251,7 @@ An `is_active` flag also lives at the hop level, but only makes sense inside `Mu
 
 Constraints (single hop; the enclosing `MultiHopProof` gates them by its own `is_active[h]`):
 
-1. **SHA-256 depth-4 outer path.** Recompute `B.block_id` from `[L0, L1, L2, L3, L4, L5, L6, L7_root, L8, 0, 0, 0, 0, 0, 0, 0]` via the canonical 16-leaf SHA-256 Merkle. The path from L7 up to the root traverses `L7 → h67 → h4..7 → h0..7 → block_id`, combined at the top level with `h8..15` (which itself derives from L8 and the L9..L15 zero-constants — 2 additional SHA compressions).
+1. **SHA-256 depth-4 Merkle path.** Open `B.L7_root` against `B.block_id` via the 4-step path `L7 → h67 → h4..7 → h0..7 → block_id` using witness siblings `[L6, h45, h0..3, h8..15]`. Total **4 SHA-256 compressions**. `h8..15` is an opaque witness — a hop does not bind `L8`, so no derivation from L8 or from the L9..L15 zero-constants is needed here (that only happens in `DexFinalProof`, §7.7).
 2. **Tagged leaf hash for A.** Since only `refs` slots (index ≥ 1) are opened, the tag is fixed:
    ```
    tag_bytes = REFERENCED_REF_BLOCK_TAG
@@ -262,12 +263,12 @@ In `MultiHopProof`, hops carrying `is_active[h] == 0` are no-ops: the three cons
 
 ### 5.3 What one hop costs
 
-- **6 SHA-256 compressions per hop** — 4 for the outer-tree opening (L7 side of the depth-4 tree) + 2 for computing `h8..15` from L8 and the L9..L15 constants.
+- **4 SHA-256 compressions per hop** — one per level of the depth-4 outer path from L7 up to `block_id`. Hops do not bind L8, so `h8..15` is a witness sibling and no extra SHA is spent to derive it.
 - ≤ 8 Poseidon hashes for the L7 inner path → a few thousand cells, negligible.
 - 1 Poseidon for tagged-leaf construction → negligible.
 - Range checks + selectors → ≈ 100 K cells.
 
-At `gosh-sha256-chip`'s measured ≈ 354 K advice cells per SHA compression: **≈ 2.1 M advice cells per hop**.
+At `gosh-sha256-chip`'s measured ≈ 354 K advice cells per SHA compression: **≈ 1.42 M advice cells per hop**.
 
 ### 5.4 The full L7 walk
 
@@ -319,7 +320,7 @@ Key properties:
 
 ### 7.1 Why not one big circuit
 
-The full scheme of §6 cannot fit in a single Halo2 circuit at smartphone-feasible K. The dominant cost is L7-walk SHA-256: each hop = 6 SHA-256 compressions ≈ 2.1 M advice cells. A chain of 20 hops alone is ≈ 42 M cells, past the K ≤ 17 phone ceiling. Two ways to split:
+The full scheme of §6 cannot fit in a single Halo2 circuit at smartphone-feasible K. The dominant cost is L7-walk SHA-256: each hop = 4 SHA-256 compressions ≈ 1.42 M advice cells. A chain of 20 hops alone is ≈ 28.4 M cells, past the K ≤ 17 phone ceiling. Two ways to split:
 
 - **(A) In-circuit aggregation** (`AggregationCircuit` from snark-verifier-sdk): rejected — see §9 for a detailed comparison.
 - **(B) Multi-proof composition with on-chain orchestration** (this design): produce several independent snarks, each covering a small fixed-size batch of hops, submitted together to `RootPN.sol` which checks their continuity on-chain via salted block-id endpoints exposed as public inputs.
@@ -463,7 +464,7 @@ constraints:
         hop_current_block_id[h+1] == hop_next_block_id[h]        (internal chain glue)
 ```
 
-Cell budget at H = 5: 30 SHA-256 compressions × 354 K ≈ **10.6 M advice cells**. K = 17 with ~110 advice columns provides ≈ 14 M cells → ~24 % margin. Estimated phone proving time: 3–5 minutes per snark.
+Cell budget at H = 5: 20 SHA-256 compressions × 354 K ≈ **7.1 M advice cells**. K = 17 with ~110 advice columns provides ≈ 14 M cells → ~49 % margin. Estimated phone proving time: 3–5 minutes per snark (margin now leaves headroom to grow H before the K = 17 ceiling bites).
 
 ### 7.7 `DexFinalProof` circuit detail
 
@@ -628,7 +629,7 @@ We estimate the practical phone ceiling at **K ≤ 17** (≈ 250 MB SRS, 1–3 G
 | L9..L15 padding value | `[0u8; 32]` | This spec (Open Q §11.2.4) |
 | L8 semantics | `tracked_ext_out_messages_root` (32 B, SHA-256 dense-Merkle root) | This spec |
 | Ext-out-messages tree combine | SHA-256(left ‖ right), depth ≤ 8, `[0u8;32]` pad, raw-hash leaf | Assumed (Open Q §11.2.1–3) |
-| L7 outer opening depth (per hop) | **4** SHA-256 sibling combines + 2 SHA for L9..L15 constants ⇒ **6 SHA compressions / hop** | §5.3 |
+| L7 outer opening depth (per hop) | **4** SHA-256 sibling combines (`h8..15` is opaque witness in hops — no L8 re-derivation) ⇒ **4 SHA compressions / hop** | §5.3 |
 | `MAX_PROOF_BLOCK_REFS` (L7 inner depth bound) | **256** leaves padded, depth 8 | Protocol cap |
 | `H` (hops per `MultiHopProof`) | **5** | Phone budget at K=17 |
 | `N_BUNDLE` (fixed proofs per claim) | **4** + 1 `DexFinalProof` = 5 | Anonymity uniformity |
@@ -721,10 +722,10 @@ The following work packages bring `dex-halo2-circuit` into alignment with this s
 
 **Files:** `dex-halo2-circuit/src/multi_hop_proof.rs`.
 
-- Extend `MultiHopWitness` with `l8: [u8; 32]` per hop.
-- Outer-tree reconstruction gains 3 SHA compressions per hop over the current depth-3 shape: 1 extra sibling combine + 2 SHA to derive `h8..15` from `L8` and `H12_15_CONST`.
-- Reuse §12.1's constants module.
-- Retune K to 17 (from current 17 — no change) and re-measure cell count; target ~24 % margin.
+- Extend `MultiHopWitness` with a 4-entry outer-siblings array `[L6, h45, h0..3, h8..15]` (32 bytes each). No `l8` field per hop — hops do not bind L8, so `h8..15` is carried as an opaque witness (see §5.2, §5.3).
+- Outer-tree reconstruction gains **1 SHA compression per hop** over the current depth-3 shape: one extra sibling combine at the new top level. `h8..15` is NOT re-derived from L8 in a hop — that's a `DexFinalProof`-only cost.
+- Reuse §12.1's constants module (L9..L15 zero-derived constants matter only for `DexFinalProof`'s L8 opening, not for hops).
+- Retune K to 17 (from current 17 — no change) and re-measure cell count; expected budget now ≈ 7.1 M cells at H = 5 → ~49 % margin.
 - Update MockProver tests + real-KZG tests (`test_bundle_e2e.rs`, `test_bundle_stress*.rs`) with the new witness layout.
 
 ### 12.5 `bundle_verifier.rs` — tail-link check
