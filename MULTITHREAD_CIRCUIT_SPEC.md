@@ -140,7 +140,9 @@ REFERENCED_REF_BLOCK_TAG    = b"acki-nacki:referenced-block:ref:v1"     (34 byte
 leaf[i] = Poseidon( tag_i ‖ proof_block_refs[i] )    (32 bytes out)
 ```
 
-`proof_block_refs[0] = parent_block_id` (same thread); `proof_block_refs[1..1+n] = refs` (other threads). The tree is padded with literal `[0u8; 32]` leaves to the next power of two and folded with `Poseidon(left_32B ‖ right_32B)`. Depth ≤ 8 (`MAX_PROOF_BLOCK_REFS = 256`).
+`proof_block_refs[0] = parent_block_id` (same thread by producer construction — see below); `proof_block_refs[1..1+n] = refs` (cross-thread). The tree is padded with literal `[0u8; 32]` leaves to the next power of two and folded with `Poseidon(left_32B ‖ right_32B)`. Depth ≤ 8 (`MAX_PROOF_BLOCK_REFS = 256`).
+
+**Slot-0 (`parent_block_id`) is same-thread by construction.** In `poseidon_dex`, the producer for thread `t` selects its parent via `select_thread_last_finalized_block(&thread_id)` and sets the child's block height as `parent_height.next(&thread_id)` (`node/src/block/producer/producer_service/block_producer.rs:534,576,992`). The parent is therefore always in thread `t` itself. The only exception is the *spawn edge* — the first block of a newly-spawned thread T′ has as its parent the split block on the parent thread (`is_spawning_block(...)` at the same file, and `preprocessing.rs:162-190`). Spawn edges are irrelevant to voucher proofs: a producer that wants to witness such an edge for cross-thread anchoring can always add it to `refs`. **Consequence for §5:** the DEX circuit's L7 walk only opens `refs[0..n]` (slots `1..n`), never slot 0.
 
 L7 is populated for **every** block and provides the outgoing edges the L7 walk (§5) follows.
 
@@ -223,9 +225,11 @@ Y's `envelope_hash` and `tracked_ext_out_messages_root` are **unconstrained witn
 
 A **hop** is the atomic cross-thread step. One hop proves:
 
-> *Block A's block_id appears in block B's L7 (either as `parent_block_id` at slot 0, or as one of `refs[0..n]` at slots 1..n).*
+> *Block A's block_id appears in block B's L7 as one of `refs[0..n]` (slots `1..n`).*
 
-That is, **block B references block A** via L7. The hop's "current" block is B (the one whose L7 we open), the "next" block is A (the one we hop to). Because parent + refs both point to **older** blocks, repeated hops walk **into the past**. Starting from X (thread t) and following backward edges, we land on some block Y in thread 0.
+That is, **block B references block A cross-thread** via its `refs` list. The hop's "current" block is B (the one whose L7 we open), the "next" block is A (the one we hop to). Because `refs` point to **older** blocks in other threads, repeated hops walk **into the past across threads**. Starting from X (thread t) and following backward `refs` edges, we land on some block Y in thread 0.
+
+Slot 0 of L7 (`parent_block_id`) is **not** used as a hop edge: per §2.3 it is same-thread by producer construction and therefore never crosses a thread boundary. The circuit consequently only handles the `refs` case, and `ref_index` is range-checked to `1..=MAX_PROOF_BLOCK_REFS`.
 
 ### 5.2 What one hop constrains
 
@@ -239,7 +243,7 @@ public:
 
 private witness:
   B.L0..B.L7_root, B.L8                                    (all 9 opaque leaves needed to reconstruct B.block_id)
-  ref_index       (u16; 0 = parent slot, 1..n = ref slot)
+  ref_index       (u16; range-checked to 1..=MAX_PROOF_BLOCK_REFS; slot 0 is excluded — see §5.1)
   ref_count       (u16; range-checked to ≤ MAX_PROOF_BLOCK_REFS + 1)
   L7_inner_path   (≤ 8 Poseidon sibling hashes; depth bounded by MAX_PROOF_BLOCK_REFS = 256)
 ```
@@ -247,10 +251,9 @@ private witness:
 Constraints (when `is_active == 1`):
 
 1. **SHA-256 depth-4 outer path.** Recompute `B.block_id` from `[L0, L1, L2, L3, L4, L5, L6, L7_root, L8, 0, 0, 0, 0, 0, 0, 0]` via the canonical 16-leaf SHA-256 Merkle. The path from L7 up to the root traverses `L7 → h67 → h4..7 → h0..7 → block_id`, combined at the top level with `h8..15` (which itself derives from L8 and the L9..L15 zero-constants — 2 additional SHA compressions).
-2. **Tagged leaf hash for A.**
+2. **Tagged leaf hash for A.** Since only `refs` slots (index ≥ 1) are opened, the tag is fixed:
    ```
-   tag_bytes = REFERENCED_PARENT_BLOCK_TAG  if ref_index == 0
-             = REFERENCED_REF_BLOCK_TAG     otherwise
+   tag_bytes = REFERENCED_REF_BLOCK_TAG
    tag_hash  = Poseidon(tag_bytes ‖ A.block_id)
    ```
 3. **Poseidon dense-Merkle opening.** Verify `B.L7_root == open(tag_hash, ref_index, L7_inner_path)` using the canonical dense-Merkle algorithm of `dense_merkle_verify` (`node/libs/history-proof/src/lib.rs`).
