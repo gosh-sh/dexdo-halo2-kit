@@ -28,9 +28,11 @@
 //! - `ref_block_id`, `block_id`, `l7`, `block_merkle_leaf_proof_l7`,
 //!   `ref_index`, `proof_block_ref_inner_path`: same shape as
 //!   [`crate::hop_proof::HopProofWitness`]. `ref_index` is a private
-//!   per-hop witness in `0..MAX_PROOF_BLOCK_REFS` selecting which slot of
-//!   the on-chain `proof_block_refs` list holds `ref_block_id` (index 0 ⇒
-//!   parent tag, ≥1 ⇒ ref tag).
+//!   per-hop witness in `1..MAX_PROOF_BLOCK_REFS` selecting which slot of
+//!   the on-chain `proof_block_refs` list holds `ref_block_id`. Slot 0
+//!   (parent) is same-thread by producer construction (spec §2.3) and
+//!   excluded from the L7 walk (spec §5.1); only
+//!   `REFERENCED_REF_BLOCK_TAG` (34 B) is used.
 //! - `salted_start_block_id`, `salted_end_block_id`: explicit authoritative
 //!   endpoints (the synth chain's terminal values for inactive padding,
 //!   matching `compute_salted_block_id_native` for active hops).
@@ -46,7 +48,8 @@
 //! Per hop:
 //! - `is_active` is range-constrained to `{0, 1}` via `gate.assert_bit`.
 //! - **Ref-tree** — `ref_leaf = Poseidon([c0, c1, c2])` (byte-flat chunks of
-//!   `tag ‖ ref_block_id`, see [`crate::hop_proof`]) is walked through
+//!   `REFERENCED_REF_BLOCK_TAG (34 B) ‖ ref_block_id`, see
+//!   [`crate::hop_proof`]) is walked through
 //!   `dense_merkle_root_circuit` to produce `computed_l7_fr`. The internal
 //!   range checks and chunk-link constraints inside the walk are
 //!   unconditional decomposition constraints. Only the final equality
@@ -94,9 +97,7 @@ use std::cell::RefCell;
 
 use crate::multi_hop_witness::{
     ref_leaf_hash_native, ref_leaf_ref_tag_chunk0_fr, ref_leaf_ref_tag_chunk1_lo_fr,
-    ref_leaf_parent_tag_chunk0_fr, ref_leaf_parent_tag_chunk1_lo_fr, BLOCK_MERKLE_DEPTH,
-    H_HOPS_PER_PROOF,
-    MAX_PROOF_BLOCK_REFS_DEPTH,
+    BLOCK_MERKLE_DEPTH, H_HOPS_PER_PROOF, MAX_PROOF_BLOCK_REFS_DEPTH,
 };
 use crate::salt::{compute_salt_native, domain_tag_hop_salt_fr};
 
@@ -120,9 +121,10 @@ pub struct MultiHopWitness {
     pub l7: [u8; 32],
     pub block_merkle_leaf_proof_l7: [[u8; 32]; BLOCK_MERKLE_DEPTH],
     /// Position of `ref_block_id` within the on-chain `proof_block_refs` list
-    /// (`0..MAX_PROOF_BLOCK_REFS`). Drives per-hop tag selection (index 0 ⇒
-    /// parent tag, ≥1 ⇒ ref tag) and the orientation bits inside
-    /// `dense_merkle_root_circuit`.
+    /// (`1..MAX_PROOF_BLOCK_REFS`). Slot 0 is the same-thread `parent_block_id`
+    /// (spec §2.3) and never opened as a cross-thread hop edge (spec §5.1), so
+    /// `ref_index == 0` is rejected in-circuit. Drives the orientation bits
+    /// inside `dense_merkle_root_circuit`.
     pub ref_index: usize,
     pub proof_block_ref_inner_path: [[u8; 32]; MAX_PROOF_BLOCK_REFS_DEPTH],
     pub salted_start_block_id: Fr,
@@ -193,7 +195,10 @@ impl Circuit<Fr> for MultiHopProofCircuit {
             block_id: [0u8; 32],
             l7: [0u8; 32],
             block_merkle_leaf_proof_l7: [[0u8; 32]; BLOCK_MERKLE_DEPTH],
-            ref_index: 0,
+            // Slot 0 is same-thread parent — excluded from L7 walk (spec §5.1).
+            // Even for inactive padding, ref_index must be ≥ 1 since the
+            // range/nonzero constraint on ref_index is unconditional.
+            ref_index: 1,
             proof_block_ref_inner_path: [[0u8; 32]; MAX_PROOF_BLOCK_REFS_DEPTH],
             salted_start_block_id: Fr::zero(),
             salted_end_block_id: Fr::zero(),
@@ -267,16 +272,11 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                     hasher.hash_fix_len_array(ctx, gate, &[salt_assigned]);
 
                 // === Byte-flat constants (reused across all hops) ===
-                // Parent-tag (37 B) chunk constants.
-                let ref_leaf_c0_const_parent = ctx.load_constant(ref_leaf_parent_tag_chunk0_fr());
-                let ref_leaf_c1_tag_const_parent =
-                    ctx.load_constant(ref_leaf_parent_tag_chunk1_lo_fr());
-                // Ref-tag (34 B) chunk constants.
-                let ref_leaf_c0_const_ref =
-                    ctx.load_constant(ref_leaf_ref_tag_chunk0_fr());
-                let ref_leaf_c1_tag_const_ref =
-                    ctx.load_constant(ref_leaf_ref_tag_chunk1_lo_fr());
-                let pow_256_6 = ctx.load_constant(Fr::from(256u64).pow([6u64]));
+                // Ref-tag (34 B) chunk constants. Slot 0 (parent) is same-thread
+                // by producer construction (spec §2.3) and excluded from the
+                // L7 walk (spec §5.1), so only the ref-tag layout is used.
+                let ref_leaf_c0_const = ctx.load_constant(ref_leaf_ref_tag_chunk0_fr());
+                let ref_leaf_c1_tag_const = ctx.load_constant(ref_leaf_ref_tag_chunk1_lo_fr());
                 let pow_256_3 = ctx.load_constant(Fr::from(256u64).pow([3u64]));
                 let pow_248 =
                     ctx.load_constant(Fr::from_raw([0u64, 0u64, 0u64, 1u64 << 56]));
@@ -326,7 +326,12 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                         QuantumCell::Existing(is_active),
                     );
 
-                    // === ref_index witness ===
+                    // === ref_index witness (1..MAX_PROOF_BLOCK_REFS) ===
+                    // Slot 0 (parent) is same-thread by producer construction
+                    // (spec §2.3) and never opened as a hop edge (spec §5.1).
+                    // For inactive padding hops the witness carries
+                    // `ref_index = 1` (see MultiHopWitness::without_witnesses
+                    // and test helpers) to satisfy the same constraint.
                     let ref_index_assigned =
                         ctx.load_witness(Fr::from(hop.ref_index as u64));
                     range.range_check(
@@ -334,7 +339,10 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                         ref_index_assigned,
                         MAX_PROOF_BLOCK_REFS_DEPTH,
                     );
-                    let is_parent_slot = gate.is_zero(ctx, ref_index_assigned);
+                    {
+                        let is_zero_ref_index = gate.is_zero(ctx, ref_index_assigned);
+                        gate.assert_is_const(ctx, &is_zero_ref_index, &Fr::zero());
+                    }
 
                     // L7 bytes + LE Fr packing.
                     let l7_bytes: Vec<AssignedValue<Fr>> = hop
@@ -360,40 +368,11 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                         range.range_check(ctx, *cell, 8);
                     }
 
-                    // Byte-flat ref-leaf chunks, two layouts selected on
-                    // `is_parent_slot`:
-                    //   Parent layout (tag 37 B): chunks 31+31+7
-                    //     c1_p = tag_p_lo (6 B) + ref_block_id_lo25 · 256^6
-                    //     c2_p = LE(ref_block_id[25..32])
-                    //   Ref layout (tag 34 B): chunks 31+31+4
-                    //     c1_r = tag_r_lo (3 B) + ref_block_id_lo28 · 256^3
-                    //     c2_r = LE(ref_block_id[28..32])
-                    // Parent-layout chunks.
-                    let ref_block_id_lo25 = {
-                        let cells: Vec<QuantumCell<Fr>> = ref_block_id_bytes[0..25]
-                            .iter()
-                            .map(|c| QuantumCell::Existing(*c))
-                            .collect();
-                        gate.inner_product(ctx, cells, powers_le_32[..25].iter().cloned())
-                    };
-                    let ref_block_id_lo25_shifted = gate.mul(
-                        ctx,
-                        QuantumCell::Existing(ref_block_id_lo25),
-                        QuantumCell::Existing(pow_256_6),
-                    );
-                    let ref_leaf_c1_parent = gate.add(
-                        ctx,
-                        QuantumCell::Existing(ref_leaf_c1_tag_const_parent),
-                        QuantumCell::Existing(ref_block_id_lo25_shifted),
-                    );
-                    let ref_leaf_c2_parent = {
-                        let cells: Vec<QuantumCell<Fr>> = ref_block_id_bytes[25..32]
-                            .iter()
-                            .map(|c| QuantumCell::Existing(*c))
-                            .collect();
-                        gate.inner_product(ctx, cells, powers_le_32[..7].iter().cloned())
-                    };
-                    // Ref-layout chunks.
+                    // Byte-flat ref-leaf chunks — ref-tag layout only (34 B tag):
+                    // chunks 31+31+4
+                    //   c0 = tag_r_hi (31 B)
+                    //   c1 = tag_r_lo (3 B) + ref_block_id_lo28 · 256^3
+                    //   c2 = LE(ref_block_id[28..32])
                     let ref_block_id_lo28 = {
                         let cells: Vec<QuantumCell<Fr>> = ref_block_id_bytes[0..28]
                             .iter()
@@ -406,41 +385,22 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                         QuantumCell::Existing(ref_block_id_lo28),
                         QuantumCell::Existing(pow_256_3),
                     );
-                    let ref_leaf_c1_ref = gate.add(
+                    let ref_leaf_c1 = gate.add(
                         ctx,
-                        QuantumCell::Existing(ref_leaf_c1_tag_const_ref),
+                        QuantumCell::Existing(ref_leaf_c1_tag_const),
                         QuantumCell::Existing(ref_block_id_lo28_shifted),
                     );
-                    let ref_leaf_c2_ref = {
+                    let ref_leaf_c2 = {
                         let cells: Vec<QuantumCell<Fr>> = ref_block_id_bytes[28..32]
                             .iter()
                             .map(|c| QuantumCell::Existing(*c))
                             .collect();
                         gate.inner_product(ctx, cells, powers_le_32[..4].iter().cloned())
                     };
-
-                    let ref_leaf_c0 = gate.select(
-                        ctx,
-                        QuantumCell::Existing(ref_leaf_c0_const_parent),
-                        QuantumCell::Existing(ref_leaf_c0_const_ref),
-                        is_parent_slot,
-                    );
-                    let ref_leaf_c1 = gate.select(
-                        ctx,
-                        QuantumCell::Existing(ref_leaf_c1_parent),
-                        QuantumCell::Existing(ref_leaf_c1_ref),
-                        is_parent_slot,
-                    );
-                    let ref_leaf_c2 = gate.select(
-                        ctx,
-                        QuantumCell::Existing(ref_leaf_c2_parent),
-                        QuantumCell::Existing(ref_leaf_c2_ref),
-                        is_parent_slot,
-                    );
                     let ref_leaf_fr = hasher.hash_fix_len_array(
                         ctx,
                         gate,
-                        &[ref_leaf_c0, ref_leaf_c1, ref_leaf_c2],
+                        &[ref_leaf_c0_const, ref_leaf_c1, ref_leaf_c2],
                     );
 
                     // Byte-flat ref-tree walk. The internal range checks and

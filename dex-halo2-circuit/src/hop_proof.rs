@@ -19,12 +19,11 @@
 //! ## Scope
 //!
 //! - **H=1** (one hop).
-//! - **`ref_index`** is a private witness (any `0..MAX_PROOF_BLOCK_REFS`).
-//!   Index `0` uses `REFERENCED_PARENT_BLOCK_TAG` (37 B); index ≥ 1 uses
-//!   `REFERENCED_REF_BLOCK_TAG` (34 B). The two tags have different lengths,
-//!   so the byte-flat 31-byte chunking absorbs differently many bytes from
-//!   `ref_block_id` in each chunk; the circuit computes both chunk layouts and
-//!   selects via `is_parent_slot = is_zero(ref_index)`.
+//! - **`ref_index`** is a private witness in `1..MAX_PROOF_BLOCK_REFS`.
+//!   Slot 0 (`parent_block_id`) is same-thread by producer construction
+//!   (spec §2.3), so the DEX L7 walk never opens it — see spec §5.1.
+//!   The circuit consequently uses only `REFERENCED_REF_BLOCK_TAG` (34 B)
+//!   and enforces `ref_index != 0` in-gate.
 //! - **`leaf_index = 7`** (L7 sits at block-merkle leaf index 7, so all 3
 //!   SHA-256 levels put the current node on the right).
 //!
@@ -52,8 +51,9 @@
 //!   Poseidon siblings opening the ref-leaf against L7 at the witnessed
 //!   `ref_index`.
 //! - `ref_index`: position of `ref_block_id` within `proof_block_refs`
-//!   (`0..MAX_PROOF_BLOCK_REFS`). Drives the tag selection and is range-
-//!   checked to `MAX_PROOF_BLOCK_REFS_DEPTH` bits in-circuit.
+//!   (`1..MAX_PROOF_BLOCK_REFS`; slot 0 excluded per spec §5.1). Range-
+//!   checked to `MAX_PROOF_BLOCK_REFS_DEPTH` bits *and* `ref_index != 0`
+//!   in-circuit.
 //!
 //! ## Constraints (byte-flat production parity)
 //!
@@ -63,16 +63,12 @@
 //!    `block_id` byte-by-byte.
 //! 2. **Ref-tree path (byte-flat)** —
 //!    - `ref_leaf = Poseidon([c0, c1, c2])` where `(c0, c1, c2)` are the
-//!      31-byte chunks of `tag ‖ ref_block_id`. Two layouts coexist, selected
-//!      by `is_parent_slot = is_zero(ref_index)`:
-//!      - **Parent layout** (tag is 37 B): `c0 = tag_p[0..31]`,
-//!        `c1 = tag_p[31..37] (6 B) ‖ ref_block_id[0..25] (25 B)`,
-//!        `c2 = inner_product(ref_block_id[25..32], 256^[0..7])`.
-//!      - **Ref layout** (tag is 34 B): `c0 = tag_r[0..31]`,
-//!        `c1 = tag_r[31..34] (3 B) ‖ ref_block_id[0..28] (28 B)`,
-//!        `c2 = inner_product(ref_block_id[28..32], 256^[0..4])`.
-//!      Both are computed unconditionally and the final `(c0, c1, c2)`
-//!      triple is `select`ed on `is_parent_slot`.
+//!      31-byte chunks of `REFERENCED_REF_BLOCK_TAG (34 B) ‖ ref_block_id`:
+//!      `c0 = tag_r[0..31]`,
+//!      `c1 = tag_r[31..34] (3 B) ‖ ref_block_id[0..28] (28 B)`,
+//!      `c2 = inner_product(ref_block_id[28..32], 256^[0..4])`.
+//!      The parent-slot layout (37 B tag) is *not* materialised in the
+//!      circuit — spec §5.1 excludes slot 0.
 //!    - Ref-tree walk uses `gosh_dense_balanced_tree::dense_merkle_root_circuit`
 //!      (`MAX_PROOF_BLOCK_REFS_DEPTH` levels). The gadget loads each
 //!      orientation bit as a witness cell (`assert_bit` + `cond_swap`), so
@@ -111,8 +107,7 @@ use std::cell::RefCell;
 
 use crate::multi_hop_witness::{
     ref_leaf_hash_native, ref_leaf_ref_tag_chunk0_fr, ref_leaf_ref_tag_chunk1_lo_fr,
-    ref_leaf_parent_tag_chunk0_fr, ref_leaf_parent_tag_chunk1_lo_fr, BLOCK_MERKLE_DEPTH,
-    MAX_PROOF_BLOCK_REFS_DEPTH,
+    BLOCK_MERKLE_DEPTH, MAX_PROOF_BLOCK_REFS_DEPTH,
 };
 use crate::salt::{compute_salt_native, domain_tag_hop_salt_fr};
 
@@ -314,60 +309,27 @@ impl Circuit<Fr> for HopProofCircuit {
 
                 // === ref_index witness ===
                 // Private witness; range-checked to MAX_PROOF_BLOCK_REFS_DEPTH
-                // bits (i.e. < MAX_PROOF_BLOCK_REFS). `is_parent_slot =
-                // is_zero(ref_index)` picks between the two byte-flat tag
-                // layouts below (parent tag is 37 B, ref tag is 34 B — they
-                // chunk differently).
+                // bits (i.e. < MAX_PROOF_BLOCK_REFS) and additionally to
+                // `ref_index != 0` — slot 0 (parent) is same-thread by producer
+                // construction (spec §2.3) and never opened by the DEX L7
+                // walk (spec §5.1). Only the ref-tag layout (34 B) is used.
                 let ref_index_assigned =
                     ctx.load_witness(Fr::from(self.hop.ref_index as u64));
                 range.range_check(ctx, ref_index_assigned, MAX_PROOF_BLOCK_REFS_DEPTH);
-                let is_parent_slot = gate.is_zero(ctx, ref_index_assigned);
+                {
+                    let is_zero_ref_index = gate.is_zero(ctx, ref_index_assigned);
+                    gate.assert_is_const(ctx, &is_zero_ref_index, &Fr::zero());
+                }
 
                 // === Byte-flat ref-leaf = Poseidon([c0, c1, c2]) ===
-                // Parent layout (tag 37 B, id 32 B = 69 B → chunks 31+31+7):
-                //   c0_p = LE(tag_p[0..31])                              [const]
-                //   c1_p = tag_p_lo (6 B const) + ref_block_id_lo25 · 256^6
-                //   c2_p = LE(ref_block_id[25..32])     ip(., 256^[0..7])
-                // Ref layout    (tag 34 B, id 32 B = 66 B → chunks 31+31+4):
-                //   c0_r = LE(tag_r[0..31])                              [const]
-                //   c1_r = tag_r_lo (3 B const) + ref_block_id_lo28 · 256^3
-                //   c2_r = LE(ref_block_id[28..32])     ip(., 256^[0..4])
-                // Both layouts are computed unconditionally; the final triple
-                // is `select`ed on `is_parent_slot`.
-                let ref_leaf_c0_parent = ctx.load_constant(ref_leaf_parent_tag_chunk0_fr());
-                let ref_leaf_c0_ref = ctx.load_constant(ref_leaf_ref_tag_chunk0_fr());
-                let ref_leaf_c1_tag_parent = ctx.load_constant(ref_leaf_parent_tag_chunk1_lo_fr());
-                let ref_leaf_c1_tag_ref = ctx.load_constant(ref_leaf_ref_tag_chunk1_lo_fr());
-                let pow_256_6 = ctx.load_constant(Fr::from(256u64).pow([6u64]));
+                // Ref-tag layout (tag 34 B, id 32 B = 66 B → chunks 31+31+4):
+                //   c0 = LE(tag_r[0..31])                                [const]
+                //   c1 = tag_r_lo (3 B const) + ref_block_id_lo28 · 256^3
+                //   c2 = LE(ref_block_id[28..32])   ip(., 256^[0..4])
+                let ref_leaf_c0 = ctx.load_constant(ref_leaf_ref_tag_chunk0_fr());
+                let ref_leaf_c1_tag = ctx.load_constant(ref_leaf_ref_tag_chunk1_lo_fr());
                 let pow_256_3 = ctx.load_constant(Fr::from(256u64).pow([3u64]));
 
-                // Parent-layout chunks.
-                let ref_block_id_lo25 = {
-                    let cells: Vec<QuantumCell<Fr>> = ref_block_id_bytes[0..25]
-                        .iter()
-                        .map(|c| QuantumCell::Existing(*c))
-                        .collect();
-                    gate.inner_product(ctx, cells, powers_le_32[..25].iter().cloned())
-                };
-                let ref_block_id_lo25_shifted = gate.mul(
-                    ctx,
-                    QuantumCell::Existing(ref_block_id_lo25),
-                    QuantumCell::Existing(pow_256_6),
-                );
-                let ref_leaf_c1_parent = gate.add(
-                    ctx,
-                    QuantumCell::Existing(ref_leaf_c1_tag_parent),
-                    QuantumCell::Existing(ref_block_id_lo25_shifted),
-                );
-                let ref_leaf_c2_parent = {
-                    let cells: Vec<QuantumCell<Fr>> = ref_block_id_bytes[25..32]
-                        .iter()
-                        .map(|c| QuantumCell::Existing(*c))
-                        .collect();
-                    gate.inner_product(ctx, cells, powers_le_32[..7].iter().cloned())
-                };
-
-                // Ref-layout chunks.
                 let ref_block_id_lo28 = {
                     let cells: Vec<QuantumCell<Fr>> = ref_block_id_bytes[0..28]
                         .iter()
@@ -380,37 +342,18 @@ impl Circuit<Fr> for HopProofCircuit {
                     QuantumCell::Existing(ref_block_id_lo28),
                     QuantumCell::Existing(pow_256_3),
                 );
-                let ref_leaf_c1_ref = gate.add(
+                let ref_leaf_c1 = gate.add(
                     ctx,
-                    QuantumCell::Existing(ref_leaf_c1_tag_ref),
+                    QuantumCell::Existing(ref_leaf_c1_tag),
                     QuantumCell::Existing(ref_block_id_lo28_shifted),
                 );
-                let ref_leaf_c2_ref = {
+                let ref_leaf_c2 = {
                     let cells: Vec<QuantumCell<Fr>> = ref_block_id_bytes[28..32]
                         .iter()
                         .map(|c| QuantumCell::Existing(*c))
                         .collect();
                     gate.inner_product(ctx, cells, powers_le_32[..4].iter().cloned())
                 };
-
-                let ref_leaf_c0 = gate.select(
-                    ctx,
-                    QuantumCell::Existing(ref_leaf_c0_parent),
-                    QuantumCell::Existing(ref_leaf_c0_ref),
-                    is_parent_slot,
-                );
-                let ref_leaf_c1 = gate.select(
-                    ctx,
-                    QuantumCell::Existing(ref_leaf_c1_parent),
-                    QuantumCell::Existing(ref_leaf_c1_ref),
-                    is_parent_slot,
-                );
-                let ref_leaf_c2 = gate.select(
-                    ctx,
-                    QuantumCell::Existing(ref_leaf_c2_parent),
-                    QuantumCell::Existing(ref_leaf_c2_ref),
-                    is_parent_slot,
-                );
                 let ref_leaf_fr = hasher.hash_fix_len_array(
                     ctx,
                     gate,
@@ -556,16 +499,19 @@ mod tests {
     use halo2_base::gates::circuit::BaseCircuitParams;
     use halo2_base::halo2_proofs::dev::MockProver;
 
-    /// Single-hop MockProver: one hop, single-ref ref-tree (parent only).
+    /// Single-hop MockProver: one hop, `ref_index = 1` (cross-thread ref slot).
+    /// Slot 0 (parent) is same-thread per spec §5.1 and is never opened.
     #[test]
     fn hop_proof_single_hop_mock_prover() {
         // === Hand-build the hop witness ===
         let sk_u = Fr::from(0xCAFEu64);
-        let ref_block_id: [u8; 32] = [0x11u8; 32];
+        let parent_placeholder: [u8; 32] = [0xF0u8; 32]; // native slot 0
+        let ref_block_id: [u8; 32] = [0x11u8; 32];       // cross-thread ref at slot 1
 
-        // Block: proof_block_refs = [ref_block_id]; L7 = ref-tree root; leaves
-        // [0..7] sentinels; leaves[7] = L7; block_id = block_merkle_root.
-        let proof_block_refs: Vec<[u8; 32]> = vec![ref_block_id];
+        // Block: proof_block_refs = [parent_placeholder, ref_block_id];
+        // L7 = ref-tree root; leaves [0..7] sentinels; leaves[7] = L7;
+        // block_id = block_merkle_root.
+        let proof_block_refs: Vec<[u8; 32]> = vec![parent_placeholder, ref_block_id];
         let l7 = proof_block_refs_root_native(&proof_block_refs);
         let mut leaves = [[0u8; 32]; BLOCK_MERKLE_LEAF_COUNT];
         for (j, slot) in leaves.iter_mut().enumerate().take(7) {
@@ -576,14 +522,14 @@ mod tests {
 
         let block_merkle_leaf_proof_l7 = block_merkle_leaf_proof(&leaves, 7);
         let proof_block_ref_inner_path =
-            proof_block_ref_inner_path_native(&proof_block_refs, 0);
+            proof_block_ref_inner_path_native(&proof_block_refs, 1);
 
         let hop = HopProofWitness {
             ref_block_id,
             block_id,
             l7,
             block_merkle_leaf_proof_l7,
-            ref_index: 0,
+            ref_index: 1,
             proof_block_ref_inner_path,
         };
 

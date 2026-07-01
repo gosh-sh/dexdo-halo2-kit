@@ -1,9 +1,9 @@
 use crate::boc_helper::*;
 use crate::multi_hop_witness::{
-    block_merkle_leaf_proof, block_merkle_root, proof_block_ref_inner_path_native,
-    proof_block_refs_root_native, BlockWitness, HopWitness, MultiHopProofWitness,
-    BLOCK_MERKLE_DEPTH, BLOCK_MERKLE_LEAF_COUNT, H_HOPS_PER_PROOF, MAX_PROOF_BLOCK_REFS_DEPTH,
-    N_BUNDLE,
+    assert_ref_index_is_cross_thread, block_merkle_leaf_proof, block_merkle_root,
+    proof_block_ref_inner_path_native, proof_block_refs_root_native, BlockWitness, HopWitness,
+    MultiHopProofWitness, BLOCK_MERKLE_DEPTH, BLOCK_MERKLE_LEAF_COUNT, H_HOPS_PER_PROOF,
+    MAX_PROOF_BLOCK_REFS_DEPTH, N_BUNDLE,
 };
 use crate::salt::{
     compute_salt_commitment_native, compute_salt_native, compute_salted_block_id_native,
@@ -291,13 +291,16 @@ pub struct SynthChain {
 ///
 /// Each real hop's target block has:
 /// - L0..L6 filled with distinct sentinel bytes (sentinel = `0x10 + i`)
-/// - L7 = `proof_block_refs_root_native(&[parent_block_id])` (single-ref case
-///   to keep witness compact; the ref-tree machinery still pads to
-///   `MAX_PROOF_BLOCK_REFS`)
+/// - L7 = `proof_block_refs_root_native(&[slot0_placeholder, hop_predecessor_id])`
+///   (slot 0 is the same-thread parent slot — filled with a deterministic
+///   placeholder because slot 0 is same-thread by producer construction per
+///   spec §2.3 and never opened as a hop edge; slot 1 holds the actual
+///   cross-thread hop predecessor. The ref-tree machinery still pads to
+///   `MAX_PROOF_BLOCK_REFS`.)
 /// - `block_id = block_merkle_root(L0..L7)`
 /// - `block_merkle_leaf_proof_l7` opens L7 against `block_id`
-/// - `ref_index = 0` (parent slot)
-/// - `proof_block_ref_inner_path` opens leaf 0 of the ref-tree against L7
+/// - `ref_index = 1` (cross-thread ref slot; spec §5.1 forbids slot 0)
+/// - `proof_block_ref_inner_path` opens leaf 1 of the ref-tree against L7
 ///
 /// Inactive padding hops (`is_active = false`) carry
 /// `salted_start_block_id == salted_end_block_id == hops[k_hops-1].salted_end_block_id` so RootPN's
@@ -353,13 +356,20 @@ pub fn synth_chain(seed: u64, k_hops: usize) -> SynthChain {
 
     let mut hops = Vec::with_capacity(total_slots);
 
+    // Deterministic placeholder for the slot-0 same-thread parent — never
+    // opened by the circuit (spec §5.1) but must be a well-defined 32-byte
+    // value so the native L7 root computation is reproducible.
+    const SLOT0_PARENT_PLACEHOLDER: [u8; 32] = [0xF0; 32];
+
     for i in 0..k_hops {
-        let parent_id = block_ids[i];
+        let hop_predecessor_id = block_ids[i];
         let target_id_expected = block_ids[i + 1];
 
-        // Build the target block's witness: single-ref ref-tree, L0..L6
-        // sentinels, L7 = ref-tree root.
-        let proof_block_refs: Vec<[u8; 32]> = vec![parent_id];
+        // Build the target block's witness: two-slot ref-tree (slot 0 =
+        // placeholder same-thread parent; slot 1 = cross-thread hop
+        // predecessor), L0..L6 sentinels, L7 = ref-tree root.
+        let proof_block_refs: Vec<[u8; 32]> =
+            vec![SLOT0_PARENT_PLACEHOLDER, hop_predecessor_id];
         let l7 = proof_block_refs_root_native(&proof_block_refs);
 
         let mut leaves = [[0u8; 32]; BLOCK_MERKLE_LEAF_COUNT];
@@ -380,7 +390,10 @@ pub fn synth_chain(seed: u64, k_hops: usize) -> SynthChain {
         let salted_end_block_id = compute_salted_block_id_native(salt, &computed_block_id);
 
         let block_merkle_leaf_proof_l7 = block_merkle_leaf_proof(&leaves, 7);
-        let proof_block_ref_inner_path = proof_block_ref_inner_path_native(&proof_block_refs, 0);
+        let ref_index = 1usize;
+        assert_ref_index_is_cross_thread(ref_index);
+        let proof_block_ref_inner_path =
+            proof_block_ref_inner_path_native(&proof_block_refs, ref_index);
 
         let salted_start_block_id = if i == 0 {
             bundle_head_salted
@@ -402,7 +415,7 @@ pub fn synth_chain(seed: u64, k_hops: usize) -> SynthChain {
                 proof_block_refs,
             },
             block_merkle_leaf_proof_l7,
-            ref_index: 0,
+            ref_index,
             proof_block_ref_inner_path,
             salted_start_block_id,
             salted_end_block_id,
@@ -422,6 +435,8 @@ pub fn synth_chain(seed: u64, k_hops: usize) -> SynthChain {
         // Inactive padding: zero everything that the circuit will gate out
         // with `is_active`. Endpoints must equal terminal_salted so RootPN's
         // continuity check passes.
+        // `ref_index = 1` is required even for padding because the in-circuit
+        // range check + `ref_index != 0` assertion are unconditional (spec §5.1).
         let zero_leaves = [[0u8; 32]; BLOCK_MERKLE_LEAF_COUNT];
         let zero_l7_proof = [[0u8; 32]; BLOCK_MERKLE_DEPTH];
         let zero_inner_path = [[0u8; 32]; MAX_PROOF_BLOCK_REFS_DEPTH];
@@ -433,7 +448,7 @@ pub fn synth_chain(seed: u64, k_hops: usize) -> SynthChain {
                 proof_block_refs: Vec::new(),
             },
             block_merkle_leaf_proof_l7: zero_l7_proof,
-            ref_index: 0,
+            ref_index: 1,
             proof_block_ref_inner_path: zero_inner_path,
             salted_start_block_id: final_terminal_salted,
             salted_end_block_id: final_terminal_salted,
@@ -503,10 +518,14 @@ pub fn synth_chain_n(seed: u64, k_hops: usize, n_bundle: usize) -> SynthChain {
 
     let mut hops = Vec::with_capacity(total_slots);
 
-    for i in 0..k_hops {
-        let parent_id = block_ids[i];
+    // See `synth_chain` for the slot-0 placeholder rationale.
+    const SLOT0_PARENT_PLACEHOLDER: [u8; 32] = [0xF0; 32];
 
-        let proof_block_refs: Vec<[u8; 32]> = vec![parent_id];
+    for i in 0..k_hops {
+        let hop_predecessor_id = block_ids[i];
+
+        let proof_block_refs: Vec<[u8; 32]> =
+            vec![SLOT0_PARENT_PLACEHOLDER, hop_predecessor_id];
         let l7 = proof_block_refs_root_native(&proof_block_refs);
 
         let mut leaves = [[0u8; 32]; BLOCK_MERKLE_LEAF_COUNT];
@@ -524,7 +543,10 @@ pub fn synth_chain_n(seed: u64, k_hops: usize, n_bundle: usize) -> SynthChain {
         let salted_end_block_id = compute_salted_block_id_native(salt, &computed_block_id);
 
         let block_merkle_leaf_proof_l7 = block_merkle_leaf_proof(&leaves, 7);
-        let proof_block_ref_inner_path = proof_block_ref_inner_path_native(&proof_block_refs, 0);
+        let ref_index = 1usize;
+        assert_ref_index_is_cross_thread(ref_index);
+        let proof_block_ref_inner_path =
+            proof_block_ref_inner_path_native(&proof_block_refs, ref_index);
 
         let salted_start_block_id = if i == 0 {
             bundle_head_salted
@@ -540,7 +562,7 @@ pub fn synth_chain_n(seed: u64, k_hops: usize, n_bundle: usize) -> SynthChain {
                 proof_block_refs,
             },
             block_merkle_leaf_proof_l7,
-            ref_index: 0,
+            ref_index,
             proof_block_ref_inner_path,
             salted_start_block_id,
             salted_end_block_id,
@@ -565,7 +587,8 @@ pub fn synth_chain_n(seed: u64, k_hops: usize, n_bundle: usize) -> SynthChain {
                 proof_block_refs: Vec::new(),
             },
             block_merkle_leaf_proof_l7: zero_l7_proof,
-            ref_index: 0,
+            // Padding still needs `ref_index != 0` (unconditional constraint).
+            ref_index: 1,
             proof_block_ref_inner_path: zero_inner_path,
             salted_start_block_id: final_terminal_salted,
             salted_end_block_id: final_terminal_salted,
@@ -690,10 +713,11 @@ mod synth_chain_tests {
                 "hop {i} L7 proof should verify"
             );
 
-            // Ref-tree opening: leaf is `ref_leaf_hash_native(0, parent_id)`
-            // and root is L7.
-            let parent = h.block.proof_block_refs[h.ref_index];
-            let leaf = ref_leaf_hash_native(h.ref_index, &parent);
+            // Ref-tree opening: leaf is `ref_leaf_hash_native(ref_index,
+            // hop_predecessor)` (ref-tag layout since slot 0 is excluded per
+            // spec §5.1); root is L7.
+            let hop_predecessor = h.block.proof_block_refs[h.ref_index];
+            let leaf = ref_leaf_hash_native(h.ref_index, &hop_predecessor);
             assert!(
                 verify_proof_block_ref_inner_path(
                     &h.block.block_merkle_tree_leaves[7],
