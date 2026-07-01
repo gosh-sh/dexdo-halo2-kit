@@ -476,7 +476,16 @@ Cell budget at H = 5: 20 SHA-256 compressions × 354 K ≈ **7.1 M advice cells*
 
 ### 7.7 `DexFinalProof` circuit detail
 
-`DexFinalProof` is the extended voucher circuit at K = 16. Witnesses and constraints:
+`DexFinalProof` is the extended voucher circuit at K = 16.
+
+**Two disjoint cryptographic subcircuits, glued by salt + voucher payload.** Reading constraints 1–4 below:
+
+- **X-side** (constraints 1, 2, 3): event → `X.block_id`. SHA-256-based (depth-4 L8 opening + ext-out Merkle path + Poseidon96 for `event_hash`).
+- **Y-side** (constraint 4): `Y.block_id` → `finalLayerHistoricalHashRoot`. Poseidon-based (Poseidon96 `block_leaf` + depth-8 Poseidon dense-Merkle to `#L1(M_Y)` + ≤ 11 dense-chain links).
+
+The two sides share no block-side witness when `t ≠ 0`. When `t = 0` (X = Y), the same `block_id` value feeds both sides — but the sides still perform distinct work: X-side binds *event to block*, Y-side binds *block to anchor*. **No crypto is repeated.** What matters for uniformity (§7.5) is that the *shape* is identical in both cases: an observer cannot tell from the proof whether X = Y or X ≠ Y.
+
+Witnesses and constraints:
 
 ```
 witnesses:
