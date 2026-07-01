@@ -682,16 +682,9 @@ Must be answered with the team before circuit-side implementation begins.
 
 ## 12. Circuit implementation plan
 
-The following work packages bring `dex-halo2-circuit` into alignment with the spec as it now stands (§§1–11), incorporating the corrections established earlier in this document:
+Work packages that realise the spec in `dex-halo2-circuit`. §12.1 (constants) and §12.2 (ext-out gadget) unblock §12.3 (`DarkDexCircuitV2`). §12.4 (`MultiHopProofCircuit`) is independent and can proceed in parallel. §12.5 (`bundle_verifier`) and §12.6 (test helpers) sit downstream of §§12.3–12.4 and are prerequisites for the on-chain harness in §12.8.
 
-- **Hop primitive is 4 SHA compressions per hop, not 6** (§5.3). `h8..15` is an opaque witness sibling in hops; L8 is never re-derived at hop level.
-- **Slot 0 (`parent_block_id`) is not a hop edge** (§5.1). Circuit uses a fixed tag (`REFERENCED_REF_BLOCK_TAG`) and range-checks `ref_index` to `1..=MAX_PROOF_BLOCK_REFS`.
-- **`DexFinalProof` is two disjoint sub-proofs** (§7.7). X-side (SHA-based event → block binding) + Y-side (Poseidon-based block → anchor). Uniformity for t = 0 is a shape property, not wasted work.
-- **L8 opening in `DexFinalProof` is 4 SHA compressions** (§7.7), one per level of the depth-4 tree.
-- **`RootPN.sol` is fail-fast** (§7.4): cheap public-input consistency (salt binding + chain continuity + anchor) first, expensive KZG verifications only after.
-- **Production ceiling is `L_MAX = 300`** (§5.4). Current prototyping point remains `L_MAX = 20` / `N_BUNDLE = 4`. Per-snark K is unaffected; scaling to prod grows the bundle to `N_BUNDLE = 60`.
-
-Open Questions §11.2.1–5 must be answered before circuit work lands; the SHA-vs-Poseidon choice for the ext-out-messages tree (§11.2.1) is the primary implementation blocker for §12.2/§12.3.
+Open Questions §11.2.1–5 must be answered before landing; the SHA-vs-Poseidon choice for the ext-out-messages tree (§11.2.1) is the primary blocker for §12.2/§12.3.
 
 ### 12.1 Protocol constants module
 
