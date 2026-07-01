@@ -22,9 +22,9 @@ The canonical branch for this design is `poseidon_dex` on `acki-nacki`. All fiel
 | **`finalLayerHistoricalHashRoot`** | Instance 1 of the DEX proof; the layer-N batch hash the prover anchors against. Must belong to thread 0's window. |
 | **`layerNumber`** | Contract argument naming the layer N that `finalLayerHistoricalHashRoot` belongs to. |
 | **L** | True chain length in hops from X to Y. `L = 0` when t = 0 (X = Y); `L > 0` in the multi-thread case. |
-| **`L_MAX`** | Circuit-side upper bound on L. Locked at **20** (= `H × N_BUNDLE`); escape path via larger `N_BUNDLE` (§12.2). |
+| **`L_MAX`** | Circuit-side upper bound on L. **Production target = 300** (specified by the node team as the cross-thread walk-length ceiling under the current threading design). Current prototyping point is **20**; `N_BUNDLE = ceil(L_MAX / H)` scales linearly — moving to prod raises `N_BUNDLE` to 60, no change to per-snark K. |
 | **`H`** | Hops packed per `MultiHopProof` snark. Locked at **5**. |
-| **`N_BUNDLE`** | Number of `MultiHopProof` snarks per bundle. Locked at **4**; may be dynamic per §7.5 dispatch. |
+| **`N_BUNDLE`** | Number of `MultiHopProof` snarks per bundle. Currently **4** (prototyping `L_MAX = 20`); production **60** (`L_MAX = 300`). May be made dynamic per §7.5 dispatch. |
 
 **Poseidon input convention (reminder).** Poseidon here operates on BN254 Fr (`|p| ≈ 254 bits`). A byte stream is packed into Fr in **31-byte chunks** (little-endian, high byte implicitly zero) so every chunk is unambiguously `< p` and no modular reduction is needed. An N-byte input consumes `⌈N/31⌉` Fr elements. This applies uniformly to every `Poseidon(...)` in this spec — the tagged L7 leaves, the Poseidon96 block-leaf, dense-Merkle combines, and the salted-endpoint hashes.
 
@@ -280,7 +280,9 @@ X  =  B_0  →  B_1  →  B_2  →  ...  →  B_L  =  Y
        thread t (event block)                     thread 0 (anchor)
 ```
 
-with the gluing constraint `hop_i.next_block_id == hop_{i+1}.current_block_id` for all i. L is bounded by `L_MAX = 20` (see §7.5).
+with the gluing constraint `hop_i.next_block_id == hop_{i+1}.current_block_id` for all i.
+
+**Production bound: `L_MAX = 300`** (specified by the node team as the cross-thread walk-length ceiling under the current threading design). The current design point of `L_MAX = 20` used in the phone-budget sizing of §7 is a **temporary** working target for early prototyping; the multi-proof composition of §7 scales `N_BUNDLE = ceil(L_MAX / H)` linearly with `L_MAX`, so raising it to 300 grows the bundle to `N_BUNDLE = 60` snarks (already stress-tested — see `test_bundle_stress_l300.rs`) without changing the per-snark K.
 
 Reference off-chain implementation: `helpers/proof_helper/src/gql_proof.rs` on `poseidon_dex`. In-circuit hop logic mirrors `verify_proof_block_ref_proof` (Poseidon inner) + `verify_block_merkle_leaf_proof` (SHA outer, updated to depth 4).
 
@@ -632,8 +634,8 @@ We estimate the practical phone ceiling at **K ≤ 17** (≈ 250 MB SRS, 1–3 G
 | L7 outer opening depth (per hop) | **4** SHA-256 sibling combines (`h8..15` is opaque witness in hops — no L8 re-derivation) ⇒ **4 SHA compressions / hop** | §5.3 |
 | `MAX_PROOF_BLOCK_REFS` (L7 inner depth bound) | **256** leaves padded, depth 8 | Protocol cap |
 | `H` (hops per `MultiHopProof`) | **5** | Phone budget at K=17 |
-| `N_BUNDLE` (fixed proofs per claim) | **4** + 1 `DexFinalProof` = 5 | Anonymity uniformity |
-| `L_MAX` (max real chain length) | **20** (= H × N_BUNDLE) | Multi-proof design target |
+| `N_BUNDLE` (fixed proofs per claim) | **4** + 1 `DexFinalProof` = 5 (prototyping); **60** + 1 = 61 for production (`L_MAX = 300`) | Anonymity uniformity |
+| `L_MAX` (max real chain length) | **20** (prototyping) → **300** (production, per node team) | Multi-proof design target |
 | `MAX_CHAIN_LEN` (thread-0 dense chain) | **11** | `gosh-dense-balanced-tree` |
 | `MultiHopProof` K | **17** | Cell-budget sizing (~24 % margin) |
 | `DexFinalProof` K | **16** | Cell-budget sizing (~15 % margin) |
@@ -653,7 +655,7 @@ Must be answered with the team before circuit-side implementation begins.
 3. **Ext-out-messages leaf format.** Raw `event_hash` (32 B) vs tagged leaf (e.g. `Poseidon(tag ‖ event_hash)` analogous to L7). Impacts leaf-computation gadget in `DexFinalProof`.
 4. **L9..L15 padding value.** Assumed `[0u8; 32]`. If the producer's widened `block_merkle_leaves()` uses non-zero constants (e.g. `SHA-256(b"padding")` or a version-tagged constant), the circuit's hard-coded sibling constants (§2.1) must be updated to match.
 5. **Salted-endpoint direction.** `inst[5] = salted_X_start`, `inst[6] = salted_Y_end` (chain head → tail). Confirm the on-chain contract expects this order and not the reverse.
-6. **Real chain-length distribution on the poseidon_dex testnet.** Designed for `L_MAX = 20`; if p99 > 20 on real deployment, raise `N_BUNDLE` (adds proving time) or add a recursive aggregation fallback path (separate workstream).
+6. **Real chain-length distribution on the poseidon_dex testnet.** Production ceiling `L_MAX = 300` is set by the node team; measured p50/p99 distributions on real deployment are still open — informs how conservatively to size `N_BUNDLE` vs. batch dispatch cadence.
 7. **L7 walk direction in practice.** Spec assumes hops walk **into the past** (parent + refs both point backward). Confirm this matches canonical L7-walk direction in the multi-thread design.
 8. **Single-thread bundle shape.** Spec mandates that single-thread (t = 0) claims still submit 5 snarks for anonymity uniformity — a ~5× per-claim gas increase over today's single-thread DEX. Confirm this trade-off is acceptable.
 9. **Salt derivation domain.** `salt = Poseidon(DOMAIN_TAG_FR, voucher_secret_seed)`. Confirm `voucher_secret_seed` is collision-resistant and not reused for any non-voucher purpose in existing wallet code.
