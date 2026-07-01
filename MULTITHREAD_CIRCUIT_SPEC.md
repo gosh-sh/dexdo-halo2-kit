@@ -354,7 +354,7 @@ DOMAIN_TAG_FR    = bytes_to_fr( DOMAIN_TAG_BYTES  zero-padded to 32 LE bytes )
 
 `salt` is a **private witness** in every proof of the bundle. Two vouchers from the same user produce uncorrelated salted ids (different `sk_u`).
 
-> **Canonical convention.** The constants and Poseidon shape are enforced by the upstream `gosh-referenced-block-hop` reference and by `DexFinalProof` (`dex-halo2-circuit/src/salt.rs`). `RootPN.sol` equality-checks `salt_commitment` across all snarks of a bundle; any divergence between this spec and `salt.rs` breaks the orchestrator. **`salt.rs` is the source of truth.**
+> **Canonical convention.** The constants and Poseidon shape are enforced by `DexFinalProof` and defined in `dex-halo2-circuit/src/salt.rs`. `RootPN.sol` equality-checks `salt_commitment` across all snarks of a bundle; any divergence between this spec and `salt.rs` breaks the orchestrator. **`salt.rs` is the source of truth.**
 
 #### Per-`MultiHopProof` public inputs (3)
 
