@@ -343,7 +343,7 @@ impl Circuit<Fr> for DarkDexCircuit {
                 let sha256_chip = Sha256Chip::new(&range);
 
                 // === Assign preimage bytes as witnesses ===
-                let root_input_bytes: Vec<AssignedValue<Fr>> = self.voucher_event_entries[0]
+                let event_root_input_bytes: Vec<AssignedValue<Fr>> = self.voucher_event_entries[0]
                     .cell_repr_data
                     .iter()
                     .map(|&b| ctx.load_witness(Fr::from(b as u64)))
@@ -357,17 +357,17 @@ impl Circuit<Fr> for DarkDexCircuit {
                 // === SHA-256 hash computation ===
                 // digest_bytes range-checks all input bytes to 8 bits
                 // and returns 32 big-endian output bytes.
-                let root_hash_bytes = sha256_chip.digest_bytes(ctx, &root_input_bytes);
+                let event_root_hash_bytes = sha256_chip.digest_bytes(ctx, &event_root_input_bytes);
                 let child_hash_bytes = sha256_chip.digest_bytes(ctx, &child_input_bytes);
 
                 // === Child hash connectivity check ===
                 // Root preimage embeds the child's repr_hash at a known byte offset.
                 // Constrain those embedded bytes == child's computed SHA-256 output.
-                let root_child_hash_byte_offset: usize =
+                let event_root_child_hash_byte_offset: usize =
                     self.voucher_event_entries[0].childs_repr_hashes_offset.as_ref().unwrap()[0] as usize;
                 for i in 0..SHA256_HASH_LEN {
                     ctx.constrain_equal(
-                        &root_input_bytes[root_child_hash_byte_offset + i],
+                        &event_root_input_bytes[event_root_child_hash_byte_offset + i],
                         &child_hash_bytes[i],
                     );
                 }
@@ -421,7 +421,7 @@ impl Circuit<Fr> for DarkDexCircuit {
 
                 // === d1 descriptor checks ===
                 // Input bytes are already range-checked to [0,255] by digest_bytes.
-                let root_d1 = root_input_bytes[0];
+                let root_d1 = event_root_input_bytes[0];
                 let child_d1 = child_input_bytes[0];
 
                 // Root d1: refs_count (lower 3 bits) == 1.
@@ -502,7 +502,7 @@ impl Circuit<Fr> for DarkDexCircuit {
                 // ================================================================
                 // ==================== X-SIDE (SHA family) =======================
                 // Compute x_ext_msg_leaf → x_l8_tracked_ext_out_messages_root,
-                // constrain V<p canonicality on x_l8 bytes, run depth-4 SHA
+                // constraint V<p canonicality on x_l8 bytes, run depth-4 SHA
                 // block_id opening binding x_l8 into x_block_id, expose
                 // salted_x_start on x_block_id.
                 // ================================================================
@@ -514,13 +514,13 @@ impl Circuit<Fr> for DarkDexCircuit {
                 let x_account_id_bytes: [AssignedValue<Fr>; 32] = self
                     .x_account_id
                     .map(|b| ctx.load_witness(Fr::from(b as u64)));
-                let root_hash_bytes_array: [AssignedValue<Fr>; 32] = root_hash_bytes
+                let event_root_hash_bytes_array: [AssignedValue<Fr>; 32] = event_root_hash_bytes
                     .clone()
                     .try_into()
-                    .expect("root_hash_bytes is exactly 32 cells");
+                    .expect("event_root_hash_bytes is exactly 32 cells");
                 let x_ext_msg_leaf_fr = poseidon_hash_96_circuit_bytes(
                     ctx, &range, &hasher,
-                    &x_dapp_id_bytes, &x_account_id_bytes, &root_hash_bytes_array,
+                    &x_dapp_id_bytes, &x_account_id_bytes, &event_root_hash_bytes_array,
                 );
 
                 // === X.b Prove x_ext_msg_leaf → x_l8_tracked_ext_out_messages_root ===
@@ -791,18 +791,18 @@ impl Circuit<Fr> for DarkDexCircuit {
                 );
 
                 // === Y.b Prove block_leaf → history window root (root_1) ===
-                let block_leaf_native = poseidon_hash_96_native(
+                let y_block_leaf_native = poseidon_hash_96_native(
                     &self.y_block_id,
                     &self.y_envelope_hash,
                     &self.y_tracked_ext_out_messages_root,
                 );
-                let block_proof = preprocess_dense_proof(
-                    block_leaf_native,
+                let y_block_proof = preprocess_dense_proof(
+                    y_block_leaf_native,
                     &self.y_block_merkle_proof_siblings,
                     self.y_block_merkle_proof_position,
                 );
                 let root_1 = dense_merkle_root_circuit(
-                    ctx, &range, &hasher, &block_proof, y_block_leaf_fr,
+                    ctx, &range, &hasher, &y_block_proof, y_block_leaf_fr,
                 );
 
                 // === Y.c Optional chain of dense proofs ===
