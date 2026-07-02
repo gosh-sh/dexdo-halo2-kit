@@ -1,7 +1,7 @@
 //! Voucher-secret-derived salt and salted-block-id helpers.
 //!
 //! These native helpers MUST stay byte-for-byte equivalent to the in-circuit
-//! gadgets in [`crate::dark_dex_circuit_new`] and [`crate::multi_hop_proof`]:
+//! gadgets in [`crate::dark_dex_circuit`] and [`crate::multi_hop_proof`]:
 //! `RootPN.sol` checks `salt_commitment` equality across all snarks of a
 //! bundle (`1 DexFinalProof + N MultiHopProof`), and the per-hop
 //! `salted_block_id` continuity is what links adjacent hops. Any divergence

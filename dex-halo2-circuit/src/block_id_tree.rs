@@ -1,7 +1,7 @@
 //! Depth-4 SHA-256 block_id tree constants and helpers used by
-//! [`crate::dark_dex_circuit_new::DarkDexCircuitV2`].
+//! [`crate::dark_dex_circuit::DarkDexCircuit`].
 //!
-//! In V2 the block's `block_id` is defined as the SHA-256 root of a depth-4
+//! `block_id` is defined as the SHA-256 root of a depth-4
 //! binary tree over 16 fixed-position 32-byte leaves. Leaf 8 is the
 //! `l8_tracked_ext_out_messages_root` (a Poseidon image); leaves 9..15 are
 //! reserved / zero for now. Leaves 0..=7 are aggregated into an opaque

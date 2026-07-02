@@ -4,7 +4,7 @@
 //!
 //! This confirms that sk_u_commit values produced by sk-commit-tool will
 //! satisfy the constraint `ctx.constrain_equal(&sk_u_commit, &hasher_result)`
-//! in `DarkDexCircuitNew::synthesize`.
+//! in `DarkDexCircuit::synthesize`.
 
 use gosh_dense_balanced_tree::{poseidon_hash_native as poseidon_hash, R_F, R_P, RATE, T};
 use halo2_base::{

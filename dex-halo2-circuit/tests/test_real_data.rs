@@ -15,7 +15,7 @@
 //! ```
 
 use dex_halo2_circuit::boc_helper::{serialize_cells_tree_root_first, BocFlattenData};
-use dex_halo2_circuit::dark_dex_circuit_new::DarkDexCircuitNew;
+use dex_halo2_circuit::dark_dex_circuit::DarkDexCircuit;
 use dex_halo2_circuit::salt::{
     compute_salt_commitment_native, compute_salt_native, compute_salted_block_id_native,
 };
@@ -434,7 +434,7 @@ fn test_real_data_mock_prover() {
             hex::encode(instances[1].to_repr()),
         );
 
-        let circuit = DarkDexCircuitNew::new(
+        let circuit = DarkDexCircuit::new(
             parsed.sk_u,
             ephemeral_pubkey,
             parsed.entries,
@@ -491,7 +491,7 @@ fn test_real_data_real_prover() {
     let first_parsed = parse_fixture(&first_json);
 
     let ephemeral_pubkey = Fr::from(0xDEADu64);
-    let keygen_circuit = DarkDexCircuitNew::new(
+    let keygen_circuit = DarkDexCircuit::new(
         first_parsed.sk_u,
         ephemeral_pubkey,
         first_parsed.entries,
@@ -548,7 +548,7 @@ fn test_real_data_real_prover() {
         let mut instances = compute_instances(&parsed);
         append_trailing_publics(&mut instances, ephemeral_pubkey, parsed.sk_u, &parsed.block_id);
 
-        let prover_circuit = DarkDexCircuitNew::new_for_proving(
+        let prover_circuit = DarkDexCircuit::new_for_proving(
             parsed.sk_u,
             ephemeral_pubkey,
             parsed.entries,
@@ -816,7 +816,7 @@ fn test_focused_l1_h197() {
     println!("Instance 1 (final_root): {}", hex::encode(instances[1].to_repr()));
 
     let params = base_circuit_params();
-    let circuit = DarkDexCircuitNew::new(
+    let circuit = DarkDexCircuit::new(
         parsed.sk_u,
         ephemeral_pubkey,
         parsed.entries,
@@ -877,7 +877,7 @@ fn test_focused_l0_h197() {
     println!("Instance 1 (final_root): {}", hex::encode(instances[1].to_repr()));
 
     let params = base_circuit_params();
-    let circuit = DarkDexCircuitNew::new(
+    let circuit = DarkDexCircuit::new(
         parsed.sk_u,
         ephemeral_pubkey,
         parsed.entries,
@@ -958,7 +958,7 @@ fn test_export_tvm_sdk_data() {
     // Keygen against the first H197 fixture. VK is shape-only, fixture choice is moot.
     let kg_json = load_fixture(&h197[0]);
     let kg_parsed = parse_fixture(&kg_json);
-    let kg_circuit = DarkDexCircuitNew::new(
+    let kg_circuit = DarkDexCircuit::new(
         kg_parsed.sk_u,
         ephemeral_pubkey,
         kg_parsed.entries,
@@ -993,7 +993,7 @@ fn test_export_tvm_sdk_data() {
         append_trailing_publics(&mut instances, ephemeral_pubkey, parsed.sk_u, &parsed.block_id);
         assert_eq!(instances.len(), 7);
 
-        let prover_circuit = DarkDexCircuitNew::new_for_proving(
+        let prover_circuit = DarkDexCircuit::new_for_proving(
             parsed.sk_u,
             ephemeral_pubkey,
             parsed.entries,
@@ -1072,7 +1072,7 @@ fn test_focused_l2_h197() {
     println!("Instance 1 (final_root): {}", hex::encode(instances[1].to_repr()));
 
     let params = base_circuit_params();
-    let circuit = DarkDexCircuitNew::new(
+    let circuit = DarkDexCircuit::new(
         parsed.sk_u,
         ephemeral_pubkey,
         parsed.entries,

@@ -1,5 +1,5 @@
 use gosh_dark_dex_halo2_new_circuit::boc_helper::{serialize_cells_tree_root_first, BocFlattenData};
-use gosh_dark_dex_halo2_new_circuit::dark_dex_circuit_new::DarkDexCircuitNew;
+use gosh_dark_dex_halo2_new_circuit::dark_dex_circuit::DarkDexCircuit;
 use gosh_dark_dex_halo2_new_circuit::salt::{
     compute_salt_commitment_native, compute_salt_native, compute_salted_block_id_native,
 };
@@ -410,7 +410,7 @@ fn compute_instances(parsed: &ParsedFixture) -> Vec<Fr> {
     };
 
     // Salt-derived publics (must match the in-circuit derivation in
-    // `DarkDexCircuitNew::synthesize`).
+    // `DarkDexCircuit::synthesize`).
     let salt = compute_salt_native(parsed.sk_u);
     let salt_commitment = compute_salt_commitment_native(salt);
     let event_salted_block_id = compute_salted_block_id_native(salt, &parsed.block_id);
@@ -441,7 +441,7 @@ fn save_pk(pk: &ProvingKey<G1Affine>, path: &Path) -> Result<(), ProverError> {
 fn load_pk(path: &Path, circuit_params: BaseCircuitParams) -> Result<ProvingKey<G1Affine>, ProverError> {
     let file = fs::File::open(path)?;
     let mut reader = BufReader::new(file);
-    ProvingKey::read::<_, DarkDexCircuitNew>(
+    ProvingKey::read::<_, DarkDexCircuit>(
         &mut reader,
         SerdeFormat::RawBytesUnchecked,
         circuit_params,
@@ -525,7 +525,7 @@ impl Prover {
         // Keygen if needed
         if self.pk.is_none() {
             eprintln!("No cached PK, running keygen...");
-            let keygen_circuit = DarkDexCircuitNew::new(
+            let keygen_circuit = DarkDexCircuit::new(
                 parsed.sk_u,
                 parsed.ephemeral_pubkey,
                 parsed.entries.clone(),
@@ -576,7 +576,7 @@ impl Prover {
         let break_points = self.break_points.as_ref().unwrap().clone();
 
         // Build prover circuit
-        let prover_circuit = DarkDexCircuitNew::new_for_proving(
+        let prover_circuit = DarkDexCircuit::new_for_proving(
             parsed.sk_u,
             parsed.ephemeral_pubkey,
             parsed.entries,

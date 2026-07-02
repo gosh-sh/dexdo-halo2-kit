@@ -20,7 +20,7 @@
 //!
 //! # Layouts
 //!
-//! `DexFinalProof` is 7 instances, as produced by `DarkDexCircuitNew`:
+//! `DexFinalProof` is 7 instances, as produced by `DarkDexCircuit`:
 //! ```text
 //!   [0] poseidon_commitment       (= depositIdentifierHash)
 //!   [1] final_root                (= finalLayerHistoricalHashRoot)
@@ -116,7 +116,7 @@ pub enum BundleError {
 // Instance-vector field offsets
 // ---------------------------------------------------------------------------
 
-/// `DarkDexCircuitNew` `DexFinalProof` instance count.
+/// `DarkDexCircuit` `DexFinalProof` instance count.
 pub const DEX_FINAL_LEN: usize = 7;
 /// `MultiHopProof` instance count (spec §6.9).
 pub const MULTI_HOP_LEN: usize = 3;
@@ -131,7 +131,7 @@ mod multihop_offset {
     pub const SALT_COMMITMENT: usize = 2;
 }
 
-/// DexFinal offsets — `DarkDexCircuitNew`'s 7-instance layout.
+/// DexFinal offsets — `DarkDexCircuit`'s 7-instance layout.
 mod dexfinal_offset {
     pub const SALT_COMMITMENT: usize = 5;
     pub const HEAD_BLOCK_ID: usize = 6; // event_salted_block_id

@@ -202,8 +202,8 @@ pub fn build_dense_chain(
 /// Synthetic witnesses for the two-level Poseidon tree structure.
 ///
 /// The `v2_*` fields carry the additional depth-4 SHA block_id opening
-/// bundle consumed by [`crate::dark_dex_circuit_new::DarkDexCircuitV2`].
-/// V1 (`DarkDexCircuitNew`) ignores them entirely.
+/// bundle consumed by [`crate::dark_dex_circuit::DarkDexCircuit`].
+/// V1 (`DarkDexCircuit`) ignores them entirely.
 pub struct TwoLevelWitnesses {
     pub account_dapp_id: [u8; 32],
     pub account_id: [u8; 32],
@@ -237,7 +237,7 @@ pub fn build_two_level_tree(
     num_events_leaves: usize,
     num_block_leaves: usize,
 ) -> TwoLevelWitnesses {
-    use crate::dark_dex_circuit_new::poseidon_hash_96_native;
+    use crate::dark_dex_circuit::poseidon_hash_96_native;
 
     let mut dapp_id = [0u8; 32];
     let mut account_id_b = [0u8; 32];
@@ -349,7 +349,7 @@ pub fn build_v2_cross_thread_witness(
     num_events_leaves: usize,
     num_block_leaves: usize,
 ) -> V2CrossThreadWitness {
-    use crate::dark_dex_circuit_new::poseidon_hash_96_native;
+    use crate::dark_dex_circuit::poseidon_hash_96_native;
 
     // -------- X side --------
     let mut x_dapp_id = [0u8; 32];

@@ -537,7 +537,7 @@ constraints:
         voucher_nominal       =  BE(x_child_cell_repr_data[38..70])
         token_type            =  BE(x_child_cell_repr_data[70..74])
         (sk_u_commit is also re-derived from sk_u via Poseidon and constrained equal
-        — inherited unchanged from single-thread DarkDexCircuitNew.)
+        — inherited unchanged from single-thread DarkDexCircuit.)
 
   4. Event → ext_out_tree leaf, then Poseidon-Merkle open to L8:
         ext_msg_leaf =  Poseidon96( x_account_dapp_id ‖ x_account_id ‖ event_hash )    // byte-flat, §7.3
@@ -701,7 +701,7 @@ Must be answered with the team before circuit-side implementation begins.
 
 ## 12. Circuit implementation plan
 
-Work packages that realise the spec in `dex-halo2-circuit`. §12.1 (constants) and §12.2 (ext-out gadget) unblock §12.3 (`DarkDexCircuitV2`). §12.4 (`MultiHopProofCircuit`) is independent and can proceed in parallel. §12.5 (`bundle_verifier`) and §12.6 (test helpers) sit downstream of §§12.3–12.4 and are prerequisites for the on-chain harness in §12.8.
+Work packages that realise the spec in `dex-halo2-circuit`. §12.1 (constants) and §12.2 (ext-out gadget) unblock §12.3 (`DarkDexCircuit`). §12.4 (`MultiHopProofCircuit`) is independent and can proceed in parallel. §12.5 (`bundle_verifier`) and §12.6 (test helpers) sit downstream of §§12.3–12.4 and are prerequisites for the on-chain harness in §12.8.
 
 Open Questions §11.2.1–5 must be answered before landing; the SHA-vs-Poseidon choice for the ext-out-messages tree (§11.2.1) is the primary blocker for §12.2/§12.3.
 
@@ -737,12 +737,12 @@ Unit test: round-trip against a hand-computed 15-SHA reference.
       root: &[AssignedValue<F>; 32],
   );
   ```
-- Byte-level Merkle walk, dense-tree with power-of-2 padding, opening `event_hash → L8`. The implementation pattern (dense byte-Merkle with `leaf_index`-driven sibling order) can be lifted from the existing dense-Merkle gadget in `dark_dex_circuit_new.rs`, but this gadget lives entirely on the X-side and is unrelated to the Y-side layer-1 batch tree.
+- Byte-level Merkle walk, dense-tree with power-of-2 padding, opening `event_hash → L8`. The implementation pattern (dense byte-Merkle with `leaf_index`-driven sibling order) can be lifted from the existing dense-Merkle gadget in `dark_dex_circuit.rs`, but this gadget lives entirely on the X-side and is unrelated to the Y-side layer-1 batch tree.
 - MockProver test at K=15 with a synthetic 4-leaf tree.
 
-### 12.3 `DexFinalProof` — new circuit `DarkDexCircuitV2`
+### 12.3 `DexFinalProof` — new circuit `DarkDexCircuit`
 
-**Files:** `dex-halo2-circuit/src/dark_dex_circuit_new.rs` (add sibling `DarkDexCircuitV2` alongside `DarkDexCircuitNew`; do not modify — feedback `add-don't-modify`).
+**Files:** `dex-halo2-circuit/src/dark_dex_circuit.rs` (add sibling `DarkDexCircuit` alongside `DarkDexCircuit`; do not modify — feedback `add-don't-modify`).
 
 Circuit is organised as two structurally independent subcircuits glued by `salt` and voucher-payload publics (§7.7):
 
@@ -757,13 +757,13 @@ The BOC is *not* condensed to an opaque `event_hash` before entering the circuit
   - `x_account_dapp_id: [u8; 32]`, `x_account_id: [u8; 32]` (ext-out-message endpoint identity).
   - `x_ext_out_merkle_siblings`, `x_ext_out_merkle_position`, `x_num_ext_out_levels` (padded to `MAX_EVENTS_TREE_DEPTH`).
   - `x_block_id: [u8; 32]`, `x_l8_tracked_ext_out_messages_root: [u8; 32]`, `x_block_id_h07_sibling: [u8; 32]`.
-- Gate 1 (**BOC hash reconstruction**, 2 SHA compressions): compute `event_hash = SHA(x_root_cell_repr_data)` and `child_hash = SHA(x_child_cell_repr_data)` via `Sha256Chip::digest_bytes`; constrain the 32 bytes of `x_root_cell_repr_data[offset .. offset+32]` equal to `child_hash` (this is the BOC parent→child link, exactly as done today in `dark_dex_circuit_new.rs:454-467`).
-- Gate 2 (**BOC descriptor sanity**): decompose d1 byte of each cell to 8 bits, assert `refs_count == 1` for the root and `refs_count == 0` for the child (as in `dark_dex_circuit_new.rs:516-564`).
+- Gate 1 (**BOC hash reconstruction**, 2 SHA compressions): compute `event_hash = SHA(x_root_cell_repr_data)` and `child_hash = SHA(x_child_cell_repr_data)` via `Sha256Chip::digest_bytes`; constrain the 32 bytes of `x_root_cell_repr_data[offset .. offset+32]` equal to `child_hash` (this is the BOC parent→child link, exactly as done today in `dark_dex_circuit.rs:454-467`).
+- Gate 2 (**BOC descriptor sanity**): decompose d1 byte of each cell to 8 bits, assert `refs_count == 1` for the root and `refs_count == 0` for the child (as in `dark_dex_circuit.rs:516-564`).
 - Gate 3 (**voucher-field extraction**, byte-sliced from `x_child_cell_repr_data`):
   - `x_sk_u_commit` — bytes `[6..38]`, LE-Fr recombine (32 B).
   - `x_voucher_nominal` — bytes `[38..70]`, BE recombine (32 B).
   - `x_token_type` — bytes `[70..74]`, BE recombine (4 B).
-  - Range-checks and inner-product reconstructions match the existing `EVENT_*_START/END` constants (`dark_dex_circuit_new.rs:469-514`).
+  - Range-checks and inner-product reconstructions match the existing `EVENT_*_START/END` constants (`dark_dex_circuit.rs:469-514`).
 - Gate 4 (**`ext_msg_leaf` Poseidon96**): `ext_msg_leaf = Poseidon96(x_account_dapp_id, x_account_id, event_hash)` (byte-flat convention, §7.3 / `poseidon_hash_96_circuit_bytes`).
 - Gate 5 (**ext-out Merkle opening** from `ext_msg_leaf` to `x_l8_tracked_ext_out_messages_root`, using the §12.2 gadget; `num_ext_out_levels` witnessed and range-checked in `[0, MAX_EVENTS_TREE_DEPTH]`).
 - Gate 6 (**depth-4 L8 opening** — reconstruct `x_block_id` from `x_l8_tracked_ext_out_messages_root`; **4 SHA compressions**, one per level, using constants from §12.1):
@@ -779,7 +779,7 @@ X-side SHA budget: **2 (BOC) + 4 (L8 opening) = 6 SHA compressions**, plus the e
 
 **Y-side witness / gates** (Poseidon family, `Y.block_id` → `finalLayerHistoricalHashRoot`):
 - Witnesses: `y_block_id`, `y_envelope_hash`, `y_tracked_ext_out_messages_root`, `y_block_leaf_path` (depth-8 dense-Merkle siblings + leaf index), `y_dense_chain_links` (≤ `MAX_CHAIN_LEN = 11`).
-- Gate 4: identical to today's single-thread `DarkDexCircuitNew` — reuse byte-for-byte after renaming.
+- Gate 4: identical to today's single-thread `DarkDexCircuit` — reuse byte-for-byte after renaming.
 
 **Glue** (§7.3 salted-endpoints module, `dex-halo2-circuit/src/salt.rs`):
 - Gate 5:

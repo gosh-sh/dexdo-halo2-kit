@@ -10,7 +10,7 @@
 //! 4. A synthetic `DexFinal` `BundleProof` is constructed from the synth
 //!    chain's `salt_commitment` + `bundle_head_salted` — the bundle
 //!    verifier only consumes public-instance vectors, so we don't need a
-//!    real `DarkDexCircuitNew` proof here (its instance-shape is validated
+//!    real `DarkDexCircuit` proof here (its instance-shape is validated
 //!    by its own test suite).
 //! 5. `verify_bundle` accepts the assembled bundle.
 //!

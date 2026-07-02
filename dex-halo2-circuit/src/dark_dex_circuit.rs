@@ -200,7 +200,7 @@ pub fn extract_event_public_fields(entries: &[BocFlattenData; 2]) -> (Fr, Fr) {
 }
 
 #[derive(Clone, Debug)]
-pub struct DarkDexCircuitNewConfig {
+pub struct DarkDexCircuitConfig {
     base_circuit_config: BaseConfig<Fr>,
 }
 
@@ -225,7 +225,7 @@ pub struct DarkDexCircuitNewConfig {
 /// or distinct (t≠0 cross-thread: event fires in thread t, anchor is
 /// thread 0). The circuit is agnostic — X and Y are independent witness
 /// bundles.
-pub struct DarkDexCircuitNew {
+pub struct DarkDexCircuit {
     pub sk_u: Fr,
     /// Public witness exposed as instance 4: ephemeral_pubkey the prover
     /// commits to as the future PN owner. Binding this in-circuit closes
@@ -273,7 +273,7 @@ pub struct DarkDexCircuitNew {
     pub base_circuit_builder: RefCell<BaseCircuitBuilder<Fr>>,
 }
 
-impl DarkDexCircuitNew {
+impl DarkDexCircuit {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         sk_u: Fr,
@@ -387,8 +387,8 @@ impl DarkDexCircuitNew {
     }
 }
 
-impl Circuit<Fr> for DarkDexCircuitNew {
-    type Config = DarkDexCircuitNewConfig;
+impl Circuit<Fr> for DarkDexCircuit {
+    type Config = DarkDexCircuitConfig;
     type FloorPlanner = SimpleFloorPlanner;
     type Params = BaseCircuitParams;
 
@@ -448,7 +448,7 @@ impl Circuit<Fr> for DarkDexCircuitNew {
         params: Self::Params,
     ) -> Self::Config {
         let base_circuit_config = BaseCircuitBuilder::<Fr>::configure_with_params(meta, params);
-        DarkDexCircuitNewConfig { base_circuit_config }
+        DarkDexCircuitConfig { base_circuit_config }
     }
 
     fn synthesize(
@@ -1063,7 +1063,7 @@ mod tests {
     use halo2_base::halo2_proofs::dev::MockProver;
 
     // -------------------------------------------------------------------
-    // V2 test helpers: build a `DarkDexCircuitNew` (V2 §7.7 semantics)
+    // V2 test helpers: build a `DarkDexCircuit` (V2 §7.7 semantics)
     // from a `TwoLevelWitnesses` under the uniform t=0 (X==Y) assumption.
     // In the uniform case:
     //   * X-side and Y-side block_id agree (== `tw.block_id` == v2_x_block_id).
@@ -1082,8 +1082,8 @@ mod tests {
         dense_chain: Vec<DenseChainLink>,
         chain_len: usize,
         params: BaseCircuitParams,
-    ) -> DarkDexCircuitNew {
-        DarkDexCircuitNew::new(
+    ) -> DarkDexCircuit {
+        DarkDexCircuit::new(
             sk_u,
             ephemeral_pubkey,
             entries,
@@ -1114,8 +1114,8 @@ mod tests {
         chain_len: usize,
         params: BaseCircuitParams,
         break_points: MultiPhaseThreadBreakPoints,
-    ) -> DarkDexCircuitNew {
-        DarkDexCircuitNew::new_for_proving(
+    ) -> DarkDexCircuit {
+        DarkDexCircuit::new_for_proving(
             sk_u,
             ephemeral_pubkey,
             entries,
@@ -1764,7 +1764,7 @@ mod tests {
     // V2 cross-thread (X ≠ Y) positive test
     // -------------------------------------------------------------------
 
-    /// Build a V2 DarkDexCircuitNew from a cross-thread (X ≠ Y) witness.
+    /// Build a V2 DarkDexCircuit from a cross-thread (X ≠ Y) witness.
     /// X-side leaf-8 opens a distinct depth-4 SHA tree from the Y-side
     /// block anchor; the two block_ids differ.
     #[cfg(test)]
@@ -1776,8 +1776,8 @@ mod tests {
         dense_chain: Vec<DenseChainLink>,
         chain_len: usize,
         params: BaseCircuitParams,
-    ) -> DarkDexCircuitNew {
-        DarkDexCircuitNew::new(
+    ) -> DarkDexCircuit {
+        DarkDexCircuit::new(
             sk_u,
             ephemeral_pubkey,
             entries,
@@ -1799,7 +1799,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dark_dex_circuit_new_cross_thread() {
+    fn test_dark_dex_circuit_cross_thread() {
         use rand::rngs::StdRng;
         use rand::SeedableRng;
 
@@ -1860,7 +1860,7 @@ mod tests {
     // -------------------------------------------------------------------
 
     #[test]
-    fn test_dark_dex_circuit_new_bad_h07_sibling() {
+    fn test_dark_dex_circuit_bad_h07_sibling() {
         use rand::rngs::StdRng;
         use rand::SeedableRng;
 
@@ -1899,7 +1899,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dark_dex_circuit_new_bad_ephemeral_pubkey() {
+    fn test_dark_dex_circuit_bad_ephemeral_pubkey() {
         use rand::rngs::StdRng;
         use rand::SeedableRng;
 
@@ -1936,7 +1936,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dark_dex_circuit_new_bad_salted_x_start() {
+    fn test_dark_dex_circuit_bad_salted_x_start() {
         use rand::rngs::StdRng;
         use rand::SeedableRng;
 

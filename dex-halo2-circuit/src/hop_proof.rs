@@ -225,7 +225,7 @@ impl Circuit<Fr> for HopProofCircuit {
         layouter: impl Layouter<Fr>,
     ) -> Result<(), Error> {
         // Reset the builder so repeated synthesize calls (keygen_vk + keygen_pk)
-        // don't accumulate gates — same pattern as `DarkDexCircuitNew`.
+        // don't accumulate gates — same pattern as `DarkDexCircuit`.
         {
             let old = self.base_circuit_builder.borrow();
             let mut fresh = if old.witness_gen_only() {
