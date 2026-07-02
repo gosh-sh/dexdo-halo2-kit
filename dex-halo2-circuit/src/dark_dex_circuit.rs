@@ -926,8 +926,9 @@ mod tests {
     // -------------------------------------------------------------------
     // Test helpers: build a `DarkDexCircuit` (spec §7.7) from a
     // `DexFinalWitness`. Works uniformly for the t=0 case (X == Y, produced
-    // by `build_dex_final_witness_uniform`) and the cross-thread t ≠ 0 case
-    // (X ≠ Y, produced by `build_dex_final_witness_cross_thread`).
+    // by `build_dex_final_witness(DexFinalMode::Uniform, ...)`) and the
+    // cross-thread t ≠ 0 case (X ≠ Y, produced with
+    // `DexFinalMode::CrossThread`).
     // -------------------------------------------------------------------
     #[cfg(test)]
     fn make_circuit(
@@ -1068,7 +1069,7 @@ mod tests {
         for (idx, v) in all_vouchers.iter().enumerate() {
             println!("\n========== Voucher {} ==========", idx);
 
-            let tw = build_dex_final_witness_uniform(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
+            let tw = build_dex_final_witness(DexFinalMode::Uniform, &v.repr_hash, &mut rng, &dense_hasher, 128, 130);
             println!("Events proof depth: {}", tw.x_ext_out_siblings.len());
             println!("Block proof depth: {}", tw.y_block_siblings.len());
 
@@ -1111,7 +1112,7 @@ mod tests {
         let dense_hasher = DensePoseidonHasher::new();
         let mut rng = StdRng::seed_from_u64(77);
 
-        let tw = build_dex_final_witness_uniform(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
+        let tw = build_dex_final_witness(DexFinalMode::Uniform, &v.repr_hash, &mut rng, &dense_hasher, 128, 130);
 
         let params = base_circuit_params();
 
@@ -1158,7 +1159,7 @@ mod tests {
         let dense_hasher = DensePoseidonHasher::new();
         let mut rng = StdRng::seed_from_u64(99);
 
-        let tw = build_dex_final_witness_uniform(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
+        let tw = build_dex_final_witness(DexFinalMode::Uniform, &v.repr_hash, &mut rng, &dense_hasher, 128, 130);
 
         let params = base_circuit_params();
 
@@ -1298,7 +1299,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(99);
 
         // W=128 layout: 128 events leaves (depth 7) + 130 block leaves (depth 8).
-        let tw = build_dex_final_witness_uniform(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
+        let tw = build_dex_final_witness(DexFinalMode::Uniform, &v.repr_hash, &mut rng, &dense_hasher, 128, 130);
 
         let params = base_circuit_params();
         let ephemeral_pubkey = Fr::from(0xDEADu64);
@@ -1412,7 +1413,7 @@ mod tests {
         let dense_hasher = DensePoseidonHasher::new();
         let mut rng = StdRng::seed_from_u64(55);
 
-        let tw = build_dex_final_witness_uniform(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
+        let tw = build_dex_final_witness(DexFinalMode::Uniform, &v.repr_hash, &mut rng, &dense_hasher, 128, 130);
 
         let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.y_blocks_root_layer_1, 1, 130);
         let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
@@ -1603,8 +1604,13 @@ mod tests {
                 num_events_leaves, depth
             );
 
-            let tw = build_dex_final_witness_uniform(
-                &v.repr_hash, &mut rng, &dense_hasher, num_events_leaves, 130,
+            let tw = build_dex_final_witness(
+                DexFinalMode::Uniform,
+                &v.repr_hash,
+                &mut rng,
+                &dense_hasher,
+                num_events_leaves,
+                130,
             );
             println!("Events proof depth: {}", tw.x_ext_out_siblings.len());
             println!("Block proof depth: {}", tw.y_block_siblings.len());
@@ -1652,8 +1658,13 @@ mod tests {
         let dense_hasher = DensePoseidonHasher::new();
         let mut rng = StdRng::seed_from_u64(2026);
 
-        let tw = build_dex_final_witness_cross_thread(
-            &v.repr_hash, &mut rng, &dense_hasher, 128, 130,
+        let tw = build_dex_final_witness(
+            DexFinalMode::CrossThread,
+            &v.repr_hash,
+            &mut rng,
+            &dense_hasher,
+            128,
+            130,
         );
         assert_ne!(
             tw.x_block_id, tw.y_block_id,
@@ -1701,7 +1712,7 @@ mod tests {
         let dense_hasher = DensePoseidonHasher::new();
         let mut rng = StdRng::seed_from_u64(11);
 
-        let mut tw = build_dex_final_witness_uniform(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
+        let mut tw = build_dex_final_witness(DexFinalMode::Uniform, &v.repr_hash, &mut rng, &dense_hasher, 128, 130);
         // Corrupt the h07 sibling AFTER x_block_id was already
         // derived from the original one; the depth-4 SHA opening will
         // now yield a root ≠ x_block_id, so the assert_depth4 gadget
@@ -1739,7 +1750,7 @@ mod tests {
         let v = load_first_voucher();
         let dense_hasher = DensePoseidonHasher::new();
         let mut rng = StdRng::seed_from_u64(22);
-        let tw = build_dex_final_witness_uniform(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
+        let tw = build_dex_final_witness(DexFinalMode::Uniform, &v.repr_hash, &mut rng, &dense_hasher, 128, 130);
 
         let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.y_blocks_root_layer_1, 1, 130);
         let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
@@ -1776,7 +1787,7 @@ mod tests {
         let v = load_first_voucher();
         let dense_hasher = DensePoseidonHasher::new();
         let mut rng = StdRng::seed_from_u64(33);
-        let tw = build_dex_final_witness_uniform(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
+        let tw = build_dex_final_witness(DexFinalMode::Uniform, &v.repr_hash, &mut rng, &dense_hasher, 128, 130);
 
         let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.y_blocks_root_layer_1, 1, 130);
         let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
@@ -1817,7 +1828,7 @@ mod tests {
         let v = load_first_voucher();
         let dense_hasher = DensePoseidonHasher::new();
         let mut rng = StdRng::seed_from_u64(44);
-        let tw = build_dex_final_witness_uniform(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
+        let tw = build_dex_final_witness(DexFinalMode::Uniform, &v.repr_hash, &mut rng, &dense_hasher, 128, 130);
 
         let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.y_blocks_root_layer_1, 1, 130);
         let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
