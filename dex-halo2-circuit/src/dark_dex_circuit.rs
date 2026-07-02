@@ -790,7 +790,7 @@ impl Circuit<Fr> for DarkDexCircuit {
                     &y_tracked_ext_out_root_bytes_cells,
                 );
 
-                // === Y.b Prove block_leaf → history window root (root_1) ===
+                // === Y.b Prove block_leaf → history window root (y_history_window_root) ===
                 let y_block_leaf_native = poseidon_hash_96_native(
                     &self.y_block_id,
                     &self.y_envelope_hash,
@@ -801,7 +801,7 @@ impl Circuit<Fr> for DarkDexCircuit {
                     &self.y_block_merkle_proof_siblings,
                     self.y_block_merkle_proof_position,
                 );
-                let root_1 = dense_merkle_root_circuit(
+                let y_history_window_root = dense_merkle_root_circuit(
                     ctx, &range, &hasher, &y_block_proof, y_block_leaf_fr,
                 );
 
@@ -815,7 +815,7 @@ impl Circuit<Fr> for DarkDexCircuit {
                 range.range_check(ctx, max_minus_na, 4);
 
                 let final_root = verify_chain_of_dense_proofs(
-                    ctx, &range, &hasher, root_1, &self.y_dense_chain, num_active,
+                    ctx, &range, &hasher, y_history_window_root, &self.y_dense_chain, num_active,
                 );
 
                 // === Y.d salted_Y_end = byte-flat Poseidon on y_block_id ===
