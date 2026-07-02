@@ -59,9 +59,18 @@ pub struct DarkDexCircuitConfig {
 ///     `block_leaf_Y = Poseidon96(...)` → depth-8 Poseidon dense-Merkle →
 ///     dense-chain → `finalLayerHistoricalHashRoot`. Exposes `salted_Y_end`.
 ///
-/// Publics (8): `[depositIdentifierHash, finalLayerHistoricalHashRoot,
+/// Publics (12): `[depositIdentifierHash, finalLayerHistoricalHashRoot,
 /// voucherNominalFr, tokenTypeFr, ephemeralPubkey, salted_X_start,
-/// salted_Y_end, salt_commitment]`.
+/// salted_Y_end, salt_commitment, x_account_dapp_id_lo,
+/// x_account_dapp_id_hi, x_account_id_lo, x_account_id_hi]`.
+///
+/// The last four instances pin the DEX contract's identity: on TVM every
+/// DEX event, by design, comes from a single fixed `RootPN` contract, so
+/// its dApp ID and account ID are known constants and the on-chain
+/// verifier compares them slot-for-slot against these publics. Each
+/// 32-byte address is split into two 128-bit LE halves (lo = bytes
+/// `[0..16]`, hi = bytes `[16..32]`); each half is strictly `< 2^128 < p`
+/// so no `V < p` canonicality gadget is needed.
 ///
 /// X and Y may be the same (t=0 uniform: producer thread = anchor thread)
 /// or distinct (t≠0 cross-thread: event fires in thread t, anchor is
@@ -79,9 +88,14 @@ pub struct DarkDexCircuit {
     pub voucher_event_entries: [BocFlattenData; 2],
 
     // === X-side (event-emitting block) =====================================
-    /// Private witness: dApp ID (32 bytes) for X-side `ext_message_leaf`.
+    /// Witness feeding X-side `ext_message_leaf`. Also exposed as public
+    /// instances `[8]` (lo, LE bytes `[0..16]`) and `[9]` (hi, LE bytes
+    /// `[16..32]`) so the on-chain verifier can pin the DEX contract's
+    /// dApp ID; see the type-level `DarkDexCircuit` doc.
     pub x_account_dapp_id: [u8; 32],
-    /// Private witness: account ID (32 bytes) for X-side `ext_message_leaf`.
+    /// Witness feeding X-side `ext_message_leaf`. Also exposed as public
+    /// instances `[10]` / `[11]` in the same LE lo/hi split as
+    /// `x_account_dapp_id`.
     pub x_account_id: [u8; 32],
     /// Private witness: X-side ext-out messages tree Merkle proof siblings.
     pub x_ext_out_merkle_proof_siblings: Vec<[u8; 32]>,
@@ -337,6 +351,10 @@ impl Circuit<Fr> for DarkDexCircuit {
                 salted_x_start,
                 salted_y_end,
                 salt_commitment,
+                x_account_dapp_id_lo,
+                x_account_dapp_id_hi,
+                x_account_id_lo,
+                x_account_id_hi,
             ) = {
                 let gate = range.gate();
                 let ctx = builder.pool(0).main();
@@ -803,6 +821,40 @@ impl Circuit<Fr> for DarkDexCircuit {
                     &y_block_id_bytes,
                 );
 
+                // === LE lo/hi 128-bit packing of x_account_dapp_id / x_account_id ===
+                //
+                // Each 32-byte address is exposed as two 128-bit LE halves:
+                //   lo = sum_{i in 0..16}  byte_i     · 256^i
+                //   hi = sum_{i in 0..16}  byte_{16+i} · 256^i
+                // Every byte cell is already 8-bit-range-checked (by the
+                // per-byte checks inside `poseidon_hash_96_circuit_bytes`),
+                // so each half is strictly < 2^128 < p — no `V < p`
+                // canonicality gadget is needed. The on-chain verifier
+                // reconstructs (lo, hi) the same way from the known RootPN
+                // contract address bytes.
+                let pack_lo_hi =
+                    |ctx: &mut halo2_base::Context<Fr>, cells: &[AssignedValue<Fr>; 32]| {
+                        let lo = {
+                            let terms: Vec<QuantumCell<Fr>> = cells[0..16]
+                                .iter()
+                                .map(|c| QuantumCell::Existing(*c))
+                                .collect();
+                            gate.inner_product(ctx, terms, powers_le_32[0..16].iter().cloned())
+                        };
+                        let hi = {
+                            let terms: Vec<QuantumCell<Fr>> = cells[16..32]
+                                .iter()
+                                .map(|c| QuantumCell::Existing(*c))
+                                .collect();
+                            gate.inner_product(ctx, terms, powers_le_32[0..16].iter().cloned())
+                        };
+                        (lo, hi)
+                    };
+                let (x_account_dapp_id_lo, x_account_dapp_id_hi) =
+                    pack_lo_hi(ctx, &x_dapp_id_bytes);
+                let (x_account_id_lo, x_account_id_hi) =
+                    pack_lo_hi(ctx, &x_account_id_bytes);
+
                 (
                     deposit_identifier_hash,
                     y_final_root,
@@ -811,6 +863,10 @@ impl Circuit<Fr> for DarkDexCircuit {
                     salted_x_start,
                     salted_y_end,
                     salt_commitment,
+                    x_account_dapp_id_lo,
+                    x_account_dapp_id_hi,
+                    x_account_id_lo,
+                    x_account_id_hi,
                 )
             };
 
@@ -835,6 +891,14 @@ impl Circuit<Fr> for DarkDexCircuit {
             builder.assigned_instances[0].push(salted_x_start);
             builder.assigned_instances[0].push(salted_y_end);
             builder.assigned_instances[0].push(salt_commitment);
+            // Contract-identity publics (see type-level doc): each 32-byte
+            // TVM address is exposed as LE lo/hi 128-bit halves so the
+            // on-chain verifier can pin the DEX to a specific RootPN
+            // contract address.
+            builder.assigned_instances[0].push(x_account_dapp_id_lo);
+            builder.assigned_instances[0].push(x_account_dapp_id_hi);
+            builder.assigned_instances[0].push(x_account_id_lo);
+            builder.assigned_instances[0].push(x_account_id_hi);
         }
 
         // Synthesize base circuit builder to materialize virtual constraints.
@@ -931,11 +995,12 @@ mod tests {
         )
     }
 
-    /// Build the 8-instance §7.3 publics vector for a uniform-t=0
+    /// Build the 12-instance §7.3 publics vector for a uniform-t=0
     /// DexFinalProof: `[depositIdentifierHash, finalLayerHistoricalHashRoot,
     /// voucherNominalFr, tokenTypeFr, ephemeralPubkey, salted_X_start,
-    /// salted_Y_end, salt_commitment]`. In the uniform case
-    /// `salted_X_start == salted_Y_end`.
+    /// salted_Y_end, salt_commitment, x_account_dapp_id_lo,
+    /// x_account_dapp_id_hi, x_account_id_lo, x_account_id_hi]`. In the
+    /// uniform case `salted_X_start == salted_Y_end`.
     #[cfg(test)]
     fn make_v2_instances(
         v: &VoucherFields,
@@ -946,6 +1011,8 @@ mod tests {
         let salt = compute_salt_native(v.sk_u);
         let salt_commitment = compute_salt_commitment_native(salt);
         let salted = compute_salted_block_id_native(salt, &tw.block_id);
+        let (dapp_lo, dapp_hi) = pack_lo_hi_le(&tw.account_dapp_id);
+        let (acct_lo, acct_hi) = pack_lo_hi_le(&tw.account_id);
         vec![
             v.expected_poseidon_hash,
             y_final_root_fr,
@@ -955,7 +1022,23 @@ mod tests {
             salted, // salted_X_start
             salted, // salted_Y_end (== salted_X_start under t=0)
             salt_commitment,
+            dapp_lo,
+            dapp_hi,
+            acct_lo,
+            acct_hi,
         ]
+    }
+
+    /// Native LE lo/hi 128-bit packing of a 32-byte value, matching the
+    /// in-circuit gadget: `lo = LE(bytes[0..16])`, `hi = LE(bytes[16..32])`.
+    /// Used by test-side instance builders to mirror the emitted publics.
+    #[cfg(test)]
+    fn pack_lo_hi_le(bytes: &[u8; 32]) -> (Fr, Fr) {
+        let mut lo_buf = [0u8; 32];
+        lo_buf[..16].copy_from_slice(&bytes[..16]);
+        let mut hi_buf = [0u8; 32];
+        hi_buf[..16].copy_from_slice(&bytes[16..32]);
+        (bytes_to_fr(&lo_buf), bytes_to_fr(&hi_buf))
     }
 
     #[test]
@@ -1623,13 +1706,15 @@ mod tests {
             params,
         );
 
-        // Build 8-instance publics with the CROSS-THREAD X/Y block ids
+        // Build 12-instance publics with the CROSS-THREAD X/Y block ids
         // (they differ, so salted_X_start ≠ salted_Y_end).
         let salt = compute_salt_native(v.sk_u);
         let salt_commitment = compute_salt_commitment_native(salt);
         let salted_x_start = compute_salted_block_id_native(salt, &ctw.x_block_id);
         let salted_y_end = compute_salted_block_id_native(salt, &ctw.y_block_id);
         assert_ne!(salted_x_start, salted_y_end);
+        let (dapp_lo, dapp_hi) = pack_lo_hi_le(&ctw.x_account_dapp_id);
+        let (acct_lo, acct_hi) = pack_lo_hi_le(&ctw.x_account_id);
         let instances = vec![
             v.expected_poseidon_hash,
             y_final_root_fr,
@@ -1639,6 +1724,10 @@ mod tests {
             salted_x_start,
             salted_y_end,
             salt_commitment,
+            dapp_lo,
+            dapp_hi,
+            acct_lo,
+            acct_hi,
         ];
 
         println!("Cross-thread MockProver...");
@@ -1762,6 +1851,46 @@ mod tests {
         assert!(
             prover.verify().is_err(),
             "expected verify() to fail with corrupted salted_X_start public"
+        );
+    }
+
+    /// Corrupt one of the contract-identity publics (instance [8] =
+    /// `x_account_dapp_id_lo`) and expect verify() to fail — proves the
+    /// LE lo/hi packing is actually copy-constrained back to the same
+    /// `x_dapp_id_bytes` cells that feed `x_ext_msg_leaf`, so an attacker
+    /// cannot re-declare the DEX contract's dApp ID at the instance layer.
+    #[test]
+    fn test_dark_dex_circuit_bad_x_account_dapp_id_lo() {
+        use rand::rngs::StdRng;
+        use rand::SeedableRng;
+
+        let v = load_first_voucher();
+        let dense_hasher = DensePoseidonHasher::new();
+        let mut rng = StdRng::seed_from_u64(44);
+        let tw = build_two_level_tree(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
+
+        let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, 1, 130);
+        let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
+
+        let params = base_circuit_params();
+        let ephemeral_pubkey = Fr::from(0xDEADu64);
+        let circuit = make_v2_circuit(
+            v.sk_u,
+            ephemeral_pubkey,
+            v.entries.clone(),
+            &tw,
+            dense_chain,
+            1,
+            params,
+        );
+
+        let mut instances = make_v2_instances(&v, y_final_root_fr, ephemeral_pubkey, &tw);
+        instances[8] = instances[8] + Fr::from(1u64); // x_account_dapp_id_lo slot
+
+        let prover = MockProver::<Fr>::run(K, &circuit, vec![instances]).unwrap();
+        assert!(
+            prover.verify().is_err(),
+            "expected verify() to fail with corrupted x_account_dapp_id_lo public"
         );
     }
 }

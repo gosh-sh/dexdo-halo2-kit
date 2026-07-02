@@ -20,15 +20,20 @@
 //!
 //! # Layouts
 //!
-//! `DexFinalProof` is 7 instances, as produced by `DarkDexCircuit`:
+//! `DexFinalProof` is 12 instances, as produced by `DarkDexCircuit`:
 //! ```text
-//!   [0] poseidon_commitment       (= depositIdentifierHash)
-//!   [1] final_root                (= finalLayerHistoricalHashRoot)
-//!   [2] voucher_nominal
-//!   [3] token_type
-//!   [4] ephemeral_pubkey
-//!   [5] salt_commitment           ← used by check (2)
-//!   [6] event_salted_block_id     ← used by check (3) as the "bundle head"
+//!   [0]  poseidon_commitment        (= depositIdentifierHash)
+//!   [1]  final_root                 (= finalLayerHistoricalHashRoot)
+//!   [2]  voucher_nominal
+//!   [3]  token_type
+//!   [4]  ephemeral_pubkey
+//!   [5]  salted_x_start             ← used by check (3) as the "bundle head"
+//!   [6]  salted_y_end                (anchor-side; tail-link check TBD)
+//!   [7]  salt_commitment            ← used by check (2)
+//!   [8]  x_account_dapp_id_lo        (LE bytes[0..16] of the DEX contract dApp ID)
+//!   [9]  x_account_dapp_id_hi        (LE bytes[16..32])
+//!   [10] x_account_id_lo             (LE bytes[0..16] of the DEX contract account ID)
+//!   [11] x_account_id_hi             (LE bytes[16..32])
 //! ```
 //!
 //! `MultiHopProof` is 3 instances (`MULTITHREAD_CIRCUIT_SPEC.md` §6.9):
@@ -46,7 +51,7 @@ use halo2_base::halo2_proofs::halo2curves::bn256::Fr;
 /// reading the proof's public instance vector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProofKind {
-    /// `DexFinalProof`. 7 instances.
+    /// `DexFinalProof`. 12 instances.
     DexFinal,
     /// `MultiHopProof`. Always 3 instances.
     MultiHop,
@@ -90,7 +95,7 @@ pub enum BundleError {
     DexFinalNotFirst { found_at: usize },
     /// A proof's instance-vector length doesn't match its declared `kind`.
     /// `expected_one_of` enumerates every accepted length for that kind
-    /// (DexFinal: 7; MultiHop: 3).
+    /// (DexFinal: 12; MultiHop: 3).
     BadInstanceLen {
         proof_index: usize,
         kind: ProofKind,
@@ -117,7 +122,7 @@ pub enum BundleError {
 // ---------------------------------------------------------------------------
 
 /// `DarkDexCircuit` `DexFinalProof` instance count.
-pub const DEX_FINAL_LEN: usize = 7;
+pub const DEX_FINAL_LEN: usize = 12;
 /// `MultiHopProof` instance count (spec §6.9).
 pub const MULTI_HOP_LEN: usize = 3;
 
@@ -131,10 +136,26 @@ mod multihop_offset {
     pub const SALT_COMMITMENT: usize = 2;
 }
 
-/// DexFinal offsets — `DarkDexCircuit`'s 7-instance layout.
+/// DexFinal offsets — `DarkDexCircuit`'s 12-instance layout.
+///
+/// The chain "head" is `salted_x_start` (event-side): the MultiHop chain
+/// links event block → anchor block, so the DexFinalProof's head is the
+/// X-side salted block id. `salted_y_end` is the anchor-side endpoint;
+/// the corresponding tail-link check (`MultiHop[last].salted_end_block_id
+/// == DexFinal.salted_y_end`) is not yet implemented here.
 mod dexfinal_offset {
-    pub const SALT_COMMITMENT: usize = 5;
-    pub const HEAD_BLOCK_ID: usize = 6; // event_salted_block_id
+    pub const SALTED_X_START: usize = 5;
+    #[allow(dead_code)]
+    pub const SALTED_Y_END: usize = 6;
+    pub const SALT_COMMITMENT: usize = 7;
+    #[allow(dead_code)]
+    pub const X_ACCOUNT_DAPP_ID_LO: usize = 8;
+    #[allow(dead_code)]
+    pub const X_ACCOUNT_DAPP_ID_HI: usize = 9;
+    #[allow(dead_code)]
+    pub const X_ACCOUNT_ID_LO: usize = 10;
+    #[allow(dead_code)]
+    pub const X_ACCOUNT_ID_HI: usize = 11;
 }
 
 // ---------------------------------------------------------------------------
@@ -175,7 +196,7 @@ pub fn salt_commitment(p: &BundleProof, proof_index: usize) -> Result<Fr, Bundle
 
 /// Extract the "bundle head" — the salted block_id that the first
 /// MultiHopProof's `salted_start_block_id` must equal. This is
-/// `event_salted_block_id` at instance [6].
+/// `salted_x_start` (event-side) at instance [5].
 pub fn dex_final_head(p: &BundleProof, proof_index: usize) -> Result<Fr, BundleError> {
     if p.kind != ProofKind::DexFinal || p.instances.len() != DEX_FINAL_LEN {
         return Err(BundleError::BadInstanceLen {
@@ -185,7 +206,7 @@ pub fn dex_final_head(p: &BundleProof, proof_index: usize) -> Result<Fr, BundleE
             expected_one_of: DEX_FINAL_LENGTHS,
         });
     }
-    Ok(p.instances[dexfinal_offset::HEAD_BLOCK_ID])
+    Ok(p.instances[dexfinal_offset::SALTED_X_START])
 }
 
 pub fn multihop_salted_start_block_id(p: &BundleProof, proof_index: usize) -> Result<Fr, BundleError> {
@@ -296,17 +317,22 @@ mod tests {
     // -- helpers ------------------------------------------------------------
 
     /// Build a DexFinal instance vector with the given `salt_commitment` and
-    /// `head_block_id`. Other slots are filled with distinguishable sentinels
-    /// so tests can spot accidental cross-talk.
+    /// `head_block_id` (= `salted_x_start`). Other slots are filled with
+    /// distinguishable sentinels so tests can spot accidental cross-talk.
     fn make_dex_final(salt_commitment: Fr, head_block_id: Fr) -> BundleProof {
         BundleProof::new_dex_final(vec![
-            Fr::from(101u64), // [0] poseidon_commitment
-            Fr::from(102u64), // [1] final_root
-            Fr::from(103u64), // [2] voucher_nominal
-            Fr::from(104u64), // [3] token_type
-            Fr::from(105u64), // [4] ephemeral_pubkey
-            salt_commitment,  // [5]
-            head_block_id,    // [6] event_salted_block_id
+            Fr::from(101u64), // [0]  poseidon_commitment
+            Fr::from(102u64), // [1]  final_root
+            Fr::from(103u64), // [2]  voucher_nominal
+            Fr::from(104u64), // [3]  token_type
+            Fr::from(105u64), // [4]  ephemeral_pubkey
+            head_block_id,    // [5]  salted_x_start (bundle head)
+            Fr::from(106u64), // [6]  salted_y_end
+            salt_commitment,  // [7]  salt_commitment
+            Fr::from(107u64), // [8]  x_account_dapp_id_lo
+            Fr::from(108u64), // [9]  x_account_dapp_id_hi
+            Fr::from(109u64), // [10] x_account_id_lo
+            Fr::from(110u64), // [11] x_account_id_hi
         ])
     }
 
