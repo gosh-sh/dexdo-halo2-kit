@@ -19,8 +19,11 @@
 //!   `hash_bytes_flat(fr_to_bytes(salt) ‖ block_id)`
 
 use crate::multi_hop_witness::poseidon_bytes_flat_native;
-use gosh_dense_balanced_tree::{bytes_to_fr, fr_to_bytes, poseidon_hash_native};
+use gosh_dense_balanced_tree::{bytes_to_fr, fr_to_bytes, poseidon_hash_native, RATE, T};
+use halo2_base::gates::GateInstructions;
 use halo2_base::halo2_proofs::halo2curves::bn256::Fr;
+use halo2_base::poseidon::hasher::PoseidonHasher;
+use halo2_base::{AssignedValue, Context, QuantumCell};
 
 /// Domain-tag byte string used to bind the voucher's `sk_u` into the per-bundle
 /// salt. Differentiates this salt from any other Poseidon image of `sk_u`
@@ -69,6 +72,52 @@ pub fn compute_salted_block_id_native(salt: Fr, block_id_le: &[u8; 32]) -> Fr {
     concat[..32].copy_from_slice(&fr_to_bytes(salt));
     concat[32..].copy_from_slice(block_id_le);
     bytes_to_fr(&poseidon_bytes_flat_native(&concat))
+}
+
+/// In-circuit twin of [`compute_salted_block_id_native`].
+///
+/// Computes `Poseidon([salt_chunk0, chunk1, chunk2])` where
+/// `chunk1 = salt_hi + 256 · LE(block_id_bytes[0..30])` and
+/// `chunk2 = LE(block_id_bytes[30..32])`. This is the byte-flat sponge of
+/// the 64-byte stream `fr_to_bytes(salt) ‖ block_id`, chunked as 31+31+2.
+///
+/// Callers must supply:
+///   * `salt_chunk0` / `salt_hi` — a prior 248+8-bit decomposition of the
+///     salt Fr (constrained elsewhere to equal the Poseidon-derived `salt`).
+///   * `powers_le_32` — a shared `[256^i]` table with at least 30 entries.
+///   * `block_id_bytes` — exactly 32 cells, already range-checked to 8 bits.
+pub(crate) fn salted_block_id_poseidon_circuit(
+    ctx: &mut Context<Fr>,
+    gate: &impl GateInstructions<Fr>,
+    hasher: &PoseidonHasher<Fr, T, RATE>,
+    powers_le_32: &[QuantumCell<Fr>],
+    salt_chunk0: AssignedValue<Fr>,
+    salt_hi: AssignedValue<Fr>,
+    block_id_bytes: &[AssignedValue<Fr>],
+) -> AssignedValue<Fr> {
+    assert_eq!(block_id_bytes.len(), 32, "block_id must be exactly 32 bytes");
+    assert!(powers_le_32.len() >= 30, "powers_le_32 needs at least 30 entries");
+    let block_id_lo30 = {
+        let cells: Vec<QuantumCell<Fr>> = block_id_bytes[0..30]
+            .iter()
+            .map(|c| QuantumCell::Existing(*c))
+            .collect();
+        gate.inner_product(ctx, cells, powers_le_32[0..30].iter().cloned())
+    };
+    let chunk1 = gate.mul_add(
+        ctx,
+        QuantumCell::Existing(block_id_lo30),
+        QuantumCell::Constant(Fr::from(256u64)),
+        QuantumCell::Existing(salt_hi),
+    );
+    let chunk2 = {
+        let cells: Vec<QuantumCell<Fr>> = block_id_bytes[30..32]
+            .iter()
+            .map(|c| QuantumCell::Existing(*c))
+            .collect();
+        gate.inner_product(ctx, cells, powers_le_32[0..2].iter().cloned())
+    };
+    hasher.hash_fix_len_array(ctx, gate, &[salt_chunk0, chunk1, chunk2])
 }
 
 #[cfg(test)]

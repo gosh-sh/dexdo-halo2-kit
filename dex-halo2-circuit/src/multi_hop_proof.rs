@@ -100,7 +100,7 @@ use crate::multi_hop_witness::{
     ref_leaf_hash_native, ref_leaf_ref_tag_chunk0_fr, ref_leaf_ref_tag_chunk1_lo_fr,
     BLOCK_MERKLE_DEPTH, H_HOPS_PER_PROOF, MAX_PROOF_BLOCK_REFS_DEPTH,
 };
-use crate::salt::{compute_salt_native, domain_tag_hop_salt_fr};
+use crate::salt::{compute_salt_native, domain_tag_hop_salt_fr, salted_block_id_poseidon_circuit};
 
 /// Public-instance count: `[salted_start_block_id, salted_end_block_id, salt_commitment]`.
 pub const MULTI_HOP_PUBLIC_LEN: usize = 3;
@@ -279,7 +279,6 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                 let pow_256_3 = ctx.load_constant(Fr::from(256u64).pow([3u64]));
                 let pow_248 =
                     ctx.load_constant(Fr::from_raw([0u64, 0u64, 0u64, 1u64 << 56]));
-                let pow_256 = ctx.load_constant(Fr::from(256u64));
                 // LE byte→Fr power-of-256 table, shared by every inner_product in
                 // the per-hop loop (L7 pack, ref-leaf chunk math, salted-endpoint
                 // chunk math). Built once; sliced at each call site.
@@ -474,37 +473,14 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                     // Byte-flat salted endpoints (data = salt || endpoint_id_bytes, 31+31+2).
                     // Computed unconditionally — only the equality vs the
                     // witnessed salted_*_block_id is gated.
-                    let salted_endpoint = |ctx: &mut halo2_base::Context<Fr>,
-                                           endpoint_id_bytes: &[AssignedValue<Fr>]|
-                     -> AssignedValue<Fr> {
-                        let endpoint_id_lo30 = {
-                            let cells: Vec<QuantumCell<Fr>> = endpoint_id_bytes[0..30]
-                                .iter()
-                                .map(|c| QuantumCell::Existing(*c))
-                                .collect();
-                            gate.inner_product(ctx, cells, powers_le_32[..30].iter().cloned())
-                        };
-                        let chunk1 = gate.mul_add(
-                            ctx,
-                            QuantumCell::Existing(endpoint_id_lo30),
-                            QuantumCell::Existing(pow_256),
-                            QuantumCell::Existing(salt_hi),
-                        );
-                        let chunk2 = {
-                            let cells: Vec<QuantumCell<Fr>> = endpoint_id_bytes[30..32]
-                                .iter()
-                                .map(|c| QuantumCell::Existing(*c))
-                                .collect();
-                            gate.inner_product(ctx, cells, powers_le_32[..2].iter().cloned())
-                        };
-                        hasher.hash_fix_len_array(
-                            ctx,
-                            gate,
-                            &[salt_chunk0, chunk1, chunk2],
-                        )
-                    };
-                    let start_computed = salted_endpoint(ctx, &ref_block_id_bytes);
-                    let end_computed = salted_endpoint(ctx, &block_id_bytes);
+                    let start_computed = salted_block_id_poseidon_circuit(
+                        ctx, gate, &hasher, &powers_le_32,
+                        salt_chunk0, salt_hi, &ref_block_id_bytes,
+                    );
+                    let end_computed = salted_block_id_poseidon_circuit(
+                        ctx, gate, &hasher, &powers_le_32,
+                        salt_chunk0, salt_hi, &block_id_bytes,
+                    );
 
                     // Witness the salted endpoints (authoritative for both
                     // active and inactive hops).

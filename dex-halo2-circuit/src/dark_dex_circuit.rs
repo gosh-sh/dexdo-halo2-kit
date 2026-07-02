@@ -26,7 +26,7 @@ use std::cell::RefCell;
 use crate::block_id_tree::assert_depth4_l8_opening_circuit;
 use crate::boc_helper::*;
 use crate::poseidon_dex_helper::{poseidon_hash_96_circuit_bytes, poseidon_hash_96_native};
-use crate::salt::{compute_salt_native, domain_tag_hop_salt_fr};
+use crate::salt::{compute_salt_native, domain_tag_hop_salt_fr, salted_block_id_poseidon_circuit};
 use crate::voucher_event_helper::{
     EVENT_SK_U_COMMIT_END, EVENT_SK_U_COMMIT_FIELD_LEN, EVENT_SK_U_COMMIT_START,
     EVENT_TOKEN_TYPE_END, EVENT_TOKEN_TYPE_FIELD_LEN, EVENT_TOKEN_TYPE_START,
@@ -330,7 +330,7 @@ impl Circuit<Fr> for DarkDexCircuit {
             let range = builder.range_chip();
 
             let (
-                final_hasher_result,
+                deposit_identifier_hash,
                 y_final_root,
                 voucher_nominal,
                 token_type,
@@ -482,7 +482,7 @@ impl Circuit<Fr> for DarkDexCircuit {
                 ctx.constrain_equal(&sk_u_commit, &hasher_result);
 
                 let inputs = [voucher_nominal, token_type, sk_u_assigned, sk_u_commit];
-                let final_hasher_result = hasher.hash_fix_len_array(ctx, gate, &inputs);
+                let deposit_identifier_hash = hasher.hash_fix_len_array(ctx, gate, &inputs);
 
                 // === salt and salt_commitment ===
                 // salt = Poseidon([DOMAIN_TAG_HOP_SALT_FR, sk_u])
@@ -719,41 +719,15 @@ impl Circuit<Fr> for DarkDexCircuit {
                 );
 
                 // === X.e salted_X_start = byte-flat Poseidon on x_block_id ===
-                let salted_x_start = {
-                    let block_id_lo30 = {
-                        let cells: Vec<QuantumCell<Fr>> = x_block_id_bytes[0..30]
-                            .iter()
-                            .map(|c| QuantumCell::Existing(*c))
-                            .collect();
-                        gate.inner_product(
-                            ctx,
-                            cells,
-                            powers_le_32[0..30].iter().cloned(),
-                        )
-                    };
-                    let chunk1 = gate.mul_add(
-                        ctx,
-                        QuantumCell::Existing(block_id_lo30),
-                        QuantumCell::Constant(Fr::from(256u64)),
-                        QuantumCell::Existing(salt_hi),
-                    );
-                    let chunk2 = {
-                        let cells: Vec<QuantumCell<Fr>> = x_block_id_bytes[30..32]
-                            .iter()
-                            .map(|c| QuantumCell::Existing(*c))
-                            .collect();
-                        gate.inner_product(
-                            ctx,
-                            cells,
-                            powers_le_32[0..2].iter().cloned(),
-                        )
-                    };
-                    hasher.hash_fix_len_array(
-                        ctx,
-                        gate,
-                        &[salt_chunk0, chunk1, chunk2],
-                    )
-                };
+                let salted_x_start = salted_block_id_poseidon_circuit(
+                    ctx,
+                    gate,
+                    &hasher,
+                    &powers_le_32,
+                    salt_chunk0,
+                    salt_hi,
+                    &x_block_id_bytes,
+                );
 
                 // ================================================================
                 // ==================== Y-SIDE (Poseidon family) ==================
@@ -819,44 +793,18 @@ impl Circuit<Fr> for DarkDexCircuit {
                 );
 
                 // === Y.d salted_Y_end = byte-flat Poseidon on y_block_id ===
-                let salted_y_end = {
-                    let block_id_lo30 = {
-                        let cells: Vec<QuantumCell<Fr>> = y_block_id_bytes[0..30]
-                            .iter()
-                            .map(|c| QuantumCell::Existing(*c))
-                            .collect();
-                        gate.inner_product(
-                            ctx,
-                            cells,
-                            powers_le_32[0..30].iter().cloned(),
-                        )
-                    };
-                    let chunk1 = gate.mul_add(
-                        ctx,
-                        QuantumCell::Existing(block_id_lo30),
-                        QuantumCell::Constant(Fr::from(256u64)),
-                        QuantumCell::Existing(salt_hi),
-                    );
-                    let chunk2 = {
-                        let cells: Vec<QuantumCell<Fr>> = y_block_id_bytes[30..32]
-                            .iter()
-                            .map(|c| QuantumCell::Existing(*c))
-                            .collect();
-                        gate.inner_product(
-                            ctx,
-                            cells,
-                            powers_le_32[0..2].iter().cloned(),
-                        )
-                    };
-                    hasher.hash_fix_len_array(
-                        ctx,
-                        gate,
-                        &[salt_chunk0, chunk1, chunk2],
-                    )
-                };
+                let salted_y_end = salted_block_id_poseidon_circuit(
+                    ctx,
+                    gate,
+                    &hasher,
+                    &powers_le_32,
+                    salt_chunk0,
+                    salt_hi,
+                    &y_block_id_bytes,
+                );
 
                 (
-                    final_hasher_result,
+                    deposit_identifier_hash,
                     y_final_root,
                     voucher_nominal,
                     token_type,
@@ -875,12 +823,12 @@ impl Circuit<Fr> for DarkDexCircuit {
                 let ctx = builder.pool(0).main();
                 ctx.load_witness(self.ephemeral_pubkey)
             };
-            builder.assigned_instances[0].push(final_hasher_result);
+            builder.assigned_instances[0].push(deposit_identifier_hash);
             builder.assigned_instances[0].push(y_final_root);
             builder.assigned_instances[0].push(voucher_nominal);
             builder.assigned_instances[0].push(token_type);
             builder.assigned_instances[0].push(eph);
-            // §7.3 V2 publics: salted_X_start (event-side, X block_id under
+            // §7.3 publics: salted_X_start (event-side, X block_id under
             // the same salt) and salted_Y_end (anchor-side, Y block_id under
             // the same salt). These bind the DexFinalProof to the bundle's
             // MultiHopProof chain endpoints.
