@@ -331,7 +331,7 @@ impl Circuit<Fr> for DarkDexCircuit {
 
             let (
                 final_hasher_result,
-                final_root,
+                y_final_root,
                 voucher_nominal,
                 token_type,
                 salted_x_start,
@@ -759,7 +759,7 @@ impl Circuit<Fr> for DarkDexCircuit {
                 // ==================== Y-SIDE (Poseidon family) ==================
                 // Opaque byte-cell witnesses for y_block_id, y_envelope_hash,
                 // y_tracked_ext_out_messages_root → block_leaf_Y → depth-8
-                // Poseidon dense-Merkle → chain → final_root. Expose salted_Y_end.
+                // Poseidon dense-Merkle → chain → y_final_root. Expose salted_Y_end.
                 // ================================================================
 
                 let y_block_id_bytes: [AssignedValue<Fr>; 32] = self
@@ -814,7 +814,7 @@ impl Circuit<Fr> for DarkDexCircuit {
                 let max_minus_na = gate.sub(ctx, max_chain_const, num_active);
                 range.range_check(ctx, max_minus_na, 4);
 
-                let final_root = verify_chain_of_dense_proofs(
+                let y_final_root = verify_chain_of_dense_proofs(
                     ctx, &range, &hasher, y_history_window_root, &self.y_dense_chain, num_active,
                 );
 
@@ -857,7 +857,7 @@ impl Circuit<Fr> for DarkDexCircuit {
 
                 (
                     final_hasher_result,
-                    final_root,
+                    y_final_root,
                     voucher_nominal,
                     token_type,
                     salted_x_start,
@@ -876,7 +876,7 @@ impl Circuit<Fr> for DarkDexCircuit {
                 ctx.load_witness(self.ephemeral_pubkey)
             };
             builder.assigned_instances[0].push(final_hasher_result);
-            builder.assigned_instances[0].push(final_root);
+            builder.assigned_instances[0].push(y_final_root);
             builder.assigned_instances[0].push(voucher_nominal);
             builder.assigned_instances[0].push(token_type);
             builder.assigned_instances[0].push(eph);
@@ -991,7 +991,7 @@ mod tests {
     #[cfg(test)]
     fn make_v2_instances(
         v: &VoucherFields,
-        final_root_fr: Fr,
+        y_final_root_fr: Fr,
         ephemeral_pubkey: Fr,
         tw: &TwoLevelWitnesses,
     ) -> Vec<Fr> {
@@ -1000,7 +1000,7 @@ mod tests {
         let salted = compute_salted_block_id_native(salt, &tw.block_id);
         vec![
             v.expected_poseidon_hash,
-            final_root_fr,
+            y_final_root_fr,
             v.voucher_nominal_val,
             v.token_type_val,
             ephemeral_pubkey,
@@ -1039,8 +1039,8 @@ mod tests {
             println!("Events proof depth: {}", tw.events_siblings.len());
             println!("Block proof depth: {}", tw.block_siblings.len());
 
-            let (dense_chain, final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, 1, 130);
-            let final_root_fr = bytes_to_fr(&final_root_bytes);
+            let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, 1, 130);
+            let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
 
             let ephemeral_pubkey = Fr::from(0xDEADu64);
             let circuit = make_v2_circuit(
@@ -1053,7 +1053,7 @@ mod tests {
                 params.clone(),
             );
 
-            let instances = make_v2_instances(v, final_root_fr, ephemeral_pubkey, &tw);
+            let instances = make_v2_instances(v, y_final_root_fr, ephemeral_pubkey, &tw);
 
             println!("Running MockProver...");
             let prover = MockProver::<Fr>::run(K, &circuit, vec![instances])
@@ -1085,8 +1085,8 @@ mod tests {
         for t in 0..=MAX_CHAIN_LEN {
             println!("\n========== Chain T={} ==========", t);
 
-            let (dense_chain, final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, t, 130);
-            let final_root_fr = bytes_to_fr(&final_root_bytes);
+            let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, t, 130);
+            let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
 
             let ephemeral_pubkey = Fr::from(0xDEADu64);
             let circuit = make_v2_circuit(
@@ -1099,7 +1099,7 @@ mod tests {
                 params.clone(),
             );
 
-            let instances = make_v2_instances(&v, final_root_fr, ephemeral_pubkey, &tw);
+            let instances = make_v2_instances(&v, y_final_root_fr, ephemeral_pubkey, &tw);
 
             println!("Running MockProver for T={}...", t);
             let prover = MockProver::<Fr>::run(K, &circuit, vec![instances])
@@ -1170,8 +1170,8 @@ mod tests {
         for &chain_len in &chain_lengths {
             println!("\n========== Real proof: chain_len={} ==========", chain_len);
 
-            let (dense_chain, final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, chain_len, 130);
-            let final_root_fr = bytes_to_fr(&final_root_bytes);
+            let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, chain_len, 130);
+            let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
 
             let prover_circuit = make_v2_prover_circuit(
                 v.sk_u,
@@ -1185,7 +1185,7 @@ mod tests {
             );
 
             let start = Instant::now();
-            let instance_fr = make_v2_instances(&v, final_root_fr, ephemeral_pubkey, &tw);
+            let instance_fr = make_v2_instances(&v, y_final_root_fr, ephemeral_pubkey, &tw);
             let proof_bytes =
                 gen_proof_with_instances(&srs, &pk, prover_circuit, &[&instance_fr]);
             let prove_ms = start.elapsed().as_millis();
@@ -1306,9 +1306,9 @@ mod tests {
         let break_points = keygen_circuit.base_circuit_builder.borrow().break_points();
 
         for chain_len in [0usize, 1, 2] {
-            let (dense_chain, final_root_bytes) =
+            let (dense_chain, y_final_root_bytes) =
                 build_dense_chain(tw.blocks_root_level_0, chain_len, 130);
-            let final_root_fr = bytes_to_fr(&final_root_bytes);
+            let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
 
             let prover_circuit = make_v2_prover_circuit(
                 v.sk_u,
@@ -1321,7 +1321,7 @@ mod tests {
                 break_points.clone(),
             );
 
-            let instance_fr = make_v2_instances(&v, final_root_fr, ephemeral_pubkey, &tw);
+            let instance_fr = make_v2_instances(&v, y_final_root_fr, ephemeral_pubkey, &tw);
             // §7.3 V2: 8 Fr publics.
             assert_eq!(instance_fr.len(), 8);
 
@@ -1381,8 +1381,8 @@ mod tests {
 
         let tw = build_two_level_tree(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
 
-        let (dense_chain, final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, 1, 130);
-        let final_root_fr = bytes_to_fr(&final_root_bytes);
+        let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, 1, 130);
+        let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
         let ephemeral_pubkey = Fr::from(0xDEADu64);
 
         // ── Step 1: Measure cell counts using K=19 (known-good params) ──
@@ -1500,7 +1500,7 @@ mod tests {
             );
 
             let start = Instant::now();
-            let instance_fr = make_v2_instances(&v, final_root_fr, ephemeral_pubkey, &tw);
+            let instance_fr = make_v2_instances(&v, y_final_root_fr, ephemeral_pubkey, &tw);
             let proof_bytes =
                 gen_proof_with_instances(&srs, &pk, prover_circuit, &[&instance_fr]);
             let prove_ms = start.elapsed().as_millis();
@@ -1576,8 +1576,8 @@ mod tests {
             println!("Events proof depth: {}", tw.events_siblings.len());
             println!("Block proof depth: {}", tw.block_siblings.len());
 
-            let (dense_chain, final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, 1, 130);
-            let final_root_fr = bytes_to_fr(&final_root_bytes);
+            let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, 1, 130);
+            let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
 
             let ephemeral_pubkey = Fr::from(0xDEADu64);
             let circuit = make_v2_circuit(
@@ -1590,7 +1590,7 @@ mod tests {
                 params.clone(),
             );
 
-            let instances = make_v2_instances(&v, final_root_fr, ephemeral_pubkey, &tw);
+            let instances = make_v2_instances(&v, y_final_root_fr, ephemeral_pubkey, &tw);
 
             println!("Running MockProver...");
             let prover = MockProver::<Fr>::run(K, &circuit, vec![instances])
@@ -1659,8 +1659,8 @@ mod tests {
             "cross-thread witness must have distinct X/Y block_ids"
         );
 
-        let (dense_chain, final_root_bytes) = build_dense_chain(ctw.y_blocks_root_level_0, 1, 130);
-        let final_root_fr = bytes_to_fr(&final_root_bytes);
+        let (dense_chain, y_final_root_bytes) = build_dense_chain(ctw.y_blocks_root_level_0, 1, 130);
+        let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
 
         let params = base_circuit_params();
         let ephemeral_pubkey = Fr::from(0xBEEFu64);
@@ -1684,7 +1684,7 @@ mod tests {
         assert_ne!(salted_x_start, salted_y_end);
         let instances = vec![
             v.expected_poseidon_hash,
-            final_root_fr,
+            y_final_root_fr,
             v.voucher_nominal_val,
             v.token_type_val,
             ephemeral_pubkey,
@@ -1721,8 +1721,8 @@ mod tests {
         // must fail.
         tw.v2_x_block_id_h07_sibling[0] ^= 0x01;
 
-        let (dense_chain, final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, 1, 130);
-        let final_root_fr = bytes_to_fr(&final_root_bytes);
+        let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, 1, 130);
+        let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
 
         let params = base_circuit_params();
         let ephemeral_pubkey = Fr::from(0xDEADu64);
@@ -1736,7 +1736,7 @@ mod tests {
             params,
         );
 
-        let instances = make_v2_instances(&v, final_root_fr, ephemeral_pubkey, &tw);
+        let instances = make_v2_instances(&v, y_final_root_fr, ephemeral_pubkey, &tw);
         let prover = MockProver::<Fr>::run(K, &circuit, vec![instances]).unwrap();
         assert!(
             prover.verify().is_err(),
@@ -1754,8 +1754,8 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(22);
         let tw = build_two_level_tree(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
 
-        let (dense_chain, final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, 1, 130);
-        let final_root_fr = bytes_to_fr(&final_root_bytes);
+        let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, 1, 130);
+        let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
 
         let params = base_circuit_params();
         // Prover witnesses one pubkey…
@@ -1771,7 +1771,7 @@ mod tests {
         );
 
         // …but the public instance claims a DIFFERENT pubkey.
-        let mut instances = make_v2_instances(&v, final_root_fr, prover_eph, &tw);
+        let mut instances = make_v2_instances(&v, y_final_root_fr, prover_eph, &tw);
         instances[4] = Fr::from(0xBEEFu64); // ephemeral_pubkey slot
 
         let prover = MockProver::<Fr>::run(K, &circuit, vec![instances]).unwrap();
@@ -1791,8 +1791,8 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(33);
         let tw = build_two_level_tree(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
 
-        let (dense_chain, final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, 1, 130);
-        let final_root_fr = bytes_to_fr(&final_root_bytes);
+        let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, 1, 130);
+        let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
 
         let params = base_circuit_params();
         let ephemeral_pubkey = Fr::from(0xDEADu64);
@@ -1807,7 +1807,7 @@ mod tests {
         );
 
         // Corrupt the salted_X_start public (index 5).
-        let mut instances = make_v2_instances(&v, final_root_fr, ephemeral_pubkey, &tw);
+        let mut instances = make_v2_instances(&v, y_final_root_fr, ephemeral_pubkey, &tw);
         instances[5] = instances[5] + Fr::from(1u64);
 
         let prover = MockProver::<Fr>::run(K, &circuit, vec![instances]).unwrap();
