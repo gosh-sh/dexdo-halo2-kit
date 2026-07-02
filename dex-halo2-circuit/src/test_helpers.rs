@@ -7,8 +7,9 @@ use crate::multi_hop_witness::{
 use crate::salt::{
     compute_salt_commitment_native, compute_salt_native, compute_salted_block_id_native,
 };
-// `dense_balanced_tree` is a dev-dependency; only the `build_dense_chain` /
-// `build_two_level_tree` helpers (both `#[cfg(test)]`-gated below) consume it.
+// `dense_balanced_tree` is a dev-dependency; only the `build_dense_chain`
+// and `build_dex_final_witness_*` helpers (all `#[cfg(test)]`-gated below)
+// consume it.
 #[cfg(test)]
 use dense_balanced_tree::{
     dense_merkle_proof, dense_merkle_root, PoseidonHasher as DensePoseidonHasher,
@@ -111,69 +112,95 @@ pub fn build_dense_chain(
     (chain, final_root_bytes)
 }
 
-/// Synthetic witnesses for the two-level Poseidon tree structure and the
-/// depth-4 SHA block_id opening consumed by
-/// [`crate::dark_dex_circuit::DarkDexCircuit`].
-pub struct TwoLevelWitnesses {
-    pub account_dapp_id: [u8; 32],
-    pub account_id: [u8; 32],
-    pub block_id: [u8; 32],
-    pub envelope_hash_bytes: [u8; 32],
-    pub events_siblings: Vec<[u8; 32]>,
-    pub events_pos: usize,
-    pub block_siblings: Vec<[u8; 32]>,
-    pub block_pos: usize,
-    /// The history window root (block tree root), used as initial leaf for the chain.
-    pub blocks_root_level_0: [u8; 32],
-    /// Spec §7.7 depth-4 block_id tree: the opaque left-half aggregate
-    /// sibling covering leaves 0..=7. Random per-witness; validated only via
-    /// SHA depth-4 opening against `x_block_id`.
-    pub x_block_id_h07_sibling: [u8; 32],
-    /// The leaf-8 (`l8_tracked_ext_out_messages_root`) value. In the
-    /// t=0 uniform case this equals the events-tree root (`ext_out_root`).
+/// Synthetic witness bundle for a full `DexFinalProof`, matching the
+/// spec §7.7 X/Y split.
+///
+/// **X-side** = the *event block*, in some thread `t`; the DEX circuit binds
+/// the voucher to `x_block_id` by re-hashing the event BOC, opening the
+/// ext-out messages tree to `x_l8` (= `X.tracked_ext_out_messages_root`),
+/// and running a depth-4 SHA block-id-tree opening from L8 up to
+/// `x_block_id` under the aggregate left sibling `x_block_id_h07_sibling`.
+///
+/// **Y-side** = the *anchor block* in thread 0; the DEX circuit computes
+/// `block_leaf(Y) = Poseidon96(y_block_id ‖ y_envelope_hash ‖ y_tracked_ext_out_root)`
+/// and opens it against `y_blocks_root_level_0` (the `#L1(M_Y)` layer-1
+/// batch root) via the depth-8 Poseidon path `y_block_siblings`.
+///
+/// **Uniformity (t=0).** X and Y collapse onto the same physical block. The
+/// uniform builder sets `y_block_id == x_block_id` and
+/// `y_tracked_ext_out_root == x_l8` (== events-tree root); the circuit's
+/// per-side gates then hold trivially and `salted_X_start == salted_Y_end`.
+/// The cross-thread builder leaves them independent (spec §3, §7.7).
+pub struct DexFinalWitness {
+    // -------- X-side (event block; thread t) --------
+    /// dApp ID component of the voucher publisher's account address (X-side).
+    pub x_account_dapp_id: [u8; 32],
+    /// Account ID component of the voucher publisher's address (X-side).
+    pub x_account_id: [u8; 32],
+    /// Poseidon dense-Merkle siblings opening `ext_msg_leaf` up to `x_l8`.
+    pub x_ext_out_siblings: Vec<[u8; 32]>,
+    /// Leaf position of `ext_msg_leaf` inside the ext-out messages tree.
+    pub x_ext_out_pos: usize,
+    /// `X.tracked_ext_out_messages_root` — leaf-8 of X's block-id tree.
     pub x_l8: [u8; 32],
-    /// The depth-4 SHA root binding `x_l8` under `x_block_id_h07_sibling`.
-    /// This is the value the circuit uses as `x_block_id` on the X side.
+    /// Spec §7.7 depth-4 block_id tree: opaque left-half aggregate sibling
+    /// covering leaves 0..=7. Validated only via the SHA depth-4 opening
+    /// against `x_block_id`.
+    pub x_block_id_h07_sibling: [u8; 32],
+    /// `X.block_id` — depth-4 SHA root binding `x_l8` under `x_block_id_h07_sibling`.
     pub x_block_id: [u8; 32],
+
+    // -------- Y-side (anchor block; thread 0) --------
+    /// `Y.block_id`. Equals `x_block_id` when t=0.
+    pub y_block_id: [u8; 32],
+    /// `Y.envelope_hash` — unconstrained content witness (spec §4, §7.7).
+    pub y_envelope_hash: [u8; 32],
+    /// `Y.tracked_ext_out_messages_root` — unconstrained content witness;
+    /// equals `x_l8` when t=0.
+    pub y_tracked_ext_out_root: [u8; 32],
+    /// Poseidon dense-Merkle siblings opening `block_leaf(Y)` up to `#L1(M_Y)`.
+    pub y_block_siblings: Vec<[u8; 32]>,
+    /// Leaf position of `block_leaf(Y)` inside `#L1(M_Y)`.
+    pub y_block_pos: usize,
+    /// `#L1(M_Y)` — the layer-1 batch root that anchors `block_leaf(Y)`.
+    /// Consumed as the initial leaf of the dense-chain gadget which climbs
+    /// to `finalLayerHistoricalHashRoot`.
+    pub y_blocks_root_level_0: [u8; 32],
 }
 
-/// Build the two-level tree: ext_msg_leaf → events tree → block_leaf → block tree.
+/// Build a `DexFinalWitness` for the **uniform t=0** case (`X == Y`).
+///
+/// The X and Y sides collapse onto the same block: `y_block_id == x_block_id`,
+/// `y_tracked_ext_out_root == x_l8 == events_root`, and the Y-side
+/// `block_leaf` is derived from the same values that already bind the X-side
+/// event proof.
 #[cfg(test)]
-pub fn build_two_level_tree(
+pub fn build_dex_final_witness_uniform(
     repr_hash: &[u8; 32],
     rng: &mut impl Rng,
     dense_hasher: &DensePoseidonHasher,
     num_events_leaves: usize,
     num_block_leaves: usize,
-) -> TwoLevelWitnesses {
+) -> DexFinalWitness {
     use crate::poseidon_dex_helper::poseidon_hash_96_native;
 
-    let mut dapp_id = [0u8; 32];
-    let mut account_id_b = [0u8; 32];
-    let mut envelope_hash = [0u8; 32];
-    rng.fill(&mut dapp_id);
-    rng.fill(&mut account_id_b);
-    rng.fill(&mut envelope_hash);
+    // -------- X-side account + event tree --------
+    let mut x_account_dapp_id = [0u8; 32];
+    let mut x_account_id = [0u8; 32];
+    rng.fill(&mut x_account_dapp_id);
+    rng.fill(&mut x_account_id);
 
-    // Inner: ext_message_leaf = Poseidon(dapp_id || account_id || repr_hash)
-    let ext_msg_leaf = poseidon_hash_96_native(&dapp_id, &account_id_b, repr_hash);
-
-    // Events tree with ext_msg_leaf at position 0.
+    let ext_msg_leaf =
+        poseidon_hash_96_native(&x_account_dapp_id, &x_account_id, repr_hash);
     let mut events_leaves = vec![[0u8; 32]; num_events_leaves];
     events_leaves[0] = ext_msg_leaf;
     for i in 1..num_events_leaves {
         rng.fill(&mut events_leaves[i]);
     }
     let events_root = dense_merkle_root(dense_hasher, &events_leaves);
-    let events_siblings = dense_merkle_proof(dense_hasher, &events_leaves, 0);
+    let x_ext_out_siblings = dense_merkle_proof(dense_hasher, &events_leaves, 0);
 
-    // Spec §7.7 depth-4 SHA block_id opening.
-    // For the t=0 (uniform / X==Y) case the X-side leaf-8 equals the events
-    // root (which the outer block leaf also uses as its ext_out_messages_root
-    // component). Bind it under a random `h07` left-sibling to derive
-    // `x_block_id` — this is THE block_id used both by the circuit's X-side
-    // depth-4 SHA opening and by the Y-side block-leaf Poseidon input in the
-    // uniform t=0 case.
+    // -------- X-side depth-4 SHA block_id opening (spec §7.7) --------
     let mut x_block_id_h07_sibling = [0u8; 32];
     rng.fill(&mut x_block_id_h07_sibling);
     let x_l8 = events_root;
@@ -182,137 +209,114 @@ pub fn build_two_level_tree(
         &x_block_id_h07_sibling,
     );
 
-    // t=0 uniform case: the outer block_leaf uses `x_block_id` (the SHA-tree
-    // root) as its `block_id` component, so that the circuit's X-side and
-    // Y-side see the same block_id.
-    let block_id = x_block_id;
+    // -------- Y-side under t=0 collapse: X == Y --------
+    // Y.envelope_hash remains an unconstrained content witness.
+    let mut y_envelope_hash = [0u8; 32];
+    rng.fill(&mut y_envelope_hash);
+    let y_block_id = x_block_id;
+    let y_tracked_ext_out_root = x_l8;
 
-    // Outer: block_leaf = Poseidon(block_id || envelope_hash || ext_out_messages_root)
-    let block_leaf = poseidon_hash_96_native(&block_id, &envelope_hash, &events_root);
-
-    // Block tree with block_leaf at position 0.
-    let mut block_leaves = vec![[0u8; 32]; num_block_leaves];
-    block_leaves[0] = block_leaf;
-    for i in 1..num_block_leaves {
-        rng.fill(&mut block_leaves[i]);
-    }
-    let blocks_root = dense_merkle_root(dense_hasher, &block_leaves);
-    let block_siblings = dense_merkle_proof(dense_hasher, &block_leaves, 0);
-
-    TwoLevelWitnesses {
-        account_dapp_id: dapp_id,
-        account_id: account_id_b,
-        block_id,
-        envelope_hash_bytes: envelope_hash,
-        events_siblings,
-        events_pos: 0,
-        block_siblings,
-        block_pos: 0,
-        blocks_root_level_0: blocks_root,
-        x_block_id_h07_sibling,
-        x_l8,
-        x_block_id,
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Cross-thread witness helper
-// ---------------------------------------------------------------------------
-
-/// "Cross-thread" (X ≠ Y) test bundle. Two disjoint two-level trees:
-/// one anchors the X-side ext-out proof (whose leaf-8 is opened into
-/// `x_block_id` via the depth-4 SHA tree), the other anchors the Y-side
-/// block tree + dense chain.
-///
-/// The Y side purposefully leaves `ext_out_messages_root`, `envelope_hash`
-/// and `block_id` as unconstrained content witnesses — the Y-side circuit
-/// treats them as opaque byte blobs (the multi-hop stream anchors them
-/// upstream, see spec §7.7).
-#[cfg(test)]
-pub struct CrossThreadWitness {
-    // X-side
-    pub x_account_dapp_id: [u8; 32],
-    pub x_account_id: [u8; 32],
-    pub x_ext_out_siblings: Vec<[u8; 32]>,
-    pub x_ext_out_pos: usize,
-    pub x_l8: [u8; 32],
-    pub x_block_id_h07_sibling: [u8; 32],
-    pub x_block_id: [u8; 32],
-    // Y-side
-    pub y_block_id: [u8; 32],
-    pub y_envelope_hash: [u8; 32],
-    pub y_tracked_ext_out_root: [u8; 32],
-    pub y_block_siblings: Vec<[u8; 32]>,
-    pub y_block_pos: usize,
-    pub y_blocks_root_level_0: [u8; 32],
-}
-
-/// Build a cross-thread (X≠Y) witness pair. The X and Y sides use the
-/// same event `repr_hash` (the voucher's) so that the on-circuit X-side
-/// still opens against the voucher; the Y-side is independent.
-#[cfg(test)]
-pub fn build_cross_thread_witness(
-    repr_hash: &[u8; 32],
-    rng: &mut impl Rng,
-    dense_hasher: &DensePoseidonHasher,
-    num_events_leaves: usize,
-    num_block_leaves: usize,
-) -> CrossThreadWitness {
-    use crate::poseidon_dex_helper::poseidon_hash_96_native;
-
-    // -------- X side --------
-    let mut x_dapp_id = [0u8; 32];
-    let mut x_account_id = [0u8; 32];
-    rng.fill(&mut x_dapp_id);
-    rng.fill(&mut x_account_id);
-
-    let x_ext_msg_leaf = poseidon_hash_96_native(&x_dapp_id, &x_account_id, repr_hash);
-    let mut x_events_leaves = vec![[0u8; 32]; num_events_leaves];
-    x_events_leaves[0] = x_ext_msg_leaf;
-    for i in 1..num_events_leaves {
-        rng.fill(&mut x_events_leaves[i]);
-    }
-    let x_events_root = dense_merkle_root(dense_hasher, &x_events_leaves);
-    let x_events_siblings = dense_merkle_proof(dense_hasher, &x_events_leaves, 0);
-
-    let mut x_h07 = [0u8; 32];
-    rng.fill(&mut x_h07);
-    let x_block_id = crate::block_id_tree::compute_block_id_from_l8_native(
-        &x_events_root,
-        &x_h07,
-    );
-
-    // -------- Y side --------
-    let mut y_block_id = [0u8; 32];
-    let mut y_env = [0u8; 32];
-    let mut y_ext_out_root = [0u8; 32];
-    rng.fill(&mut y_block_id);
-    rng.fill(&mut y_env);
-    rng.fill(&mut y_ext_out_root);
-
-    let y_block_leaf = poseidon_hash_96_native(&y_block_id, &y_env, &y_ext_out_root);
+    // block_leaf(Y) = Poseidon96(y_block_id ‖ y_envelope_hash ‖ y_tracked_ext_out_root)
+    let y_block_leaf =
+        poseidon_hash_96_native(&y_block_id, &y_envelope_hash, &y_tracked_ext_out_root);
     let mut y_block_leaves = vec![[0u8; 32]; num_block_leaves];
     y_block_leaves[0] = y_block_leaf;
     for i in 1..num_block_leaves {
         rng.fill(&mut y_block_leaves[i]);
     }
-    let y_blocks_root = dense_merkle_root(dense_hasher, &y_block_leaves);
+    let y_blocks_root_level_0 = dense_merkle_root(dense_hasher, &y_block_leaves);
     let y_block_siblings = dense_merkle_proof(dense_hasher, &y_block_leaves, 0);
 
-    CrossThreadWitness {
-        x_account_dapp_id: x_dapp_id,
+    DexFinalWitness {
+        x_account_dapp_id,
         x_account_id,
-        x_ext_out_siblings: x_events_siblings,
+        x_ext_out_siblings,
         x_ext_out_pos: 0,
-        x_l8: x_events_root,
-        x_block_id_h07_sibling: x_h07,
+        x_l8,
+        x_block_id_h07_sibling,
         x_block_id,
         y_block_id,
-        y_envelope_hash: y_env,
-        y_tracked_ext_out_root: y_ext_out_root,
+        y_envelope_hash,
+        y_tracked_ext_out_root,
         y_block_siblings,
         y_block_pos: 0,
-        y_blocks_root_level_0: y_blocks_root,
+        y_blocks_root_level_0,
+    }
+}
+
+/// Build a `DexFinalWitness` for the **cross-thread t≠0** case (`X ≠ Y`).
+///
+/// X and Y anchor two disjoint two-level trees. The X-side ext-out proof
+/// still opens against the voucher `repr_hash` (so the on-circuit event
+/// binding continues to hold). The Y-side `block_id`, `envelope_hash` and
+/// `tracked_ext_out_messages_root` are drawn independently — per spec §4
+/// they are unconstrained content witnesses.
+#[cfg(test)]
+pub fn build_dex_final_witness_cross_thread(
+    repr_hash: &[u8; 32],
+    rng: &mut impl Rng,
+    dense_hasher: &DensePoseidonHasher,
+    num_events_leaves: usize,
+    num_block_leaves: usize,
+) -> DexFinalWitness {
+    use crate::poseidon_dex_helper::poseidon_hash_96_native;
+
+    // -------- X-side --------
+    let mut x_account_dapp_id = [0u8; 32];
+    let mut x_account_id = [0u8; 32];
+    rng.fill(&mut x_account_dapp_id);
+    rng.fill(&mut x_account_id);
+
+    let ext_msg_leaf =
+        poseidon_hash_96_native(&x_account_dapp_id, &x_account_id, repr_hash);
+    let mut x_events_leaves = vec![[0u8; 32]; num_events_leaves];
+    x_events_leaves[0] = ext_msg_leaf;
+    for i in 1..num_events_leaves {
+        rng.fill(&mut x_events_leaves[i]);
+    }
+    let x_events_root = dense_merkle_root(dense_hasher, &x_events_leaves);
+    let x_ext_out_siblings = dense_merkle_proof(dense_hasher, &x_events_leaves, 0);
+
+    let mut x_block_id_h07_sibling = [0u8; 32];
+    rng.fill(&mut x_block_id_h07_sibling);
+    let x_l8 = x_events_root;
+    let x_block_id = crate::block_id_tree::compute_block_id_from_l8_native(
+        &x_l8,
+        &x_block_id_h07_sibling,
+    );
+
+    // -------- Y-side (independent of X) --------
+    let mut y_block_id = [0u8; 32];
+    let mut y_envelope_hash = [0u8; 32];
+    let mut y_tracked_ext_out_root = [0u8; 32];
+    rng.fill(&mut y_block_id);
+    rng.fill(&mut y_envelope_hash);
+    rng.fill(&mut y_tracked_ext_out_root);
+
+    let y_block_leaf =
+        poseidon_hash_96_native(&y_block_id, &y_envelope_hash, &y_tracked_ext_out_root);
+    let mut y_block_leaves = vec![[0u8; 32]; num_block_leaves];
+    y_block_leaves[0] = y_block_leaf;
+    for i in 1..num_block_leaves {
+        rng.fill(&mut y_block_leaves[i]);
+    }
+    let y_blocks_root_level_0 = dense_merkle_root(dense_hasher, &y_block_leaves);
+    let y_block_siblings = dense_merkle_proof(dense_hasher, &y_block_leaves, 0);
+
+    DexFinalWitness {
+        x_account_dapp_id,
+        x_account_id,
+        x_ext_out_siblings,
+        x_ext_out_pos: 0,
+        x_l8,
+        x_block_id_h07_sibling,
+        x_block_id,
+        y_block_id,
+        y_envelope_hash,
+        y_tracked_ext_out_root,
+        y_block_siblings,
+        y_block_pos: 0,
+        y_blocks_root_level_0,
     }
 }
 

@@ -925,21 +925,16 @@ mod tests {
 
     // -------------------------------------------------------------------
     // Test helpers: build a `DarkDexCircuit` (spec §7.7) from a
-    // `TwoLevelWitnesses` under the uniform t=0 (X==Y) assumption.
-    // In the uniform case:
-    //   * X-side and Y-side block_id agree (== `tw.block_id` == x_block_id).
-    //   * y_tracked_ext_out_messages_root == x_l8 (== events tree root).
-    //   * salted_X_start == salted_Y_end (both use the same block_id under
-    //     the same salt).
-    // Cross-thread tests use `build_cross_thread_witness` directly and do
-    // NOT go through these helpers.
+    // `DexFinalWitness`. Works uniformly for the t=0 case (X == Y, produced
+    // by `build_dex_final_witness_uniform`) and the cross-thread t ≠ 0 case
+    // (X ≠ Y, produced by `build_dex_final_witness_cross_thread`).
     // -------------------------------------------------------------------
     #[cfg(test)]
     fn make_circuit(
         sk_u: Fr,
         ephemeral_pubkey: Fr,
         entries: [BocFlattenData; 2],
-        tw: &TwoLevelWitnesses,
+        tw: &DexFinalWitness,
         dense_chain: Vec<DenseChainLink>,
         chain_len: usize,
         params: BaseCircuitParams,
@@ -948,17 +943,17 @@ mod tests {
             sk_u,
             ephemeral_pubkey,
             entries,
-            tw.account_dapp_id,
-            tw.account_id,
-            tw.events_siblings.clone(),
-            tw.events_pos,
-            tw.block_id,
+            tw.x_account_dapp_id,
+            tw.x_account_id,
+            tw.x_ext_out_siblings.clone(),
+            tw.x_ext_out_pos,
+            tw.x_block_id,
             tw.x_block_id_h07_sibling,
-            tw.block_id,
-            tw.envelope_hash_bytes,
-            tw.x_l8,
-            tw.block_siblings.clone(),
-            tw.block_pos,
+            tw.y_block_id,
+            tw.y_envelope_hash,
+            tw.y_tracked_ext_out_root,
+            tw.y_block_siblings.clone(),
+            tw.y_block_pos,
             dense_chain,
             chain_len,
             params,
@@ -970,7 +965,7 @@ mod tests {
         sk_u: Fr,
         ephemeral_pubkey: Fr,
         entries: [BocFlattenData; 2],
-        tw: &TwoLevelWitnesses,
+        tw: &DexFinalWitness,
         dense_chain: Vec<DenseChainLink>,
         chain_len: usize,
         params: BaseCircuitParams,
@@ -980,17 +975,17 @@ mod tests {
             sk_u,
             ephemeral_pubkey,
             entries,
-            tw.account_dapp_id,
-            tw.account_id,
-            tw.events_siblings.clone(),
-            tw.events_pos,
-            tw.block_id,
+            tw.x_account_dapp_id,
+            tw.x_account_id,
+            tw.x_ext_out_siblings.clone(),
+            tw.x_ext_out_pos,
+            tw.x_block_id,
             tw.x_block_id_h07_sibling,
-            tw.block_id,
-            tw.envelope_hash_bytes,
-            tw.x_l8,
-            tw.block_siblings.clone(),
-            tw.block_pos,
+            tw.y_block_id,
+            tw.y_envelope_hash,
+            tw.y_tracked_ext_out_root,
+            tw.y_block_siblings.clone(),
+            tw.y_block_pos,
             dense_chain,
             chain_len,
             params,
@@ -998,32 +993,36 @@ mod tests {
         )
     }
 
-    /// Build the 12-instance §7.3 publics vector for a uniform-t=0
-    /// DexFinalProof: `[depositIdentifierHash, finalLayerHistoricalHashRoot,
+    /// Build the 12-instance §7.3 publics vector for a DexFinalProof:
+    /// `[depositIdentifierHash, finalLayerHistoricalHashRoot,
     /// voucherNominalFr, tokenTypeFr, ephemeralPubkey, salted_X_start,
     /// salted_Y_end, salt_commitment, x_account_dapp_id_lo,
-    /// x_account_dapp_id_hi, x_account_id_lo, x_account_id_hi]`. In the
-    /// uniform case `salted_X_start == salted_Y_end`.
+    /// x_account_dapp_id_hi, x_account_id_lo, x_account_id_hi]`.
+    ///
+    /// Works for both the uniform t=0 case (`x_block_id == y_block_id`, so
+    /// `salted_X_start == salted_Y_end`) and the cross-thread case
+    /// (`x_block_id ≠ y_block_id`).
     #[cfg(test)]
     fn make_instances(
         v: &VoucherFields,
         y_final_root_fr: Fr,
         ephemeral_pubkey: Fr,
-        tw: &TwoLevelWitnesses,
+        tw: &DexFinalWitness,
     ) -> Vec<Fr> {
         let salt = compute_salt_native(v.sk_u);
         let salt_commitment = compute_salt_commitment_native(salt);
-        let salted = compute_salted_block_id_native(salt, &tw.block_id);
-        let (dapp_lo, dapp_hi) = pack_lo_hi_le(&tw.account_dapp_id);
-        let (acct_lo, acct_hi) = pack_lo_hi_le(&tw.account_id);
+        let salted_x_start = compute_salted_block_id_native(salt, &tw.x_block_id);
+        let salted_y_end = compute_salted_block_id_native(salt, &tw.y_block_id);
+        let (dapp_lo, dapp_hi) = pack_lo_hi_le(&tw.x_account_dapp_id);
+        let (acct_lo, acct_hi) = pack_lo_hi_le(&tw.x_account_id);
         vec![
             v.expected_poseidon_hash,
             y_final_root_fr,
             v.voucher_nominal_val,
             v.token_type_val,
             ephemeral_pubkey,
-            salted, // salted_X_start
-            salted, // salted_Y_end (== salted_X_start under t=0)
+            salted_x_start,
+            salted_y_end,
             salt_commitment,
             dapp_lo,
             dapp_hi,
@@ -1069,11 +1068,11 @@ mod tests {
         for (idx, v) in all_vouchers.iter().enumerate() {
             println!("\n========== Voucher {} ==========", idx);
 
-            let tw = build_two_level_tree(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
-            println!("Events proof depth: {}", tw.events_siblings.len());
-            println!("Block proof depth: {}", tw.block_siblings.len());
+            let tw = build_dex_final_witness_uniform(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
+            println!("Events proof depth: {}", tw.x_ext_out_siblings.len());
+            println!("Block proof depth: {}", tw.y_block_siblings.len());
 
-            let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, 1, 130);
+            let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.y_blocks_root_level_0, 1, 130);
             let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
 
             let ephemeral_pubkey = Fr::from(0xDEADu64);
@@ -1112,14 +1111,14 @@ mod tests {
         let dense_hasher = DensePoseidonHasher::new();
         let mut rng = StdRng::seed_from_u64(77);
 
-        let tw = build_two_level_tree(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
+        let tw = build_dex_final_witness_uniform(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
 
         let params = base_circuit_params();
 
         for t in 0..=MAX_CHAIN_LEN {
             println!("\n========== Chain T={} ==========", t);
 
-            let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, t, 130);
+            let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.y_blocks_root_level_0, t, 130);
             let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
 
             let ephemeral_pubkey = Fr::from(0xDEADu64);
@@ -1159,7 +1158,7 @@ mod tests {
         let dense_hasher = DensePoseidonHasher::new();
         let mut rng = StdRng::seed_from_u64(99);
 
-        let tw = build_two_level_tree(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
+        let tw = build_dex_final_witness_uniform(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
 
         let params = base_circuit_params();
 
@@ -1168,7 +1167,7 @@ mod tests {
 
         // Keygen once with T=1 (circuit shape is the same for all chain lengths
         // since verify_chain_of_dense_proofs always processes MAX_CHAIN_LEN links).
-        let (keygen_chain, _) = build_dense_chain(tw.blocks_root_level_0, 1, 130);
+        let (keygen_chain, _) = build_dense_chain(tw.y_blocks_root_level_0, 1, 130);
         let ephemeral_pubkey = Fr::from(0xDEADu64);
         let keygen_circuit = make_circuit(
             v.sk_u,
@@ -1204,7 +1203,7 @@ mod tests {
         for &chain_len in &chain_lengths {
             println!("\n========== Real proof: chain_len={} ==========", chain_len);
 
-            let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, chain_len, 130);
+            let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.y_blocks_root_level_0, chain_len, 130);
             let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
 
             let prover_circuit = make_prover_circuit(
@@ -1299,7 +1298,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(99);
 
         // W=128 layout: 128 events leaves (depth 7) + 130 block leaves (depth 8).
-        let tw = build_two_level_tree(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
+        let tw = build_dex_final_witness_uniform(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
 
         let params = base_circuit_params();
         let ephemeral_pubkey = Fr::from(0xDEADu64);
@@ -1310,7 +1309,7 @@ mod tests {
 
         // Keygen against a 1-step chain circuit; circuit shape is the same for all chain
         // lengths since verify_chain_of_dense_proofs always processes MAX_CHAIN_LEN links.
-        let (keygen_chain, _) = build_dense_chain(tw.blocks_root_level_0, 1, 130);
+        let (keygen_chain, _) = build_dense_chain(tw.y_blocks_root_level_0, 1, 130);
         let keygen_circuit = make_circuit(
             v.sk_u,
             ephemeral_pubkey,
@@ -1341,7 +1340,7 @@ mod tests {
 
         for chain_len in [0usize, 1, 2] {
             let (dense_chain, y_final_root_bytes) =
-                build_dense_chain(tw.blocks_root_level_0, chain_len, 130);
+                build_dense_chain(tw.y_blocks_root_level_0, chain_len, 130);
             let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
 
             let prover_circuit = make_prover_circuit(
@@ -1413,9 +1412,9 @@ mod tests {
         let dense_hasher = DensePoseidonHasher::new();
         let mut rng = StdRng::seed_from_u64(55);
 
-        let tw = build_two_level_tree(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
+        let tw = build_dex_final_witness_uniform(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
 
-        let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, 1, 130);
+        let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.y_blocks_root_level_0, 1, 130);
         let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
         let ephemeral_pubkey = Fr::from(0xDEADu64);
 
@@ -1604,13 +1603,13 @@ mod tests {
                 num_events_leaves, depth
             );
 
-            let tw = build_two_level_tree(
+            let tw = build_dex_final_witness_uniform(
                 &v.repr_hash, &mut rng, &dense_hasher, num_events_leaves, 130,
             );
-            println!("Events proof depth: {}", tw.events_siblings.len());
-            println!("Block proof depth: {}", tw.block_siblings.len());
+            println!("Events proof depth: {}", tw.x_ext_out_siblings.len());
+            println!("Block proof depth: {}", tw.y_block_siblings.len());
 
-            let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, 1, 130);
+            let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.y_blocks_root_level_0, 1, 130);
             let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
 
             let ephemeral_pubkey = Fr::from(0xDEADu64);
@@ -1644,40 +1643,6 @@ mod tests {
     // Cross-thread (X ≠ Y) positive test
     // -------------------------------------------------------------------
 
-    /// Build a DarkDexCircuit from a cross-thread (X ≠ Y) witness.
-    /// X-side leaf-8 opens a distinct depth-4 SHA tree from the Y-side
-    /// block anchor; the two block_ids differ.
-    #[cfg(test)]
-    fn make_circuit_cross_thread(
-        sk_u: Fr,
-        ephemeral_pubkey: Fr,
-        entries: [BocFlattenData; 2],
-        ctw: &CrossThreadWitness,
-        dense_chain: Vec<DenseChainLink>,
-        chain_len: usize,
-        params: BaseCircuitParams,
-    ) -> DarkDexCircuit {
-        DarkDexCircuit::new(
-            sk_u,
-            ephemeral_pubkey,
-            entries,
-            ctw.x_account_dapp_id,
-            ctw.x_account_id,
-            ctw.x_ext_out_siblings.clone(),
-            ctw.x_ext_out_pos,
-            ctw.x_block_id,
-            ctw.x_block_id_h07_sibling,
-            ctw.y_block_id,
-            ctw.y_envelope_hash,
-            ctw.y_tracked_ext_out_root,
-            ctw.y_block_siblings.clone(),
-            ctw.y_block_pos,
-            dense_chain,
-            chain_len,
-            params,
-        )
-    }
-
     #[test]
     fn test_dark_dex_circuit_cross_thread() {
         use rand::rngs::StdRng;
@@ -1687,55 +1652,37 @@ mod tests {
         let dense_hasher = DensePoseidonHasher::new();
         let mut rng = StdRng::seed_from_u64(2026);
 
-        let ctw = build_cross_thread_witness(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
+        let tw = build_dex_final_witness_cross_thread(
+            &v.repr_hash, &mut rng, &dense_hasher, 128, 130,
+        );
         assert_ne!(
-            ctw.x_block_id, ctw.y_block_id,
+            tw.x_block_id, tw.y_block_id,
             "cross-thread witness must have distinct X/Y block_ids"
         );
 
-        let (dense_chain, y_final_root_bytes) = build_dense_chain(ctw.y_blocks_root_level_0, 1, 130);
+        let (dense_chain, y_final_root_bytes) =
+            build_dense_chain(tw.y_blocks_root_level_0, 1, 130);
         let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
 
         let params = base_circuit_params();
         let ephemeral_pubkey = Fr::from(0xBEEFu64);
 
-        let circuit = make_circuit_cross_thread(
+        let circuit = make_circuit(
             v.sk_u,
             ephemeral_pubkey,
             v.entries.clone(),
-            &ctw,
+            &tw,
             dense_chain,
             1,
             params,
         );
 
-        // Build 12-instance publics with the CROSS-THREAD X/Y block ids
-        // (they differ, so salted_X_start ≠ salted_Y_end).
-        let salt = compute_salt_native(v.sk_u);
-        let salt_commitment = compute_salt_commitment_native(salt);
-        let salted_x_start = compute_salted_block_id_native(salt, &ctw.x_block_id);
-        let salted_y_end = compute_salted_block_id_native(salt, &ctw.y_block_id);
-        assert_ne!(salted_x_start, salted_y_end);
-        let (dapp_lo, dapp_hi) = pack_lo_hi_le(&ctw.x_account_dapp_id);
-        let (acct_lo, acct_hi) = pack_lo_hi_le(&ctw.x_account_id);
-        let instances = vec![
-            v.expected_poseidon_hash,
-            y_final_root_fr,
-            v.voucher_nominal_val,
-            v.token_type_val,
-            ephemeral_pubkey,
-            salted_x_start,
-            salted_y_end,
-            salt_commitment,
-            dapp_lo,
-            dapp_hi,
-            acct_lo,
-            acct_hi,
-        ];
+        let instances = make_instances(&v, y_final_root_fr, ephemeral_pubkey, &tw);
+        // Cross-thread sanity: salted_X_start ≠ salted_Y_end.
+        assert_ne!(instances[5], instances[6]);
 
         println!("Cross-thread MockProver...");
-        let prover = MockProver::<Fr>::run(K, &circuit, vec![instances])
-            .unwrap();
+        let prover = MockProver::<Fr>::run(K, &circuit, vec![instances]).unwrap();
         prover.assert_satisfied();
         println!("Cross-thread test passed");
     }
@@ -1754,14 +1701,14 @@ mod tests {
         let dense_hasher = DensePoseidonHasher::new();
         let mut rng = StdRng::seed_from_u64(11);
 
-        let mut tw = build_two_level_tree(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
+        let mut tw = build_dex_final_witness_uniform(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
         // Corrupt the h07 sibling AFTER x_block_id was already
         // derived from the original one; the depth-4 SHA opening will
         // now yield a root ≠ x_block_id, so the assert_depth4 gadget
         // must fail.
         tw.x_block_id_h07_sibling[0] ^= 0x01;
 
-        let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, 1, 130);
+        let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.y_blocks_root_level_0, 1, 130);
         let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
 
         let params = base_circuit_params();
@@ -1792,9 +1739,9 @@ mod tests {
         let v = load_first_voucher();
         let dense_hasher = DensePoseidonHasher::new();
         let mut rng = StdRng::seed_from_u64(22);
-        let tw = build_two_level_tree(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
+        let tw = build_dex_final_witness_uniform(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
 
-        let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, 1, 130);
+        let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.y_blocks_root_level_0, 1, 130);
         let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
 
         let params = base_circuit_params();
@@ -1829,9 +1776,9 @@ mod tests {
         let v = load_first_voucher();
         let dense_hasher = DensePoseidonHasher::new();
         let mut rng = StdRng::seed_from_u64(33);
-        let tw = build_two_level_tree(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
+        let tw = build_dex_final_witness_uniform(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
 
-        let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, 1, 130);
+        let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.y_blocks_root_level_0, 1, 130);
         let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
 
         let params = base_circuit_params();
@@ -1870,9 +1817,9 @@ mod tests {
         let v = load_first_voucher();
         let dense_hasher = DensePoseidonHasher::new();
         let mut rng = StdRng::seed_from_u64(44);
-        let tw = build_two_level_tree(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
+        let tw = build_dex_final_witness_uniform(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
 
-        let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, 1, 130);
+        let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.y_blocks_root_level_0, 1, 130);
         let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
 
         let params = base_circuit_params();
