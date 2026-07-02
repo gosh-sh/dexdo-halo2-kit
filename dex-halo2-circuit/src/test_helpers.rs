@@ -123,7 +123,7 @@ pub fn build_dense_chain(
 ///
 /// **Y-side** = the *anchor block* in thread 0; the DEX circuit computes
 /// `block_leaf(Y) = Poseidon96(y_block_id ‖ y_envelope_hash ‖ y_tracked_ext_out_root)`
-/// and opens it against `y_blocks_root_level_0` (the `#L1(M_Y)` layer-1
+/// and opens it against `y_blocks_root_layer_1` (the `#L1(M_Y)` layer-1
 /// batch root) via the depth-8 Poseidon path `y_block_siblings`.
 ///
 /// **Uniformity (t=0).** X and Y collapse onto the same physical block. The
@@ -165,7 +165,7 @@ pub struct DexFinalWitness {
     /// `#L1(M_Y)` — the layer-1 batch root that anchors `block_leaf(Y)`.
     /// Consumed as the initial leaf of the dense-chain gadget which climbs
     /// to `finalLayerHistoricalHashRoot`.
-    pub y_blocks_root_level_0: [u8; 32],
+    pub y_blocks_root_layer_1: [u8; 32],
 }
 
 /// Build a `DexFinalWitness` for the **uniform t=0** case (`X == Y`).
@@ -224,7 +224,7 @@ pub fn build_dex_final_witness_uniform(
     for i in 1..num_block_leaves {
         rng.fill(&mut y_block_leaves[i]);
     }
-    let y_blocks_root_level_0 = dense_merkle_root(dense_hasher, &y_block_leaves);
+    let y_blocks_root_layer_1 = dense_merkle_root(dense_hasher, &y_block_leaves);
     let y_block_siblings = dense_merkle_proof(dense_hasher, &y_block_leaves, 0);
 
     DexFinalWitness {
@@ -240,7 +240,7 @@ pub fn build_dex_final_witness_uniform(
         y_tracked_ext_out_root,
         y_block_siblings,
         y_block_pos: 0,
-        y_blocks_root_level_0,
+        y_blocks_root_layer_1,
     }
 }
 
@@ -300,7 +300,7 @@ pub fn build_dex_final_witness_cross_thread(
     for i in 1..num_block_leaves {
         rng.fill(&mut y_block_leaves[i]);
     }
-    let y_blocks_root_level_0 = dense_merkle_root(dense_hasher, &y_block_leaves);
+    let y_blocks_root_layer_1 = dense_merkle_root(dense_hasher, &y_block_leaves);
     let y_block_siblings = dense_merkle_proof(dense_hasher, &y_block_leaves, 0);
 
     DexFinalWitness {
@@ -316,7 +316,7 @@ pub fn build_dex_final_witness_cross_thread(
         y_tracked_ext_out_root,
         y_block_siblings,
         y_block_pos: 0,
-        y_blocks_root_level_0,
+        y_blocks_root_layer_1,
     }
 }
 
@@ -338,7 +338,9 @@ pub struct SynthChain {
     /// This is what DexFinal's `event_salted_block_id` instance must equal.
     pub bundle_head_salted: Fr,
     /// All real-block IDs in order: `[genesis, b_1, ..., b_{k_hops}]`.
-    /// `hops[i]` proves `b_i.proof_block_refs[0] == b_{i-1}`.
+    /// `hops[i]` proves that `b_{i-1}` appears at some cross-thread ref slot
+    /// `ref_index >= 1` of `b_i.proof_block_refs` — slot 0 is the same-thread
+    /// parent (spec §2.3) and is *never* opened as a hop edge (spec §5.1).
     pub block_ids: Vec<[u8; 32]>,
 }
 

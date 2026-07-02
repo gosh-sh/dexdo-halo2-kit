@@ -1072,7 +1072,7 @@ mod tests {
             println!("Events proof depth: {}", tw.x_ext_out_siblings.len());
             println!("Block proof depth: {}", tw.y_block_siblings.len());
 
-            let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.y_blocks_root_level_0, 1, 130);
+            let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.y_blocks_root_layer_1, 1, 130);
             let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
 
             let ephemeral_pubkey = Fr::from(0xDEADu64);
@@ -1118,7 +1118,7 @@ mod tests {
         for t in 0..=MAX_CHAIN_LEN {
             println!("\n========== Chain T={} ==========", t);
 
-            let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.y_blocks_root_level_0, t, 130);
+            let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.y_blocks_root_layer_1, t, 130);
             let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
 
             let ephemeral_pubkey = Fr::from(0xDEADu64);
@@ -1167,7 +1167,7 @@ mod tests {
 
         // Keygen once with T=1 (circuit shape is the same for all chain lengths
         // since verify_chain_of_dense_proofs always processes MAX_CHAIN_LEN links).
-        let (keygen_chain, _) = build_dense_chain(tw.y_blocks_root_level_0, 1, 130);
+        let (keygen_chain, _) = build_dense_chain(tw.y_blocks_root_layer_1, 1, 130);
         let ephemeral_pubkey = Fr::from(0xDEADu64);
         let keygen_circuit = make_circuit(
             v.sk_u,
@@ -1203,7 +1203,7 @@ mod tests {
         for &chain_len in &chain_lengths {
             println!("\n========== Real proof: chain_len={} ==========", chain_len);
 
-            let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.y_blocks_root_level_0, chain_len, 130);
+            let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.y_blocks_root_layer_1, chain_len, 130);
             let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
 
             let prover_circuit = make_prover_circuit(
@@ -1309,7 +1309,7 @@ mod tests {
 
         // Keygen against a 1-step chain circuit; circuit shape is the same for all chain
         // lengths since verify_chain_of_dense_proofs always processes MAX_CHAIN_LEN links.
-        let (keygen_chain, _) = build_dense_chain(tw.y_blocks_root_level_0, 1, 130);
+        let (keygen_chain, _) = build_dense_chain(tw.y_blocks_root_layer_1, 1, 130);
         let keygen_circuit = make_circuit(
             v.sk_u,
             ephemeral_pubkey,
@@ -1340,7 +1340,7 @@ mod tests {
 
         for chain_len in [0usize, 1, 2] {
             let (dense_chain, y_final_root_bytes) =
-                build_dense_chain(tw.y_blocks_root_level_0, chain_len, 130);
+                build_dense_chain(tw.y_blocks_root_layer_1, chain_len, 130);
             let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
 
             let prover_circuit = make_prover_circuit(
@@ -1414,7 +1414,7 @@ mod tests {
 
         let tw = build_dex_final_witness_uniform(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
 
-        let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.y_blocks_root_level_0, 1, 130);
+        let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.y_blocks_root_layer_1, 1, 130);
         let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
         let ephemeral_pubkey = Fr::from(0xDEADu64);
 
@@ -1609,7 +1609,7 @@ mod tests {
             println!("Events proof depth: {}", tw.x_ext_out_siblings.len());
             println!("Block proof depth: {}", tw.y_block_siblings.len());
 
-            let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.y_blocks_root_level_0, 1, 130);
+            let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.y_blocks_root_layer_1, 1, 130);
             let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
 
             let ephemeral_pubkey = Fr::from(0xDEADu64);
@@ -1661,7 +1661,7 @@ mod tests {
         );
 
         let (dense_chain, y_final_root_bytes) =
-            build_dense_chain(tw.y_blocks_root_level_0, 1, 130);
+            build_dense_chain(tw.y_blocks_root_layer_1, 1, 130);
         let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
 
         let params = base_circuit_params();
@@ -1708,7 +1708,7 @@ mod tests {
         // must fail.
         tw.x_block_id_h07_sibling[0] ^= 0x01;
 
-        let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.y_blocks_root_level_0, 1, 130);
+        let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.y_blocks_root_layer_1, 1, 130);
         let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
 
         let params = base_circuit_params();
@@ -1741,7 +1741,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(22);
         let tw = build_dex_final_witness_uniform(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
 
-        let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.y_blocks_root_level_0, 1, 130);
+        let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.y_blocks_root_layer_1, 1, 130);
         let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
 
         let params = base_circuit_params();
@@ -1778,7 +1778,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(33);
         let tw = build_dex_final_witness_uniform(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
 
-        let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.y_blocks_root_level_0, 1, 130);
+        let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.y_blocks_root_layer_1, 1, 130);
         let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
 
         let params = base_circuit_params();
@@ -1819,7 +1819,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(44);
         let tw = build_dex_final_witness_uniform(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
 
-        let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.y_blocks_root_level_0, 1, 130);
+        let (dense_chain, y_final_root_bytes) = build_dense_chain(tw.y_blocks_root_layer_1, 1, 130);
         let y_final_root_fr = bytes_to_fr(&y_final_root_bytes);
 
         let params = base_circuit_params();
