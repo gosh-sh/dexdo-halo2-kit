@@ -1,3 +1,4 @@
+use gosh_dark_dex_halo2_new_circuit::block_id_tree::compute_block_id_from_l8_native;
 use gosh_dark_dex_halo2_new_circuit::boc_helper::{serialize_cells_tree_root_first, BocFlattenData};
 use gosh_dark_dex_halo2_new_circuit::dark_dex_circuit::DarkDexCircuit;
 use gosh_dark_dex_halo2_new_circuit::salt::{
@@ -73,10 +74,12 @@ pub struct ProofOutput {
     pub voucher_nominal: String,
     pub token_type: String,
     pub ephemeral_pubkey: String,
+    /// See `InstanceValues::salted_x_start`.
+    pub salted_x_start: String,
+    /// See `InstanceValues::salted_y_end`.
+    pub salted_y_end: String,
     /// See `InstanceValues::salt_commitment`.
     pub salt_commitment: String,
-    /// See `InstanceValues::event_salted_block_id`.
-    pub event_salted_block_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,13 +89,18 @@ pub struct InstanceValues {
     pub voucher_nominal: String,
     pub token_type: String,
     pub ephemeral_pubkey: String,
+    /// `poseidon_bytes_flat(fr_to_bytes(salt) ‖ x_block_id_le)`. The
+    /// event-side endpoint under the bundle salt — the orchestrator uses
+    /// it to splice the DexFinalProof onto the head of the MultiHopProof
+    /// chain.
+    pub salted_x_start: String,
+    /// `poseidon_bytes_flat(fr_to_bytes(salt) ‖ y_block_id_le)`. The
+    /// anchor-side endpoint under the same salt. In the uniform t=0
+    /// (single-thread) case `salted_y_end == salted_x_start`.
+    pub salted_y_end: String,
     /// `Poseidon([Poseidon([DOMAIN_TAG_HOP_SALT_FR, sk_u])])`.
     /// Must equal `salt_commitment` of every MultiHopProof in the same bundle.
     pub salt_commitment: String,
-    /// `Poseidon([salt, bytes_to_fr(block_id)])`.
-    /// Used by the orchestrator to splice this DexFinalProof onto the
-    /// MultiHopProof chain via its `head_salted_block_id`.
-    pub event_salted_block_id: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -123,6 +131,15 @@ pub struct DexFixtureJson {
     pub block_proof_position: usize,
     pub num_active_chain_steps: usize,
     pub dense_chain: Vec<ChainLinkJson>,
+    /// Depth-4 SHA block_id tree sibling `H07 = SHA-root(leaves 0..=7)`.
+    ///
+    /// Required for real proof generation (V2 depth-4 SHA opening binds
+    /// `x_l8_tracked_ext_out_root` into `x_block_id`). Optional in the JSON
+    /// so older fixtures still parse for stateless helpers like
+    /// `compute_instances_from_json`. `generate_proof` returns an error if
+    /// this is absent.
+    #[serde(default)]
+    pub x_block_id_h07_sibling_hex: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -143,6 +160,12 @@ struct ParsedFixture {
     block_proof_position: usize,
     dense_chain: Vec<DenseChainLink>,
     num_active_chain_steps: usize,
+    /// `x_l8` = the Poseidon-image tracked_ext_out_messages_root produced
+    /// by the event's account/BOC path. Reused as `y_tracked_ext_out_root`
+    /// in the uniform t=0 case.
+    y_tracked_ext_out_root: [u8; 32],
+    /// Optional — required for `generate_proof`, not for `compute_instances`.
+    x_block_id_h07_sibling: Option<[u8; 32]>,
 }
 
 // ---------------------------------------------------------------------------
@@ -152,9 +175,9 @@ struct ParsedFixture {
 fn base_circuit_params() -> BaseCircuitParams {
     BaseCircuitParams {
         k: K as usize,
-        num_advice_per_phase: vec![4],
+        num_advice_per_phase: vec![10],
         num_fixed: 1,
-        num_lookup_advice_per_phase: vec![1],
+        num_lookup_advice_per_phase: vec![2],
         lookup_bits: Some(18),
         num_instance_columns: 1,
     }
@@ -210,8 +233,9 @@ fn instances_to_values(instances: &[Fr]) -> InstanceValues {
         voucher_nominal: hex::encode(instances[2].to_repr()),
         token_type: hex::encode(instances[3].to_repr()),
         ephemeral_pubkey: hex::encode(instances[4].to_repr()),
-        salt_commitment: hex::encode(instances[5].to_repr()),
-        event_salted_block_id: hex::encode(instances[6].to_repr()),
+        salted_x_start: hex::encode(instances[5].to_repr()),
+        salted_y_end: hex::encode(instances[6].to_repr()),
+        salt_commitment: hex::encode(instances[7].to_repr()),
     }
 }
 
@@ -254,6 +278,29 @@ fn parse_fixture(json: &DexFixtureJson) -> Result<ParsedFixture, ProverError> {
     let block_id = hex_to_32(&json.block_id_hex)?;
     let envelope_hash_bytes = hex_to_32(&json.envelope_hash_hex)?;
 
+    let x_block_id_h07_sibling = json
+        .x_block_id_h07_sibling_hex
+        .as_deref()
+        .map(hex_to_32)
+        .transpose()?;
+
+    // Compute the "y_tracked_ext_out_root" = the Poseidon-image root that
+    // aggregates the event's account/BOC path. Same value both parse-fixture
+    // paths (pad-chain branch and instance computation) already derive; we
+    // compute it once here and reuse.
+    let ext_msg_leaf =
+        poseidon_hash_96_native(&account_dapp_id, &account_id, &entries[0].repr_hash);
+    let y_tracked_ext_out_root: [u8; 32] = if events_proof_siblings.is_empty() {
+        ext_msg_leaf
+    } else {
+        let events_proof = preprocess_dense_proof(
+            ext_msg_leaf,
+            &events_proof_siblings,
+            json.events_proof_position,
+        );
+        fr_to_bytes(compute_root_native(&events_proof))
+    };
+
     let mut dense_chain: Vec<DenseChainLink> = json
         .dense_chain
         .iter()
@@ -282,20 +329,8 @@ fn parse_fixture(json: &DexFixtureJson) -> Result<ParsedFixture, ProverError> {
 
     // Pad chain to MAX_CHAIN_LEN
     if dense_chain.len() < MAX_CHAIN_LEN {
-        let repr_hash = &entries[0].repr_hash;
-        let ext_msg_leaf = poseidon_hash_96_native(&account_dapp_id, &account_id, repr_hash);
-        let ext_out_root_bytes = if events_proof_siblings.is_empty() {
-            ext_msg_leaf
-        } else {
-            let events_proof = preprocess_dense_proof(
-                ext_msg_leaf,
-                &events_proof_siblings,
-                json.events_proof_position,
-            );
-            fr_to_bytes(compute_root_native(&events_proof))
-        };
         let block_leaf =
-            poseidon_hash_96_native(&block_id, &envelope_hash_bytes, &ext_out_root_bytes);
+            poseidon_hash_96_native(&block_id, &envelope_hash_bytes, &y_tracked_ext_out_root);
         let block_proof = preprocess_dense_proof(
             block_leaf,
             &block_proof_siblings,
@@ -336,6 +371,8 @@ fn parse_fixture(json: &DexFixtureJson) -> Result<ParsedFixture, ProverError> {
         block_proof_position: json.block_proof_position,
         dense_chain,
         num_active_chain_steps: json.num_active_chain_steps,
+        y_tracked_ext_out_root,
+        x_block_id_h07_sibling,
     })
 }
 
@@ -359,31 +396,11 @@ fn compute_instances(parsed: &ParsedFixture) -> Vec<Fr> {
     let poseidon_commitment =
         poseidon_hash(&[voucher_nominal_val, token_type_val, parsed.sk_u, sk_u_commit_val]);
 
-    let block_leaf_native = {
-        let repr_hash = &parsed.entries[0].repr_hash;
-        let ext_msg_leaf = poseidon_hash_96_native(
-            &parsed.account_dapp_id,
-            &parsed.account_id,
-            repr_hash,
-        );
-
-        let ext_out_root_bytes = if parsed.events_proof_siblings.is_empty() {
-            ext_msg_leaf
-        } else {
-            let events_proof = preprocess_dense_proof(
-                ext_msg_leaf,
-                &parsed.events_proof_siblings,
-                parsed.events_proof_position,
-            );
-            fr_to_bytes(compute_root_native(&events_proof))
-        };
-
-        poseidon_hash_96_native(
-            &parsed.block_id,
-            &parsed.envelope_hash_bytes,
-            &ext_out_root_bytes,
-        )
-    };
+    let block_leaf_native = poseidon_hash_96_native(
+        &parsed.block_id,
+        &parsed.envelope_hash_bytes,
+        &parsed.y_tracked_ext_out_root,
+    );
 
     let block_proof = preprocess_dense_proof(
         block_leaf_native,
@@ -410,10 +427,12 @@ fn compute_instances(parsed: &ParsedFixture) -> Vec<Fr> {
     };
 
     // Salt-derived publics (must match the in-circuit derivation in
-    // `DarkDexCircuit::synthesize`).
+    // `DarkDexCircuit::synthesize`). In the uniform single-thread t=0
+    // case, X_block_id == Y_block_id == parsed.block_id, so
+    // salted_x_start == salted_y_end.
     let salt = compute_salt_native(parsed.sk_u);
     let salt_commitment = compute_salt_commitment_native(salt);
-    let event_salted_block_id = compute_salted_block_id_native(salt, &parsed.block_id);
+    let salted = compute_salted_block_id_native(salt, &parsed.block_id);
 
     vec![
         poseidon_commitment,
@@ -421,8 +440,9 @@ fn compute_instances(parsed: &ParsedFixture) -> Vec<Fr> {
         voucher_nominal_val,
         token_type_val,
         ephemeral_pubkey_val,
+        salted, // salted_x_start
+        salted, // salted_y_end (== salted_x_start under uniform t=0)
         salt_commitment,
-        event_salted_block_id,
     ]
 }
 
@@ -522,6 +542,28 @@ impl Prover {
         let instances = compute_instances(&parsed);
         let params = base_circuit_params();
 
+        // V2 requires the depth-4 SHA H07 sibling to bind
+        // `x_l8_tracked_ext_out_root` into `x_block_id`.
+        let x_block_id_h07_sibling = parsed.x_block_id_h07_sibling.ok_or_else(|| {
+            ProverError::Fixture(
+                "fixture is missing `x_block_id_h07_sibling_hex` — required for V2 real proof \
+                 generation (depth-4 SHA opening). Regenerate the fixture with the new field."
+                    .into(),
+            )
+        })?;
+
+        // Sanity-check: the native depth-4 SHA opening of x_l8 = the fixture's
+        // y_tracked_ext_out_root (uniform t=0) must reproduce parsed.block_id.
+        let derived_x_block_id =
+            compute_block_id_from_l8_native(&parsed.y_tracked_ext_out_root, &x_block_id_h07_sibling);
+        if derived_x_block_id != parsed.block_id {
+            return Err(ProverError::Fixture(
+                "x_block_id_h07_sibling does not reconstruct block_id from x_l8 \
+                 (depth-4 SHA opening mismatch)"
+                    .into(),
+            ));
+        }
+
         // Keygen if needed
         if self.pk.is_none() {
             eprintln!("No cached PK, running keygen...");
@@ -529,12 +571,17 @@ impl Prover {
                 parsed.sk_u,
                 parsed.ephemeral_pubkey,
                 parsed.entries.clone(),
-                parsed.events_proof_siblings.clone(),
-                parsed.events_proof_position,
+                // === X-side ===
                 parsed.account_dapp_id,
                 parsed.account_id,
+                parsed.events_proof_siblings.clone(),
+                parsed.events_proof_position,
+                parsed.block_id,
+                x_block_id_h07_sibling,
+                // === Y-side (uniform t=0: Y_block_id == X_block_id) ===
                 parsed.block_id,
                 parsed.envelope_hash_bytes,
+                parsed.y_tracked_ext_out_root,
                 parsed.block_proof_siblings.clone(),
                 parsed.block_proof_position,
                 parsed.dense_chain.clone(),
@@ -580,12 +627,17 @@ impl Prover {
             parsed.sk_u,
             parsed.ephemeral_pubkey,
             parsed.entries,
-            parsed.events_proof_siblings,
-            parsed.events_proof_position,
+            // === X-side ===
             parsed.account_dapp_id,
             parsed.account_id,
+            parsed.events_proof_siblings,
+            parsed.events_proof_position,
+            parsed.block_id,
+            x_block_id_h07_sibling,
+            // === Y-side (uniform t=0) ===
             parsed.block_id,
             parsed.envelope_hash_bytes,
+            parsed.y_tracked_ext_out_root,
             parsed.block_proof_siblings,
             parsed.block_proof_position,
             parsed.dense_chain,
@@ -599,9 +651,9 @@ impl Prover {
         eprintln!("  Proof: {} bytes", proof_bytes.len());
 
         // Build output
-        // 7 public instance Fr elements concatenated as LE bytes (7×32=224B)
+        // 8 public instance Fr elements concatenated as LE bytes (8×32=256B)
         // for direct use by the TVM ZKHALO2VERIFY on-chain verifier.
-        let mut pub_inputs_bytes = Vec::with_capacity(224);
+        let mut pub_inputs_bytes = Vec::with_capacity(256);
         for inst in &instances {
             pub_inputs_bytes.extend_from_slice(&inst.to_repr());
         }
@@ -615,8 +667,9 @@ impl Prover {
             voucher_nominal: values.voucher_nominal,
             token_type: values.token_type,
             ephemeral_pubkey: values.ephemeral_pubkey,
+            salted_x_start: values.salted_x_start,
+            salted_y_end: values.salted_y_end,
             salt_commitment: values.salt_commitment,
-            event_salted_block_id: values.event_salted_block_id,
         })
     }
 }
@@ -625,12 +678,13 @@ impl Prover {
 // Stateless public API
 // ---------------------------------------------------------------------------
 
-/// Compute the 7 public instance values without generating a proof.
+/// Compute the 8 public instance values without generating a proof.
 ///
 /// Fast (milliseconds). No SRS or PK needed.
 ///
-/// Includes `salt_commitment` and `event_salted_block_id` derived from the
-/// voucher secret `sk_u` and the event block id.
+/// Includes `salt_commitment`, `salted_x_start`, and `salted_y_end` derived
+/// from the voucher secret `sk_u` and the event/anchor block ids. In the
+/// uniform t=0 (single-thread) case `salted_x_start == salted_y_end`.
 pub fn compute_instances_from_json(fixture_json: &str) -> Result<InstanceValues, ProverError> {
     let json: DexFixtureJson = serde_json::from_str(fixture_json)
         .map_err(|e| ProverError::Fixture(format!("JSON parse: {e}")))?;
@@ -676,10 +730,14 @@ mod tests {
         assert!(!values.ephemeral_pubkey.is_empty());
         // Salt publics.
         assert!(!values.salt_commitment.is_empty());
-        assert!(!values.event_salted_block_id.is_empty());
-        // Both salt fields are hex-encoded 32-byte Fr ⇒ 64 hex chars.
+        assert!(!values.salted_x_start.is_empty());
+        assert!(!values.salted_y_end.is_empty());
+        // All salt fields are hex-encoded 32-byte Fr ⇒ 64 hex chars.
         assert_eq!(values.salt_commitment.len(), 64);
-        assert_eq!(values.event_salted_block_id.len(), 64);
+        assert_eq!(values.salted_x_start.len(), 64);
+        assert_eq!(values.salted_y_end.len(), 64);
+        // Uniform t=0: X_block_id == Y_block_id ⇒ start == end.
+        assert_eq!(values.salted_x_start, values.salted_y_end);
     }
 
     #[test]

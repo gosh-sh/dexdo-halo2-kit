@@ -937,7 +937,7 @@ impl Circuit<Fr> for DarkDexCircuit {
 
                 // === Y.a block_leaf(Y) = Poseidon96(y_block_id, y_envelope_hash,
                 //                                   y_tracked_ext_out_messages_root) ===
-                let block_leaf_fr = poseidon_hash_96_circuit_bytes(
+                let y_block_leaf_fr = poseidon_hash_96_circuit_bytes(
                     ctx, &range, &hasher,
                     &y_block_id_bytes,
                     &y_envelope_hash_bytes_cells,
@@ -956,7 +956,7 @@ impl Circuit<Fr> for DarkDexCircuit {
                     self.y_block_merkle_proof_position,
                 );
                 let root_1 = dense_merkle_root_circuit(
-                    ctx, &range, &hasher, &block_proof, block_leaf_fr,
+                    ctx, &range, &hasher, &block_proof, y_block_leaf_fr,
                 );
 
                 // === Y.c Optional chain of dense proofs ===
