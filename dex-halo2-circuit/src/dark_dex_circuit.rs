@@ -41,8 +41,6 @@ use gosh_dense_balanced_tree::{
 
 pub const MAX_EVENTS_TREE_DEPTH: usize = 8;
 
-const SHA256_HASH_LEN: usize = 32;
-
 #[derive(Clone, Debug)]
 pub struct DarkDexCircuitConfig {
     base_circuit_config: BaseConfig<Fr>,
@@ -78,7 +76,7 @@ pub struct DarkDexCircuit {
     /// without re-running the prover.
     pub ephemeral_pubkey: Fr,
     /// Private witness: serialized cells tree entries (root + one child).
-    pub entries: [BocFlattenData; 2],
+    pub voucher_event_entries: [BocFlattenData; 2],
 
     // === X-side (event-emitting block) =====================================
     /// Private witness: dApp ID (32 bytes) for X-side `ext_message_leaf`.
@@ -93,7 +91,11 @@ pub struct DarkDexCircuit {
     /// depth-4 SHA opening against `x_l8_tracked_ext_out_messages_root`.
     pub x_block_id: [u8; 32],
     /// Private witness: opaque left-half sibling (SHA-root of leaves
-    /// 0..=7) in the depth-4 SHA block_id tree.
+    /// 0..=7) in the depth-4 SHA block_id tree — hence `h07` = "H0..7".
+    /// It is the only variable sibling on leaf-8's opening path; the three
+    /// lower-level siblings are hard-coded constants (leaves 9..=15 are
+    /// zero-padded), so a single 32-byte witness closes the opening of
+    /// `x_l8` up to `x_block_id`.
     pub x_block_id_h07_sibling: [u8; 32],
 
     // === Y-side (anchor block on thread 0) =================================
@@ -122,7 +124,7 @@ impl DarkDexCircuit {
     pub fn new(
         sk_u: Fr,
         ephemeral_pubkey: Fr,
-        entries: [BocFlattenData; 2],
+        voucher_event_entries: [BocFlattenData; 2],
         // === X-side ===
         x_account_dapp_id: [u8; 32],
         x_account_id: [u8; 32],
@@ -154,7 +156,7 @@ impl DarkDexCircuit {
         Self {
             sk_u,
             ephemeral_pubkey,
-            entries,
+            voucher_event_entries,
             x_account_dapp_id,
             x_account_id,
             x_ext_out_merkle_proof_siblings,
@@ -177,7 +179,7 @@ impl DarkDexCircuit {
     pub fn new_for_proving(
         sk_u: Fr,
         ephemeral_pubkey: Fr,
-        entries: [BocFlattenData; 2],
+        voucher_event_entries: [BocFlattenData; 2],
         // === X-side ===
         x_account_dapp_id: [u8; 32],
         x_account_id: [u8; 32],
@@ -211,7 +213,7 @@ impl DarkDexCircuit {
         Self {
             sk_u,
             ephemeral_pubkey,
-            entries,
+            voucher_event_entries,
             x_account_dapp_id,
             x_account_id,
             x_ext_out_merkle_proof_siblings,
@@ -246,15 +248,15 @@ impl Circuit<Fr> for DarkDexCircuit {
         let dummy_entries = [
             BocFlattenData {
                 repr_hash: [0u8; 32],
-                refs_count: self.entries[0].refs_count,
-                childs_repr_hashes_offset: self.entries[0].childs_repr_hashes_offset.clone(),
-                cell_repr_data: vec![0u8; self.entries[0].cell_repr_data.len()],
+                refs_count: self.voucher_event_entries[0].refs_count,
+                childs_repr_hashes_offset: self.voucher_event_entries[0].childs_repr_hashes_offset.clone(),
+                cell_repr_data: vec![0u8; self.voucher_event_entries[0].cell_repr_data.len()],
             },
             BocFlattenData {
                 repr_hash: [0u8; 32],
-                refs_count: self.entries[1].refs_count,
-                childs_repr_hashes_offset: self.entries[1].childs_repr_hashes_offset.clone(),
-                cell_repr_data: vec![0u8; self.entries[1].cell_repr_data.len()],
+                refs_count: self.voucher_event_entries[1].refs_count,
+                childs_repr_hashes_offset: self.voucher_event_entries[1].childs_repr_hashes_offset.clone(),
+                cell_repr_data: vec![0u8; self.voucher_event_entries[1].cell_repr_data.len()],
             },
         ];
         let dummy_chain = self.y_dense_chain.iter().map(|link| {
@@ -341,12 +343,12 @@ impl Circuit<Fr> for DarkDexCircuit {
                 let sha256_chip = Sha256Chip::new(&range);
 
                 // === Assign preimage bytes as witnesses ===
-                let root_input_bytes: Vec<AssignedValue<Fr>> = self.entries[0]
+                let root_input_bytes: Vec<AssignedValue<Fr>> = self.voucher_event_entries[0]
                     .cell_repr_data
                     .iter()
                     .map(|&b| ctx.load_witness(Fr::from(b as u64)))
                     .collect();
-                let child_input_bytes: Vec<AssignedValue<Fr>> = self.entries[1]
+                let child_input_bytes: Vec<AssignedValue<Fr>> = self.voucher_event_entries[1]
                     .cell_repr_data
                     .iter()
                     .map(|&b| ctx.load_witness(Fr::from(b as u64)))
@@ -362,7 +364,7 @@ impl Circuit<Fr> for DarkDexCircuit {
                 // Root preimage embeds the child's repr_hash at a known byte offset.
                 // Constrain those embedded bytes == child's computed SHA-256 output.
                 let root_child_hash_byte_offset: usize =
-                    self.entries[0].childs_repr_hashes_offset.as_ref().unwrap()[0] as usize;
+                    self.voucher_event_entries[0].childs_repr_hashes_offset.as_ref().unwrap()[0] as usize;
                 for i in 0..SHA256_HASH_LEN {
                     ctx.constrain_equal(
                         &root_input_bytes[root_child_hash_byte_offset + i],
@@ -425,7 +427,7 @@ impl Circuit<Fr> for DarkDexCircuit {
                 // Root d1: refs_count (lower 3 bits) == 1.
                 {
                     let root_d1_val =
-                        self.entries[0].cell_repr_data.get(0).copied().unwrap_or(0);
+                        self.voucher_event_entries[0].cell_repr_data.get(0).copied().unwrap_or(0);
                     let bits: Vec<AssignedValue<Fr>> = (0..8u32)
                         .map(|i| {
                             ctx.load_witness(Fr::from(((root_d1_val >> i) & 1) as u64))
@@ -448,7 +450,7 @@ impl Circuit<Fr> for DarkDexCircuit {
                 // Child d1: refs_count (lower 3 bits) == 0.
                 {
                     let child_d1_val =
-                        self.entries[1].cell_repr_data.get(0).copied().unwrap_or(0);
+                        self.voucher_event_entries[1].cell_repr_data.get(0).copied().unwrap_or(0);
                     let bits: Vec<AssignedValue<Fr>> = (0..8u32)
                         .map(|i| {
                             ctx.load_witness(Fr::from(((child_d1_val >> i) & 1) as u64))
@@ -523,7 +525,7 @@ impl Circuit<Fr> for DarkDexCircuit {
 
                 // === X.b Prove x_ext_msg_leaf → x_l8_tracked_ext_out_messages_root ===
                 let x_ext_msg_leaf_native = poseidon_hash_96_native(
-                    &self.x_account_dapp_id, &self.x_account_id, &self.entries[0].repr_hash,
+                    &self.x_account_dapp_id, &self.x_account_id, &self.voucher_event_entries[0].repr_hash,
                 );
                 // Unpadded proof for native root computation
                 let x_events_proof_native = preprocess_dense_proof(

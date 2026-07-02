@@ -105,13 +105,12 @@ use halo2_base::poseidon::hasher::{spec::OptimizedPoseidonSpec, PoseidonHasher};
 use halo2_base::{AssignedValue, QuantumCell};
 use std::cell::RefCell;
 
+use crate::boc_helper::SHA256_HASH_LEN;
 use crate::multi_hop_witness::{
     ref_leaf_hash_native, ref_leaf_ref_tag_chunk0_fr, ref_leaf_ref_tag_chunk1_lo_fr,
     BLOCK_MERKLE_DEPTH, MAX_PROOF_BLOCK_REFS_DEPTH,
 };
 use crate::salt::{compute_salt_native, domain_tag_hop_salt_fr};
-
-const SHA256_HASH_LEN: usize = 32;
 
 /// Public-instance count: `[salted_start_block_id, salted_end_block_id, salt_commitment]`.
 pub const HOP_PROOF_PUBLIC_LEN: usize = 3;

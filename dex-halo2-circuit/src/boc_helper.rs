@@ -9,6 +9,9 @@ use tvm_types::CellType;
 use tvm_types::LevelMask;
 use tvm_types::Result;
 
+/// Length in bytes of a SHA-256 digest / TVM cell `repr_hash`.
+pub const SHA256_HASH_LEN: usize = SHA256_SIZE;
+
 /// Flat representation of a single cell from a serialized BOC tree.
 #[derive(Debug, Clone)]
 pub struct BocFlattenData {
