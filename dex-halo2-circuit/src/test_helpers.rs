@@ -1,4 +1,3 @@
-use crate::boc_helper::*;
 use crate::multi_hop_witness::{
     assert_ref_index_is_cross_thread, block_merkle_leaf_proof, block_merkle_root,
     proof_block_ref_inner_path_native, proof_block_refs_root_native, BlockWitness, HopWitness,
@@ -14,14 +13,12 @@ use crate::salt::{
 use dense_balanced_tree::{
     dense_merkle_proof, dense_merkle_root, PoseidonHasher as DensePoseidonHasher,
 };
-use gosh_dense_balanced_tree::{bytes_to_fr, poseidon_hash_native};
+use gosh_dense_balanced_tree::bytes_to_fr;
 #[cfg(test)]
 use gosh_dense_balanced_tree::{fr_to_bytes, DenseChainLink, MAX_CHAIN_LEN};
 use halo2_base::gates::circuit::BaseCircuitParams;
 use halo2_base::halo2_proofs::halo2curves::bn256::Fr;
-use halo2_base::halo2_proofs::halo2curves::ff::PrimeField;
 use rand::Rng;
-use tvm_block::{Deserializable, Message, Serializable};
 
 pub const K: u32 = 19;
 
@@ -41,15 +38,6 @@ pub fn base_circuit_params() -> BaseCircuitParams {
     }
 }
 
-/// Big-endian byte-to-Fr conversion for BOC field extraction (voucher_nominal, token_type).
-pub fn bytes_to_fr_be(data: &[u8]) -> Fr {
-    let mut val = Fr::from(0u64);
-    for &byte in data.iter() {
-        val = val * Fr::from(256u64) + Fr::from(byte as u64);
-    }
-    val
-}
-
 /// Integer ceiling of log2(n) for computing tree depth.
 pub fn ceil_log2(n: usize) -> usize {
     assert!(n > 0);
@@ -63,82 +51,6 @@ pub fn ceil_log2(n: usize) -> usize {
         k += 1;
     }
     k
-}
-
-/// Parse a single event BOC into flattened cell entries and repr_hash.
-pub fn parse_voucher_boc(event_boc: &str) -> ([BocFlattenData; 2], [u8; 32]) {
-    let msg =
-        Message::construct_from_base64(event_boc).expect("failed to parse BOC");
-    let msg_cell = msg.serialize().expect("failed to serialize");
-    let serialized =
-        serialize_cells_tree_root_first(&msg_cell).expect("failed to flatten");
-    assert_eq!(serialized.len(), 2, "expected 2 cells");
-    let repr_hash = serialized[0].repr_hash;
-    ([serialized[0].clone(), serialized[1].clone()], repr_hash)
-}
-
-/// Extracted public field values from a voucher, ready for instance comparison.
-pub struct VoucherFields {
-    pub sk_u: Fr,
-    pub entries: [BocFlattenData; 2],
-    pub repr_hash: [u8; 32],
-    pub voucher_nominal_val: Fr,
-    pub token_type_val: Fr,
-    pub expected_poseidon_hash: Fr,
-}
-
-const EVENT_BOC_DATA_BYTES_OFFSET: usize = 6;
-const EVENT_SK_U_COMMIT_FIELD_LEN: usize = 32;
-const EVENT_VOUCHER_NOMINAL_FIELD_LEN: usize = 32;
-const EVENT_TOKEN_TYPE_FIELD_LEN: usize = 4;
-
-const EVENT_SK_U_COMMIT_START: usize = EVENT_BOC_DATA_BYTES_OFFSET;
-const EVENT_SK_U_COMMIT_END: usize = EVENT_SK_U_COMMIT_START + EVENT_SK_U_COMMIT_FIELD_LEN;
-const EVENT_VOUCHER_NOMINAL_START: usize = EVENT_SK_U_COMMIT_END;
-const EVENT_VOUCHER_NOMINAL_END: usize =
-    EVENT_VOUCHER_NOMINAL_START + EVENT_VOUCHER_NOMINAL_FIELD_LEN;
-const EVENT_TOKEN_TYPE_START: usize = EVENT_VOUCHER_NOMINAL_END;
-const EVENT_TOKEN_TYPE_END: usize = EVENT_TOKEN_TYPE_START + EVENT_TOKEN_TYPE_FIELD_LEN;
-
-/// Extract sk_u, public fields, and the expected Poseidon hash from a parsed voucher.
-pub fn extract_voucher_fields(
-    sk_u: Fr,
-    entries: [BocFlattenData; 2],
-    repr_hash: [u8; 32],
-) -> VoucherFields {
-    let sk_u_commit_bytes: [u8; 32] = entries[1].cell_repr_data
-        [EVENT_SK_U_COMMIT_START..EVENT_SK_U_COMMIT_END]
-        .try_into()
-        .unwrap();
-    let sk_u_commit_val = Fr::from_repr(sk_u_commit_bytes).unwrap();
-    let voucher_nominal_val = bytes_to_fr_be(
-        &entries[1].cell_repr_data[EVENT_VOUCHER_NOMINAL_START..EVENT_VOUCHER_NOMINAL_END],
-    );
-    let token_type_val = bytes_to_fr_be(
-        &entries[1].cell_repr_data[EVENT_TOKEN_TYPE_START..EVENT_TOKEN_TYPE_END],
-    );
-    let expected_poseidon_hash =
-        poseidon_hash_native(&[voucher_nominal_val, token_type_val, sk_u, sk_u_commit_val]);
-    VoucherFields {
-        sk_u,
-        entries,
-        repr_hash,
-        voucher_nominal_val,
-        token_type_val,
-        expected_poseidon_hash,
-    }
-}
-
-/// Load the first voucher from vouchers.txt and extract all fields.
-pub fn load_first_voucher() -> VoucherFields {
-    use crate::voucher_event_helper::read_event_data_from_file;
-    let events = read_event_data_from_file("vouchers.txt");
-    assert!(
-        !events.is_empty(),
-        "vouchers.txt must contain at least one entry"
-    );
-    let (entries, repr_hash) = parse_voucher_boc(&events[0].event_boc);
-    extract_voucher_fields(events[0].sk_u, entries, repr_hash)
 }
 
 /// Build a chain of `chain_len` dense balanced trees (0 <= chain_len <= MAX_CHAIN_LEN).

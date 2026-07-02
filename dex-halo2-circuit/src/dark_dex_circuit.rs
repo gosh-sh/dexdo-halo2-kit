@@ -917,6 +917,9 @@ mod tests {
         compute_salt_commitment_native, compute_salt_native, compute_salted_block_id_native,
     };
     use crate::test_helpers::*;
+    use crate::voucher_event_helper::{
+        extract_voucher_fields, load_first_voucher, parse_voucher_boc, VoucherFields,
+    };
     use dense_balanced_tree::PoseidonHasher as DensePoseidonHasher;
     use halo2_base::halo2_proofs::dev::MockProver;
 
