@@ -23,6 +23,7 @@ use halo2_base::{
 
 use std::cell::RefCell;
 
+use crate::block_id_tree::assert_depth4_l8_opening_circuit;
 use crate::boc_helper::*;
 use crate::salt::{compute_salt_native, domain_tag_hop_salt_fr};
 use gosh_dense_balanced_tree::{
@@ -203,6 +204,27 @@ pub struct DarkDexCircuitNewConfig {
     base_circuit_config: BaseConfig<Fr>,
 }
 
+/// DexFinalProof circuit per `MULTITHREAD_CIRCUIT_SPEC.md` §7.7.
+///
+/// Structure: two disjoint sub-circuits sharing salt + sk_u:
+///   • X-side (SHA family, 6 SHA compressions): BOC reconstruction (2×) +
+///     field extraction + Poseidon `ext_msg_leaf` + padded Poseidon
+///     dense-Merkle to `x_l8_tracked_ext_out_messages_root` + depth-4 SHA
+///     block_id opening (4×) binding `x_l8` into `x_block_id`. Exposes
+///     `salted_X_start` (Poseidon on `x_block_id`).
+///   • Y-side (Poseidon family): opaque byte-cell witnesses for
+///     `y_block_id`, `y_envelope_hash`, `y_tracked_ext_out_messages_root` →
+///     `block_leaf_Y = Poseidon96(...)` → depth-8 Poseidon dense-Merkle →
+///     dense-chain → `finalLayerHistoricalHashRoot`. Exposes `salted_Y_end`.
+///
+/// Publics (8): `[depositIdentifierHash, finalLayerHistoricalHashRoot,
+/// voucherNominalFr, tokenTypeFr, ephemeralPubkey, salted_X_start,
+/// salted_Y_end, salt_commitment]`.
+///
+/// X and Y may be the same (t=0 uniform: producer thread = anchor thread)
+/// or distinct (t≠0 cross-thread: event fires in thread t, anchor is
+/// thread 0). The circuit is agnostic — X and Y are independent witness
+/// bundles.
 pub struct DarkDexCircuitNew {
     pub sk_u: Fr,
     /// Public witness exposed as instance 4: ephemeral_pubkey the prover
@@ -213,55 +235,75 @@ pub struct DarkDexCircuitNew {
     pub ephemeral_pubkey: Fr,
     /// Private witness: serialized cells tree entries (root + one child).
     pub entries: [BocFlattenData; 2],
-    /// Private witness: events-tree Merkle proof siblings (bottom-up).
-    pub merkle_proof_siblings: Vec<[u8; 32]>,
-    /// Private witness: leaf position in the events tree.
-    pub merkle_proof_position: usize,
-    /// Private witness: dApp ID (32 bytes) for ext_message_leaf computation.
-    pub account_dapp_id: [u8; 32],
-    /// Private witness: account ID (32 bytes) for ext_message_leaf computation.
-    pub account_id: [u8; 32],
-    /// Private witness: block ID (32 bytes) for block_leaf computation.
-    pub block_id: [u8; 32],
-    /// Private witness: envelope hash (32 bytes) for block_leaf computation.
-    pub envelope_hash_bytes: [u8; 32],
-    /// Private witness: block-tree Merkle proof siblings (bottom-up).
-    pub block_merkle_proof_siblings: Vec<[u8; 32]>,
-    /// Private witness: leaf position in the block (history window) tree.
-    pub block_merkle_proof_position: usize,
-    /// Private witness: chain of dense balanced tree proofs (length = MAX_CHAIN_LEN).
-    pub dense_chain: Vec<DenseChainLink>,
-    /// Number of active chain steps (0..=MAX_CHAIN_LEN).
-    pub num_active_chain_steps: usize,
+
+    // === X-side (event-emitting block) =====================================
+    /// Private witness: dApp ID (32 bytes) for X-side `ext_message_leaf`.
+    pub x_account_dapp_id: [u8; 32],
+    /// Private witness: account ID (32 bytes) for X-side `ext_message_leaf`.
+    pub x_account_id: [u8; 32],
+    /// Private witness: X-side ext-out messages tree Merkle proof siblings.
+    pub x_ext_out_merkle_proof_siblings: Vec<[u8; 32]>,
+    /// Private witness: X-side ext-out messages tree leaf position.
+    pub x_ext_out_merkle_proof_position: usize,
+    /// Private witness: X-side block ID (32 bytes) — constrained via
+    /// depth-4 SHA opening against `x_l8_tracked_ext_out_messages_root`.
+    pub x_block_id: [u8; 32],
+    /// Private witness: opaque left-half sibling (SHA-root of leaves
+    /// 0..=7) in the depth-4 SHA block_id tree.
+    pub x_block_id_h07_sibling: [u8; 32],
+
+    // === Y-side (anchor block on thread 0) =================================
+    /// Private witness: Y-side block ID (32 bytes) for Y-side `block_leaf`.
+    pub y_block_id: [u8; 32],
+    /// Private witness: Y-side envelope hash (unconstrained content).
+    pub y_envelope_hash: [u8; 32],
+    /// Private witness: Y-side `tracked_ext_out_messages_root` (unconstrained
+    /// content; anchored upstream by the multi-hop stream, not by V2).
+    pub y_tracked_ext_out_messages_root: [u8; 32],
+    /// Private witness: Y-side history-window tree Merkle proof siblings.
+    pub y_block_merkle_proof_siblings: Vec<[u8; 32]>,
+    /// Private witness: Y-side history-window tree leaf position.
+    pub y_block_merkle_proof_position: usize,
+    /// Private witness: Y-side chain of dense balanced tree proofs.
+    pub y_dense_chain: Vec<DenseChainLink>,
+    /// Number of active chain steps on the Y-side (0..=MAX_CHAIN_LEN).
+    pub y_num_active_chain_steps: usize,
+
     pub base_circuit_params: BaseCircuitParams,
     pub base_circuit_builder: RefCell<BaseCircuitBuilder<Fr>>,
 }
 
 impl DarkDexCircuitNew {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         sk_u: Fr,
         ephemeral_pubkey: Fr,
         entries: [BocFlattenData; 2],
-        merkle_proof_siblings: Vec<[u8; 32]>,
-        merkle_proof_position: usize,
-        account_dapp_id: [u8; 32],
-        account_id: [u8; 32],
-        block_id: [u8; 32],
-        envelope_hash_bytes: [u8; 32],
-        block_merkle_proof_siblings: Vec<[u8; 32]>,
-        block_merkle_proof_position: usize,
-        dense_chain: Vec<DenseChainLink>,
-        num_active_chain_steps: usize,
+        // === X-side ===
+        x_account_dapp_id: [u8; 32],
+        x_account_id: [u8; 32],
+        x_ext_out_merkle_proof_siblings: Vec<[u8; 32]>,
+        x_ext_out_merkle_proof_position: usize,
+        x_block_id: [u8; 32],
+        x_block_id_h07_sibling: [u8; 32],
+        // === Y-side ===
+        y_block_id: [u8; 32],
+        y_envelope_hash: [u8; 32],
+        y_tracked_ext_out_messages_root: [u8; 32],
+        y_block_merkle_proof_siblings: Vec<[u8; 32]>,
+        y_block_merkle_proof_position: usize,
+        y_dense_chain: Vec<DenseChainLink>,
+        y_num_active_chain_steps: usize,
         base_circuit_params: BaseCircuitParams,
     ) -> Self {
         assert!(
-            merkle_proof_siblings.len() <= MAX_EVENTS_TREE_DEPTH,
-            "events tree depth {} exceeds MAX_EVENTS_TREE_DEPTH {}",
-            merkle_proof_siblings.len(),
+            x_ext_out_merkle_proof_siblings.len() <= MAX_EVENTS_TREE_DEPTH,
+            "X ext-out tree depth {} exceeds MAX_EVENTS_TREE_DEPTH {}",
+            x_ext_out_merkle_proof_siblings.len(),
             MAX_EVENTS_TREE_DEPTH,
         );
-        assert_eq!(dense_chain.len(), MAX_CHAIN_LEN);
-        assert!(num_active_chain_steps <= MAX_CHAIN_LEN);
+        assert_eq!(y_dense_chain.len(), MAX_CHAIN_LEN);
+        assert!(y_num_active_chain_steps <= MAX_CHAIN_LEN);
         let base_circuit_builder = RefCell::new(
             BaseCircuitBuilder::<Fr>::new(false).use_params(base_circuit_params.clone()),
         );
@@ -269,46 +311,55 @@ impl DarkDexCircuitNew {
             sk_u,
             ephemeral_pubkey,
             entries,
-            merkle_proof_siblings,
-            merkle_proof_position,
-            account_dapp_id,
-            account_id,
-            block_id,
-            envelope_hash_bytes,
-            block_merkle_proof_siblings,
-            block_merkle_proof_position,
-            dense_chain,
-            num_active_chain_steps,
+            x_account_dapp_id,
+            x_account_id,
+            x_ext_out_merkle_proof_siblings,
+            x_ext_out_merkle_proof_position,
+            x_block_id,
+            x_block_id_h07_sibling,
+            y_block_id,
+            y_envelope_hash,
+            y_tracked_ext_out_messages_root,
+            y_block_merkle_proof_siblings,
+            y_block_merkle_proof_position,
+            y_dense_chain,
+            y_num_active_chain_steps,
             base_circuit_params,
             base_circuit_builder,
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new_for_proving(
         sk_u: Fr,
         ephemeral_pubkey: Fr,
         entries: [BocFlattenData; 2],
-        merkle_proof_siblings: Vec<[u8; 32]>,
-        merkle_proof_position: usize,
-        account_dapp_id: [u8; 32],
-        account_id: [u8; 32],
-        block_id: [u8; 32],
-        envelope_hash_bytes: [u8; 32],
-        block_merkle_proof_siblings: Vec<[u8; 32]>,
-        block_merkle_proof_position: usize,
-        dense_chain: Vec<DenseChainLink>,
-        num_active_chain_steps: usize,
+        // === X-side ===
+        x_account_dapp_id: [u8; 32],
+        x_account_id: [u8; 32],
+        x_ext_out_merkle_proof_siblings: Vec<[u8; 32]>,
+        x_ext_out_merkle_proof_position: usize,
+        x_block_id: [u8; 32],
+        x_block_id_h07_sibling: [u8; 32],
+        // === Y-side ===
+        y_block_id: [u8; 32],
+        y_envelope_hash: [u8; 32],
+        y_tracked_ext_out_messages_root: [u8; 32],
+        y_block_merkle_proof_siblings: Vec<[u8; 32]>,
+        y_block_merkle_proof_position: usize,
+        y_dense_chain: Vec<DenseChainLink>,
+        y_num_active_chain_steps: usize,
         base_circuit_params: BaseCircuitParams,
         break_points: MultiPhaseThreadBreakPoints,
     ) -> Self {
         assert!(
-            merkle_proof_siblings.len() <= MAX_EVENTS_TREE_DEPTH,
-            "events tree depth {} exceeds MAX_EVENTS_TREE_DEPTH {}",
-            merkle_proof_siblings.len(),
+            x_ext_out_merkle_proof_siblings.len() <= MAX_EVENTS_TREE_DEPTH,
+            "X ext-out tree depth {} exceeds MAX_EVENTS_TREE_DEPTH {}",
+            x_ext_out_merkle_proof_siblings.len(),
             MAX_EVENTS_TREE_DEPTH,
         );
-        assert_eq!(dense_chain.len(), MAX_CHAIN_LEN);
-        assert!(num_active_chain_steps <= MAX_CHAIN_LEN);
+        assert_eq!(y_dense_chain.len(), MAX_CHAIN_LEN);
+        assert!(y_num_active_chain_steps <= MAX_CHAIN_LEN);
         let base_circuit_builder = RefCell::new(BaseCircuitBuilder::<Fr>::prover(
             base_circuit_params.clone(),
             break_points,
@@ -317,16 +368,19 @@ impl DarkDexCircuitNew {
             sk_u,
             ephemeral_pubkey,
             entries,
-            merkle_proof_siblings,
-            merkle_proof_position,
-            account_dapp_id,
-            account_id,
-            block_id,
-            envelope_hash_bytes,
-            block_merkle_proof_siblings,
-            block_merkle_proof_position,
-            dense_chain,
-            num_active_chain_steps,
+            x_account_dapp_id,
+            x_account_id,
+            x_ext_out_merkle_proof_siblings,
+            x_ext_out_merkle_proof_position,
+            x_block_id,
+            x_block_id_h07_sibling,
+            y_block_id,
+            y_envelope_hash,
+            y_tracked_ext_out_messages_root,
+            y_block_merkle_proof_siblings,
+            y_block_merkle_proof_position,
+            y_dense_chain,
+            y_num_active_chain_steps,
             base_circuit_params,
             base_circuit_builder,
         }
@@ -359,20 +413,25 @@ impl Circuit<Fr> for DarkDexCircuitNew {
                 cell_repr_data: vec![0u8; self.entries[1].cell_repr_data.len()],
             },
         ];
-        let dummy_chain = self.dense_chain.iter().map(|link| {
+        let dummy_chain = self.y_dense_chain.iter().map(|link| {
             DenseChainLink::inactive([0u8; 32], link.siblings.len())
         }).collect();
         Self::new(
             Fr::zero(),
             Fr::zero(),  // ephemeral_pubkey witness (0 for keygen/dummy)
             dummy_entries,
-            vec![[0u8; 32]; MAX_EVENTS_TREE_DEPTH],
+            // X-side dummies (preserve x_ext_out proof depth for layout stability)
+            [0u8; 32],
+            [0u8; 32],
+            self.x_ext_out_merkle_proof_siblings.iter().map(|_| [0u8; 32]).collect(),
             0,
             [0u8; 32],
             [0u8; 32],
+            // Y-side dummies (preserve y_block_merkle proof depth for layout stability)
             [0u8; 32],
             [0u8; 32],
-            self.block_merkle_proof_siblings.iter().map(|_| [0u8; 32]).collect(),
+            [0u8; 32],
+            self.y_block_merkle_proof_siblings.iter().map(|_| [0u8; 32]).collect(),
             0,
             dummy_chain,
             0,
@@ -429,8 +488,9 @@ impl Circuit<Fr> for DarkDexCircuitNew {
                 final_root,
                 voucher_nominal,
                 token_type,
+                salted_x_start,
+                salted_y_end,
                 salt_commitment,
-                event_salted_block_id,
             ) = {
                 let gate = range.gate();
                 let ctx = builder.pool(0).main();
@@ -593,81 +653,62 @@ impl Circuit<Fr> for DarkDexCircuitNew {
                     ctx, gate, &[salt_assigned],
                 );
 
-                // === a. Compute ext_message_leaf in-circuit ===
-                //
-                // Byte-flat: witness the dapp_id and account_id as 32 byte
-                // cells each (range_check 8 per byte inside the helper). The
-                // repr_hash already lives as 32 byte cells (`root_hash_bytes`
-                // from the SHA-256 chip), so it feeds straight in. This call
-                // is sound — each chunk is uniquely determined by the byte
-                // witnesses; no `chunks_int ≡ Fr (mod p)` malleability.
-                let dapp_id_bytes: [AssignedValue<Fr>; 32] = self
-                    .account_dapp_id
+                // ================================================================
+                // ==================== X-SIDE (SHA family) =======================
+                // Compute x_ext_msg_leaf → x_l8_tracked_ext_out_messages_root,
+                // constrain V<p canonicality on x_l8 bytes, run depth-4 SHA
+                // block_id opening binding x_l8 into x_block_id, expose
+                // salted_x_start on x_block_id.
+                // ================================================================
+
+                // === X.a Compute ext_message_leaf in-circuit ===
+                let x_dapp_id_bytes: [AssignedValue<Fr>; 32] = self
+                    .x_account_dapp_id
                     .map(|b| ctx.load_witness(Fr::from(b as u64)));
-                let account_id_bytes: [AssignedValue<Fr>; 32] = self
-                    .account_id
+                let x_account_id_bytes: [AssignedValue<Fr>; 32] = self
+                    .x_account_id
                     .map(|b| ctx.load_witness(Fr::from(b as u64)));
                 let root_hash_bytes_array: [AssignedValue<Fr>; 32] = root_hash_bytes
                     .clone()
                     .try_into()
                     .expect("root_hash_bytes is exactly 32 cells");
-                let ext_msg_leaf_fr = poseidon_hash_96_circuit_bytes(
+                let x_ext_msg_leaf_fr = poseidon_hash_96_circuit_bytes(
                     ctx, &range, &hasher,
-                    &dapp_id_bytes, &account_id_bytes, &root_hash_bytes_array,
+                    &x_dapp_id_bytes, &x_account_id_bytes, &root_hash_bytes_array,
                 );
 
-                // === c. Prove ext_msg_leaf → ext_out_messages_root ===
-                let ext_msg_leaf_native = poseidon_hash_96_native(
-                    &self.account_dapp_id, &self.account_id, &self.entries[0].repr_hash,
+                // === X.b Prove x_ext_msg_leaf → x_l8_tracked_ext_out_messages_root ===
+                let x_ext_msg_leaf_native = poseidon_hash_96_native(
+                    &self.x_account_dapp_id, &self.x_account_id, &self.entries[0].repr_hash,
                 );
                 // Unpadded proof for native root computation
-                let events_proof_native = preprocess_dense_proof(
-                    ext_msg_leaf_native,
-                    &self.merkle_proof_siblings,
-                    self.merkle_proof_position,
+                let x_events_proof_native = preprocess_dense_proof(
+                    x_ext_msg_leaf_native,
+                    &self.x_ext_out_merkle_proof_siblings,
+                    self.x_ext_out_merkle_proof_position,
                 );
                 // Padded proof for in-circuit verification (always MAX_EVENTS_TREE_DEPTH levels)
-                let events_proof_padded = preprocess_dense_proof_padded(
-                    ext_msg_leaf_native,
-                    &self.merkle_proof_siblings,
-                    self.merkle_proof_position,
+                let x_events_proof_padded = preprocess_dense_proof_padded(
+                    x_ext_msg_leaf_native,
+                    &self.x_ext_out_merkle_proof_siblings,
+                    self.x_ext_out_merkle_proof_position,
                     MAX_EVENTS_TREE_DEPTH,
                 );
                 // Load & range-check num_events_levels in [0, MAX_EVENTS_TREE_DEPTH]
-                let num_events_levels = ctx.load_witness(
-                    Fr::from(self.merkle_proof_siblings.len() as u64),
+                let x_num_events_levels = ctx.load_witness(
+                    Fr::from(self.x_ext_out_merkle_proof_siblings.len() as u64),
                 );
-                range.range_check(ctx, num_events_levels, 4);
+                range.range_check(ctx, x_num_events_levels, 4);
                 let max_ev_const = ctx.load_constant(
                     Fr::from(MAX_EVENTS_TREE_DEPTH as u64),
                 );
-                let ev_diff = gate.sub(ctx, max_ev_const, num_events_levels);
+                let ev_diff = gate.sub(ctx, max_ev_const, x_num_events_levels);
                 range.range_check(ctx, ev_diff, 4);
 
-                let ext_out_root = dense_merkle_root_circuit_padded(
-                    ctx, &range, &hasher, &events_proof_padded,
-                    ext_msg_leaf_fr, num_events_levels,
+                let x_l8_ext_out_root = dense_merkle_root_circuit_padded(
+                    ctx, &range, &hasher, &x_events_proof_padded,
+                    x_ext_msg_leaf_fr, x_num_events_levels,
                 );
-
-                // === d. Compute block_leaf in-circuit (byte-flat, sound) ===
-                //
-                // Witness the three 32-byte inputs as byte cells (range_check
-                // 8 inside `poseidon_hash_96_circuit_bytes` and additionally
-                // here for the linking inner products). The byte-flat sibling
-                // pins each chunk uniquely by the per-byte witnesses, so no
-                // `chunks_int ≡ Fr (mod p)` malleability.
-                let block_id_bytes: [AssignedValue<Fr>; 32] = self
-                    .block_id
-                    .map(|b| ctx.load_witness(Fr::from(b as u64)));
-                for &c in &block_id_bytes {
-                    range.range_check(ctx, c, 8);
-                }
-                let envelope_hash_bytes_cells: [AssignedValue<Fr>; 32] = self
-                    .envelope_hash_bytes
-                    .map(|b| ctx.load_witness(Fr::from(b as u64)));
-                for &c in &envelope_hash_bytes_cells {
-                    range.range_check(ctx, c, 8);
-                }
 
                 // Reusable LE powers of 256 up to 31 (matches `inner_product`
                 // weights for a 32-byte LE integer decomposition).
@@ -675,15 +716,15 @@ impl Circuit<Fr> for DarkDexCircuitNew {
                     .map(|i| QuantumCell::Constant(Fr::from(256u64).pow([i as u64])))
                     .collect();
 
-                // === byte-flat event_salted_block_id ===
+                // === Salt decomposition (shared by salted_X_start and salted_Y_end) ===
                 //
                 // Match `compute_salted_block_id_native(salt, block_id)` in
                 // `salt.rs`: chunk the 64-byte stream `fr_to_bytes(salt) ‖
                 // block_id` at 31-byte boundaries (top byte zero ⇒ Fr-safe).
-                //   chunk0 = LE(salt[0..31])
+                //   chunk0 = LE(salt[0..31])                         (31 B)
                 //   chunk1 = salt_hi + 256 · LE(block_id[0..30])     (31 B)
                 //   chunk2 = LE(block_id[30..32])                    (2 B)
-                //   event_salted_block_id = Poseidon([c0, c1, c2])
+                //   salted = Poseidon([c0, c1, c2])
                 //
                 // Decompose `salt_assigned` once into salt_chunk0 + salt_hi · 2^248
                 // (matches the pattern in `multi_hop_proof.rs` so the on-chain
@@ -717,83 +758,39 @@ impl Circuit<Fr> for DarkDexCircuitNew {
                     ctx.constrain_equal(&reconstructed, &salt_assigned);
                 }
 
-                let event_salted_block_id = {
-                    // chunk1 = salt_hi + 256 · LE(block_id[0..30])
-                    let block_id_lo30 = {
-                        let cells: Vec<QuantumCell<Fr>> = block_id_bytes[0..30]
-                            .iter()
-                            .map(|c| QuantumCell::Existing(*c))
-                            .collect();
-                        gate.inner_product(
-                            ctx,
-                            cells,
-                            powers_le_32[0..30].iter().cloned(),
-                        )
-                    };
-                    let chunk1 = gate.mul_add(
-                        ctx,
-                        QuantumCell::Existing(block_id_lo30),
-                        QuantumCell::Constant(Fr::from(256u64)),
-                        QuantumCell::Existing(salt_hi),
-                    );
-                    // chunk2 = LE(block_id[30..32])
-                    let chunk2 = {
-                        let cells: Vec<QuantumCell<Fr>> = block_id_bytes[30..32]
-                            .iter()
-                            .map(|c| QuantumCell::Existing(*c))
-                            .collect();
-                        gate.inner_product(
-                            ctx,
-                            cells,
-                            powers_le_32[0..2].iter().cloned(),
-                        )
-                    };
-                    hasher.hash_fix_len_array(
-                        ctx,
-                        gate,
-                        &[salt_chunk0, chunk1, chunk2],
-                    )
-                };
-
-                // When the events proof has 0 levels, the padded circuit returns
-                // the leaf unchanged. The native computation must match.
-                let ext_out_root_bytes = if self.merkle_proof_siblings.is_empty() {
-                    ext_msg_leaf_native
-                } else {
-                    fr_to_bytes(compute_root_native(&events_proof_native))
-                };
-
-                // `ext_out_root` is the algebraic Fr output of
+                // === X.c V<p canonical byte decomposition of x_l8 ===
+                //
+                // `x_l8_ext_out_root` is the algebraic Fr output of
                 // `dense_merkle_root_circuit_padded` (a Poseidon image, so
-                // < p). To feed it into byte-flat Poseidon we need 32 byte
-                // cells with a CANONICAL decomposition: `V = sum bytes_i · 256^i`
-                // and `V < p`. Without the `<p` check, ~5 distinct byte
-                // strings would map to the same Fr value, regaining the
-                // `bytes_to_fr` malleability we just escaped.
-                let ext_out_root_bytes_cells: [AssignedValue<Fr>; 32] = {
-                    let v: Vec<AssignedValue<Fr>> = ext_out_root_bytes
+                // < p). To feed it as bytes into the SHA depth-4 opening
+                // we need 32 byte cells with a CANONICAL decomposition:
+                // `V = sum bytes_i · 256^i` and `V < p`.
+                let x_l8_bytes_native = if self.x_ext_out_merkle_proof_siblings.is_empty() {
+                    x_ext_msg_leaf_native
+                } else {
+                    fr_to_bytes(compute_root_native(&x_events_proof_native))
+                };
+                let x_l8_bytes_cells: [AssignedValue<Fr>; 32] = {
+                    let v: Vec<AssignedValue<Fr>> = x_l8_bytes_native
                         .iter()
                         .map(|&b| ctx.load_witness(Fr::from(b as u64)))
                         .collect();
                     v.try_into()
-                        .expect("ext_out_root_bytes is exactly 32 bytes")
+                        .expect("x_l8_bytes_native is exactly 32 bytes")
                 };
-                for &c in &ext_out_root_bytes_cells {
+                for &c in &x_l8_bytes_cells {
                     range.range_check(ctx, c, 8);
                 }
-                // Linking equation (mod p): sum_i byte_i · 256^i == ext_out_root.
+                // Linking equation (mod p): sum_i byte_i · 256^i == x_l8_ext_out_root.
                 {
-                    let cells: Vec<QuantumCell<Fr>> = ext_out_root_bytes_cells
+                    let cells: Vec<QuantumCell<Fr>> = x_l8_bytes_cells
                         .iter()
                         .map(|c| QuantumCell::Existing(*c))
                         .collect();
                     let sum = gate.inner_product(ctx, cells, powers_le_32.clone());
-                    ctx.constrain_equal(&sum, &ext_out_root);
+                    ctx.constrain_equal(&sum, &x_l8_ext_out_root);
                 }
                 // Canonical-form check: V < p, with V = V_lo + V_hi · 2^128.
-                //   p = 0x30644E72_E131A029_B85045B6_8181585D
-                //       _2833E848_79B97091_43E1F593_F0000001
-                // V < p  iff  (V_hi < P_HI)  OR  (V_hi == P_HI  AND  V_lo < P_LO).
                 {
                     let p_lo = Fr::from_raw([
                         0x43e1_f593_f000_0001,
@@ -807,12 +804,12 @@ impl Circuit<Fr> for DarkDexCircuitNew {
                         0,
                         0,
                     ]);
-                    let lo_cells: Vec<QuantumCell<Fr>> = ext_out_root_bytes_cells
+                    let lo_cells: Vec<QuantumCell<Fr>> = x_l8_bytes_cells
                         [0..16]
                         .iter()
                         .map(|c| QuantumCell::Existing(*c))
                         .collect();
-                    let hi_cells: Vec<QuantumCell<Fr>> = ext_out_root_bytes_cells
+                    let hi_cells: Vec<QuantumCell<Fr>> = x_l8_bytes_cells
                         [16..32]
                         .iter()
                         .map(|c| QuantumCell::Existing(*c))
@@ -827,7 +824,6 @@ impl Circuit<Fr> for DarkDexCircuitNew {
                         hi_cells,
                         powers_le_32[0..16].iter().cloned(),
                     );
-                    // Each limb is 16 bytes · 8 bits = 128 bits, < 2^128 < p_hi/p_lo bound.
                     let hi_less = range.is_less_than(
                         ctx,
                         QuantumCell::Existing(v_hi),
@@ -851,45 +847,176 @@ impl Circuit<Fr> for DarkDexCircuitNew {
                     ctx.constrain_equal(&valid, &one);
                 }
 
-                let block_leaf_fr = poseidon_hash_96_circuit_bytes(
-                    ctx, &range, &hasher,
-                    &block_id_bytes,
-                    &envelope_hash_bytes_cells,
-                    &ext_out_root_bytes_cells,
+                // === X.d Depth-4 SHA opening binding x_l8 into x_block_id ===
+                //
+                // 4 additional SHA compressions verify that x_block_id is the
+                // depth-4 SHA-tree root of 16 leaves where only leaf 8 = x_l8
+                // carries content (leaves 9..=15 are zero, leaves 0..=7 are
+                // aggregated into `x_block_id_h07_sibling`).
+                let x_block_id_bytes: [AssignedValue<Fr>; 32] = self
+                    .x_block_id
+                    .map(|b| ctx.load_witness(Fr::from(b as u64)));
+                for &c in &x_block_id_bytes {
+                    range.range_check(ctx, c, 8);
+                }
+                let x_h07_sibling_bytes: [AssignedValue<Fr>; 32] = self
+                    .x_block_id_h07_sibling
+                    .map(|b| ctx.load_witness(Fr::from(b as u64)));
+                // (assert_depth4_l8_opening_circuit re-range-checks h07 defensively)
+                assert_depth4_l8_opening_circuit(
+                    ctx,
+                    &range,
+                    &sha256_chip,
+                    &x_l8_bytes_cells,
+                    &x_h07_sibling_bytes,
+                    &x_block_id_bytes,
                 );
 
-                // === e. Prove block_leaf → history window root (root_1) ===
+                // === X.e salted_X_start = byte-flat Poseidon on x_block_id ===
+                let salted_x_start = {
+                    let block_id_lo30 = {
+                        let cells: Vec<QuantumCell<Fr>> = x_block_id_bytes[0..30]
+                            .iter()
+                            .map(|c| QuantumCell::Existing(*c))
+                            .collect();
+                        gate.inner_product(
+                            ctx,
+                            cells,
+                            powers_le_32[0..30].iter().cloned(),
+                        )
+                    };
+                    let chunk1 = gate.mul_add(
+                        ctx,
+                        QuantumCell::Existing(block_id_lo30),
+                        QuantumCell::Constant(Fr::from(256u64)),
+                        QuantumCell::Existing(salt_hi),
+                    );
+                    let chunk2 = {
+                        let cells: Vec<QuantumCell<Fr>> = x_block_id_bytes[30..32]
+                            .iter()
+                            .map(|c| QuantumCell::Existing(*c))
+                            .collect();
+                        gate.inner_product(
+                            ctx,
+                            cells,
+                            powers_le_32[0..2].iter().cloned(),
+                        )
+                    };
+                    hasher.hash_fix_len_array(
+                        ctx,
+                        gate,
+                        &[salt_chunk0, chunk1, chunk2],
+                    )
+                };
+
+                // ================================================================
+                // ==================== Y-SIDE (Poseidon family) ==================
+                // Opaque byte-cell witnesses for y_block_id, y_envelope_hash,
+                // y_tracked_ext_out_messages_root → block_leaf_Y → depth-8
+                // Poseidon dense-Merkle → chain → final_root. Expose salted_Y_end.
+                // ================================================================
+
+                let y_block_id_bytes: [AssignedValue<Fr>; 32] = self
+                    .y_block_id
+                    .map(|b| ctx.load_witness(Fr::from(b as u64)));
+                for &c in &y_block_id_bytes {
+                    range.range_check(ctx, c, 8);
+                }
+                let y_envelope_hash_bytes_cells: [AssignedValue<Fr>; 32] = self
+                    .y_envelope_hash
+                    .map(|b| ctx.load_witness(Fr::from(b as u64)));
+                for &c in &y_envelope_hash_bytes_cells {
+                    range.range_check(ctx, c, 8);
+                }
+                let y_tracked_ext_out_root_bytes_cells: [AssignedValue<Fr>; 32] = self
+                    .y_tracked_ext_out_messages_root
+                    .map(|b| ctx.load_witness(Fr::from(b as u64)));
+                for &c in &y_tracked_ext_out_root_bytes_cells {
+                    range.range_check(ctx, c, 8);
+                }
+
+                // === Y.a block_leaf(Y) = Poseidon96(y_block_id, y_envelope_hash,
+                //                                   y_tracked_ext_out_messages_root) ===
+                let block_leaf_fr = poseidon_hash_96_circuit_bytes(
+                    ctx, &range, &hasher,
+                    &y_block_id_bytes,
+                    &y_envelope_hash_bytes_cells,
+                    &y_tracked_ext_out_root_bytes_cells,
+                );
+
+                // === Y.b Prove block_leaf → history window root (root_1) ===
                 let block_leaf_native = poseidon_hash_96_native(
-                    &self.block_id, &self.envelope_hash_bytes, &ext_out_root_bytes,
+                    &self.y_block_id,
+                    &self.y_envelope_hash,
+                    &self.y_tracked_ext_out_messages_root,
                 );
                 let block_proof = preprocess_dense_proof(
                     block_leaf_native,
-                    &self.block_merkle_proof_siblings,
-                    self.block_merkle_proof_position,
+                    &self.y_block_merkle_proof_siblings,
+                    self.y_block_merkle_proof_position,
                 );
                 let root_1 = dense_merkle_root_circuit(
                     ctx, &range, &hasher, &block_proof, block_leaf_fr,
                 );
 
-                // === f. Optional chain of dense proofs ===
-                // Constrain num_active_chain_steps in [0, MAX_CHAIN_LEN].
-                let num_active = ctx.load_witness(Fr::from(self.num_active_chain_steps as u64));
+                // === Y.c Optional chain of dense proofs ===
+                let num_active = ctx.load_witness(
+                    Fr::from(self.y_num_active_chain_steps as u64),
+                );
                 range.range_check(ctx, num_active, 4);
                 let max_chain_const = ctx.load_constant(Fr::from(MAX_CHAIN_LEN as u64));
                 let max_minus_na = gate.sub(ctx, max_chain_const, num_active);
                 range.range_check(ctx, max_minus_na, 4);
 
                 let final_root = verify_chain_of_dense_proofs(
-                    ctx, &range, &hasher, root_1, &self.dense_chain, num_active,
+                    ctx, &range, &hasher, root_1, &self.y_dense_chain, num_active,
                 );
+
+                // === Y.d salted_Y_end = byte-flat Poseidon on y_block_id ===
+                let salted_y_end = {
+                    let block_id_lo30 = {
+                        let cells: Vec<QuantumCell<Fr>> = y_block_id_bytes[0..30]
+                            .iter()
+                            .map(|c| QuantumCell::Existing(*c))
+                            .collect();
+                        gate.inner_product(
+                            ctx,
+                            cells,
+                            powers_le_32[0..30].iter().cloned(),
+                        )
+                    };
+                    let chunk1 = gate.mul_add(
+                        ctx,
+                        QuantumCell::Existing(block_id_lo30),
+                        QuantumCell::Constant(Fr::from(256u64)),
+                        QuantumCell::Existing(salt_hi),
+                    );
+                    let chunk2 = {
+                        let cells: Vec<QuantumCell<Fr>> = y_block_id_bytes[30..32]
+                            .iter()
+                            .map(|c| QuantumCell::Existing(*c))
+                            .collect();
+                        gate.inner_product(
+                            ctx,
+                            cells,
+                            powers_le_32[0..2].iter().cloned(),
+                        )
+                    };
+                    hasher.hash_fix_len_array(
+                        ctx,
+                        gate,
+                        &[salt_chunk0, chunk1, chunk2],
+                    )
+                };
 
                 (
                     final_hasher_result,
                     final_root,
                     voucher_nominal,
                     token_type,
+                    salted_x_start,
+                    salted_y_end,
                     salt_commitment,
-                    event_salted_block_id,
                 )
             };
 
@@ -907,11 +1034,13 @@ impl Circuit<Fr> for DarkDexCircuitNew {
             builder.assigned_instances[0].push(voucher_nominal);
             builder.assigned_instances[0].push(token_type);
             builder.assigned_instances[0].push(eph);
-            // Salt-derived publics (binds this DexFinalProof to its bundle's
-            // MultiHopProofs via salt_commitment, and exposes the event block
-            // id under the same salt for chain-head splicing).
+            // §7.3 V2 publics: salted_X_start (event-side, X block_id under
+            // the same salt) and salted_Y_end (anchor-side, Y block_id under
+            // the same salt). These bind the DexFinalProof to the bundle's
+            // MultiHopProof chain endpoints.
+            builder.assigned_instances[0].push(salted_x_start);
+            builder.assigned_instances[0].push(salted_y_end);
             builder.assigned_instances[0].push(salt_commitment);
-            builder.assigned_instances[0].push(event_salted_block_id);
         }
 
         // Synthesize base circuit builder to materialize virtual constraints.
@@ -932,6 +1061,108 @@ mod tests {
     use crate::test_helpers::*;
     use dense_balanced_tree::PoseidonHasher as DensePoseidonHasher;
     use halo2_base::halo2_proofs::dev::MockProver;
+
+    // -------------------------------------------------------------------
+    // V2 test helpers: build a `DarkDexCircuitNew` (V2 §7.7 semantics)
+    // from a `TwoLevelWitnesses` under the uniform t=0 (X==Y) assumption.
+    // In the uniform case:
+    //   * X-side and Y-side block_id agree (== `tw.block_id` == v2_x_block_id).
+    //   * y_tracked_ext_out_messages_root == v2_x_l8 (== events tree root).
+    //   * salted_X_start == salted_Y_end (both use the same block_id under
+    //     the same salt).
+    // Cross-thread tests use `build_v2_cross_thread_witness` directly and
+    // do NOT go through these helpers.
+    // -------------------------------------------------------------------
+    #[cfg(test)]
+    fn make_v2_circuit(
+        sk_u: Fr,
+        ephemeral_pubkey: Fr,
+        entries: [BocFlattenData; 2],
+        tw: &TwoLevelWitnesses,
+        dense_chain: Vec<DenseChainLink>,
+        chain_len: usize,
+        params: BaseCircuitParams,
+    ) -> DarkDexCircuitNew {
+        DarkDexCircuitNew::new(
+            sk_u,
+            ephemeral_pubkey,
+            entries,
+            tw.account_dapp_id,
+            tw.account_id,
+            tw.events_siblings.clone(),
+            tw.events_pos,
+            tw.block_id,
+            tw.v2_x_block_id_h07_sibling,
+            tw.block_id,
+            tw.envelope_hash_bytes,
+            tw.v2_x_l8,
+            tw.block_siblings.clone(),
+            tw.block_pos,
+            dense_chain,
+            chain_len,
+            params,
+        )
+    }
+
+    #[cfg(test)]
+    fn make_v2_prover_circuit(
+        sk_u: Fr,
+        ephemeral_pubkey: Fr,
+        entries: [BocFlattenData; 2],
+        tw: &TwoLevelWitnesses,
+        dense_chain: Vec<DenseChainLink>,
+        chain_len: usize,
+        params: BaseCircuitParams,
+        break_points: MultiPhaseThreadBreakPoints,
+    ) -> DarkDexCircuitNew {
+        DarkDexCircuitNew::new_for_proving(
+            sk_u,
+            ephemeral_pubkey,
+            entries,
+            tw.account_dapp_id,
+            tw.account_id,
+            tw.events_siblings.clone(),
+            tw.events_pos,
+            tw.block_id,
+            tw.v2_x_block_id_h07_sibling,
+            tw.block_id,
+            tw.envelope_hash_bytes,
+            tw.v2_x_l8,
+            tw.block_siblings.clone(),
+            tw.block_pos,
+            dense_chain,
+            chain_len,
+            params,
+            break_points,
+        )
+    }
+
+    /// Build the 8-instance §7.3 publics vector for a uniform-t=0
+    /// DexFinalProof: `[depositIdentifierHash, finalLayerHistoricalHashRoot,
+    /// voucherNominalFr, tokenTypeFr, ephemeralPubkey, salted_X_start,
+    /// salted_Y_end, salt_commitment]`. In the uniform case
+    /// `salted_X_start == salted_Y_end`.
+    #[cfg(test)]
+    fn make_v2_instances(
+        v: &VoucherFields,
+        final_root_fr: Fr,
+        ephemeral_pubkey: Fr,
+        tw: &TwoLevelWitnesses,
+    ) -> Vec<Fr> {
+        let salt = compute_salt_native(v.sk_u);
+        let salt_commitment = compute_salt_commitment_native(salt);
+        let salted = compute_salted_block_id_native(salt, &tw.block_id);
+        vec![
+            v.expected_poseidon_hash,
+            final_root_fr,
+            v.voucher_nominal_val,
+            v.token_type_val,
+            ephemeral_pubkey,
+            salted, // salted_X_start
+            salted, // salted_Y_end (== salted_X_start under t=0)
+            salt_commitment,
+        ]
+    }
 
     #[test]
     fn test_dark_dex_circuit_for_all_collected_events_mock_prover() {
@@ -966,43 +1197,21 @@ mod tests {
             let final_root_fr = bytes_to_fr(&final_root_bytes);
 
             let ephemeral_pubkey = Fr::from(0xDEADu64);
-            let circuit = DarkDexCircuitNew::new(
+            let circuit = make_v2_circuit(
                 v.sk_u,
                 ephemeral_pubkey,
                 v.entries.clone(),
-                tw.events_siblings,
-                tw.events_pos,
-                tw.account_dapp_id,
-                tw.account_id,
-                tw.block_id,
-                tw.envelope_hash_bytes,
-                tw.block_siblings,
-                tw.block_pos,
+                &tw,
                 dense_chain,
                 1,
                 params.clone(),
             );
 
-            // Derive salt-based publics for this voucher.
-            let salt = compute_salt_native(v.sk_u);
-            let salt_commitment = compute_salt_commitment_native(salt);
-            let event_salted_block_id = compute_salted_block_id_native(salt, &tw.block_id);
+            let instances = make_v2_instances(v, final_root_fr, ephemeral_pubkey, &tw);
 
             println!("Running MockProver...");
-            let prover = MockProver::<Fr>::run(
-                K,
-                &circuit,
-                vec![vec![
-                    v.expected_poseidon_hash,
-                    final_root_fr,
-                    v.voucher_nominal_val,
-                    v.token_type_val,
-                    ephemeral_pubkey,
-                    salt_commitment,
-                    event_salted_block_id,
-                ]],
-            )
-            .unwrap();
+            let prover = MockProver::<Fr>::run(K, &circuit, vec![instances])
+                .unwrap();
             prover.assert_satisfied();
             println!("Voucher {} passed", idx);
         }
@@ -1034,44 +1243,21 @@ mod tests {
             let final_root_fr = bytes_to_fr(&final_root_bytes);
 
             let ephemeral_pubkey = Fr::from(0xDEADu64);
-            let circuit = DarkDexCircuitNew::new(
+            let circuit = make_v2_circuit(
                 v.sk_u,
                 ephemeral_pubkey,
                 v.entries.clone(),
-                tw.events_siblings.clone(),
-                tw.events_pos,
-                tw.account_dapp_id,
-                tw.account_id,
-                tw.block_id,
-                tw.envelope_hash_bytes,
-                tw.block_siblings.clone(),
-                tw.block_pos,
+                &tw,
                 dense_chain,
                 t,
                 params.clone(),
             );
 
-            // Salt-based publics (constant across the T-loop, but
-            // recomputed each iteration for clarity).
-            let salt = compute_salt_native(v.sk_u);
-            let salt_commitment = compute_salt_commitment_native(salt);
-            let event_salted_block_id = compute_salted_block_id_native(salt, &tw.block_id);
+            let instances = make_v2_instances(&v, final_root_fr, ephemeral_pubkey, &tw);
 
             println!("Running MockProver for T={}...", t);
-            let prover = MockProver::<Fr>::run(
-                K,
-                &circuit,
-                vec![vec![
-                    v.expected_poseidon_hash,
-                    final_root_fr,
-                    v.voucher_nominal_val,
-                    v.token_type_val,
-                    ephemeral_pubkey,
-                    salt_commitment,
-                    event_salted_block_id,
-                ]],
-            )
-            .unwrap();
+            let prover = MockProver::<Fr>::run(K, &circuit, vec![instances])
+                .unwrap();
             prover.assert_satisfied();
             println!("T={} passed!", t);
         }
@@ -1104,18 +1290,11 @@ mod tests {
         // since verify_chain_of_dense_proofs always processes MAX_CHAIN_LEN links).
         let (keygen_chain, _) = build_dense_chain(tw.blocks_root_level_0, 1, 130);
         let ephemeral_pubkey = Fr::from(0xDEADu64);
-        let keygen_circuit = DarkDexCircuitNew::new(
+        let keygen_circuit = make_v2_circuit(
             v.sk_u,
             ephemeral_pubkey,
             v.entries.clone(),
-            tw.events_siblings.clone(),
-            tw.events_pos,
-            tw.account_dapp_id,
-            tw.account_id,
-            tw.block_id,
-            tw.envelope_hash_bytes,
-            tw.block_siblings.clone(),
-            tw.block_pos,
+            &tw,
             keygen_chain,
             1,
             params.clone(),
@@ -1148,39 +1327,19 @@ mod tests {
             let (dense_chain, final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, chain_len, 130);
             let final_root_fr = bytes_to_fr(&final_root_bytes);
 
-            let prover_circuit = DarkDexCircuitNew::new_for_proving(
+            let prover_circuit = make_v2_prover_circuit(
                 v.sk_u,
                 ephemeral_pubkey,
                 v.entries.clone(),
-                tw.events_siblings.clone(),
-                tw.events_pos,
-                tw.account_dapp_id,
-                tw.account_id,
-                tw.block_id,
-                tw.envelope_hash_bytes,
-                tw.block_siblings.clone(),
-                tw.block_pos,
+                &tw,
                 dense_chain,
                 chain_len,
                 params.clone(),
                 break_points.clone(),
             );
 
-            // Salt publics.
-            let salt = compute_salt_native(v.sk_u);
-            let salt_commitment = compute_salt_commitment_native(salt);
-            let event_salted_block_id = compute_salted_block_id_native(salt, &tw.block_id);
-
             let start = Instant::now();
-            let instance_fr = vec![
-                v.expected_poseidon_hash,
-                final_root_fr,
-                v.voucher_nominal_val,
-                v.token_type_val,
-                ephemeral_pubkey,
-                salt_commitment,
-                event_salted_block_id,
-            ];
+            let instance_fr = make_v2_instances(&v, final_root_fr, ephemeral_pubkey, &tw);
             let proof_bytes =
                 gen_proof_with_instances(&srs, &pk, prover_circuit, &[&instance_fr]);
             let prove_ms = start.elapsed().as_millis();
@@ -1272,18 +1431,11 @@ mod tests {
         // Keygen against a 1-step chain circuit; circuit shape is the same for all chain
         // lengths since verify_chain_of_dense_proofs always processes MAX_CHAIN_LEN links.
         let (keygen_chain, _) = build_dense_chain(tw.blocks_root_level_0, 1, 130);
-        let keygen_circuit = DarkDexCircuitNew::new(
+        let keygen_circuit = make_v2_circuit(
             v.sk_u,
             ephemeral_pubkey,
             v.entries.clone(),
-            tw.events_siblings.clone(),
-            tw.events_pos,
-            tw.account_dapp_id,
-            tw.account_id,
-            tw.block_id,
-            tw.envelope_hash_bytes,
-            tw.block_siblings.clone(),
-            tw.block_pos,
+            &tw,
             keygen_chain,
             1,
             params.clone(),
@@ -1312,39 +1464,20 @@ mod tests {
                 build_dense_chain(tw.blocks_root_level_0, chain_len, 130);
             let final_root_fr = bytes_to_fr(&final_root_bytes);
 
-            let prover_circuit = DarkDexCircuitNew::new_for_proving(
+            let prover_circuit = make_v2_prover_circuit(
                 v.sk_u,
                 ephemeral_pubkey,
                 v.entries.clone(),
-                tw.events_siblings.clone(),
-                tw.events_pos,
-                tw.account_dapp_id,
-                tw.account_id,
-                tw.block_id,
-                tw.envelope_hash_bytes,
-                tw.block_siblings.clone(),
-                tw.block_pos,
+                &tw,
                 dense_chain,
                 chain_len,
                 params.clone(),
                 break_points.clone(),
             );
 
-            // Salt publics.
-            let salt = compute_salt_native(v.sk_u);
-            let salt_commitment = compute_salt_commitment_native(salt);
-            let event_salted_block_id = compute_salted_block_id_native(salt, &tw.block_id);
-
-            let instance_fr = vec![
-                v.expected_poseidon_hash,
-                final_root_fr,
-                v.voucher_nominal_val,
-                v.token_type_val,
-                ephemeral_pubkey,
-                salt_commitment,
-                event_salted_block_id,
-            ];
-            assert_eq!(instance_fr.len(), 7);
+            let instance_fr = make_v2_instances(&v, final_root_fr, ephemeral_pubkey, &tw);
+            // §7.3 V2: 8 Fr publics.
+            assert_eq!(instance_fr.len(), 8);
 
             println!("\n[L{}] proving...", chain_len);
             let start = Instant::now();
@@ -1357,13 +1490,14 @@ mod tests {
             );
             check_proof_with_instances(&srs, pk.get_vk(), &proof_bytes, &[&instance_fr], true);
 
-            // 7 Fr × 32 bytes LE = 224 B (was 160 B before salt publics);
-            // tvm-sdk decodes via Fr::from_bytes_le (byte-exact symmetric).
-            let mut instances_bytes: Vec<u8> = Vec::with_capacity(7 * 32);
+            // 8 Fr × 32 bytes LE = 256 B (was 224 B before splitting the
+            // salted endpoints); tvm-sdk decodes via Fr::from_bytes_le
+            // (byte-exact symmetric).
+            let mut instances_bytes: Vec<u8> = Vec::with_capacity(8 * 32);
             for fr in &instance_fr {
                 instances_bytes.extend_from_slice(fr.to_repr().as_ref());
             }
-            assert_eq!(instances_bytes.len(), 224);
+            assert_eq!(instances_bytes.len(), 256);
 
             let proof_path = out_dir.join(format!("dark_dex_w128_L{}_proof.bin", chain_len));
             let instances_path = out_dir.join(format!("dark_dex_w128_L{}_instances.bin", chain_len));
@@ -1410,18 +1544,11 @@ mod tests {
         let (total_advice, total_lookup, total_fixed);
         {
             let params = base_circuit_params();
-            let measure_circuit = DarkDexCircuitNew::new(
+            let measure_circuit = make_v2_circuit(
                 v.sk_u,
                 ephemeral_pubkey,
                 v.entries.clone(),
-                tw.events_siblings.clone(),
-                tw.events_pos,
-                tw.account_dapp_id,
-                tw.account_id,
-                tw.block_id,
-                tw.envelope_hash_bytes,
-                tw.block_siblings.clone(),
-                tw.block_pos,
+                &tw,
                 dense_chain.clone(),
                 1,
                 params,
@@ -1492,18 +1619,11 @@ mod tests {
             println!("  SRS gen:   {}ms", start.elapsed().as_millis());
 
             // Keygen
-            let keygen_circuit = DarkDexCircuitNew::new(
+            let keygen_circuit = make_v2_circuit(
                 v.sk_u,
                 ephemeral_pubkey,
                 v.entries.clone(),
-                tw.events_siblings.clone(),
-                tw.events_pos,
-                tw.account_dapp_id,
-                tw.account_id,
-                tw.block_id,
-                tw.envelope_hash_bytes,
-                tw.block_siblings.clone(),
-                tw.block_pos,
+                &tw,
                 dense_chain.clone(),
                 1,
                 params.clone(),
@@ -1522,39 +1642,19 @@ mod tests {
             let break_points = keygen_circuit.base_circuit_builder.borrow().break_points();
 
             // Prove
-            let prover_circuit = DarkDexCircuitNew::new_for_proving(
+            let prover_circuit = make_v2_prover_circuit(
                 v.sk_u,
                 ephemeral_pubkey,
                 v.entries.clone(),
-                tw.events_siblings.clone(),
-                tw.events_pos,
-                tw.account_dapp_id,
-                tw.account_id,
-                tw.block_id,
-                tw.envelope_hash_bytes,
-                tw.block_siblings.clone(),
-                tw.block_pos,
+                &tw,
                 dense_chain.clone(),
                 1,
                 params,
                 break_points,
             );
 
-            // Salt publics.
-            let salt = compute_salt_native(v.sk_u);
-            let salt_commitment = compute_salt_commitment_native(salt);
-            let event_salted_block_id = compute_salted_block_id_native(salt, &tw.block_id);
-
             let start = Instant::now();
-            let instance_fr = vec![
-                v.expected_poseidon_hash,
-                final_root_fr,
-                v.voucher_nominal_val,
-                v.token_type_val,
-                ephemeral_pubkey,
-                salt_commitment,
-                event_salted_block_id,
-            ];
+            let instance_fr = make_v2_instances(&v, final_root_fr, ephemeral_pubkey, &tw);
             let proof_bytes =
                 gen_proof_with_instances(&srs, &pk, prover_circuit, &[&instance_fr]);
             let prove_ms = start.elapsed().as_millis();
@@ -1634,43 +1734,21 @@ mod tests {
             let final_root_fr = bytes_to_fr(&final_root_bytes);
 
             let ephemeral_pubkey = Fr::from(0xDEADu64);
-            let circuit = DarkDexCircuitNew::new(
+            let circuit = make_v2_circuit(
                 v.sk_u,
                 ephemeral_pubkey,
                 v.entries.clone(),
-                tw.events_siblings,
-                tw.events_pos,
-                tw.account_dapp_id,
-                tw.account_id,
-                tw.block_id,
-                tw.envelope_hash_bytes,
-                tw.block_siblings,
-                tw.block_pos,
+                &tw,
                 dense_chain,
                 1,
                 params.clone(),
             );
 
-            // Salt publics.
-            let salt = compute_salt_native(v.sk_u);
-            let salt_commitment = compute_salt_commitment_native(salt);
-            let event_salted_block_id = compute_salted_block_id_native(salt, &tw.block_id);
+            let instances = make_v2_instances(&v, final_root_fr, ephemeral_pubkey, &tw);
 
             println!("Running MockProver...");
-            let prover = MockProver::<Fr>::run(
-                K,
-                &circuit,
-                vec![vec![
-                    v.expected_poseidon_hash,
-                    final_root_fr,
-                    v.voucher_nominal_val,
-                    v.token_type_val,
-                    ephemeral_pubkey,
-                    salt_commitment,
-                    event_salted_block_id,
-                ]],
-            )
-            .unwrap();
+            let prover = MockProver::<Fr>::run(K, &circuit, vec![instances])
+                .unwrap();
             prover.assert_satisfied();
             println!(
                 "Events leaves={}, depth={} passed!",
@@ -1679,6 +1757,217 @@ mod tests {
         }
         println!(
             "\nAll variable-depth events tree tests passed!"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // V2 cross-thread (X ≠ Y) positive test
+    // -------------------------------------------------------------------
+
+    /// Build a V2 DarkDexCircuitNew from a cross-thread (X ≠ Y) witness.
+    /// X-side leaf-8 opens a distinct depth-4 SHA tree from the Y-side
+    /// block anchor; the two block_ids differ.
+    #[cfg(test)]
+    fn make_v2_circuit_cross_thread(
+        sk_u: Fr,
+        ephemeral_pubkey: Fr,
+        entries: [BocFlattenData; 2],
+        ctw: &V2CrossThreadWitness,
+        dense_chain: Vec<DenseChainLink>,
+        chain_len: usize,
+        params: BaseCircuitParams,
+    ) -> DarkDexCircuitNew {
+        DarkDexCircuitNew::new(
+            sk_u,
+            ephemeral_pubkey,
+            entries,
+            ctw.x_account_dapp_id,
+            ctw.x_account_id,
+            ctw.x_ext_out_siblings.clone(),
+            ctw.x_ext_out_pos,
+            ctw.x_block_id,
+            ctw.x_block_id_h07_sibling,
+            ctw.y_block_id,
+            ctw.y_envelope_hash,
+            ctw.y_tracked_ext_out_root,
+            ctw.y_block_siblings.clone(),
+            ctw.y_block_pos,
+            dense_chain,
+            chain_len,
+            params,
+        )
+    }
+
+    #[test]
+    fn test_dark_dex_circuit_new_cross_thread() {
+        use rand::rngs::StdRng;
+        use rand::SeedableRng;
+
+        let v = load_first_voucher();
+        let dense_hasher = DensePoseidonHasher::new();
+        let mut rng = StdRng::seed_from_u64(2026);
+
+        let ctw = build_v2_cross_thread_witness(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
+        assert_ne!(
+            ctw.x_block_id, ctw.y_block_id,
+            "cross-thread witness must have distinct X/Y block_ids"
+        );
+
+        let (dense_chain, final_root_bytes) = build_dense_chain(ctw.y_blocks_root_level_0, 1, 130);
+        let final_root_fr = bytes_to_fr(&final_root_bytes);
+
+        let params = base_circuit_params();
+        let ephemeral_pubkey = Fr::from(0xBEEFu64);
+
+        let circuit = make_v2_circuit_cross_thread(
+            v.sk_u,
+            ephemeral_pubkey,
+            v.entries.clone(),
+            &ctw,
+            dense_chain,
+            1,
+            params,
+        );
+
+        // Build 8-instance publics with the CROSS-THREAD X/Y block ids
+        // (they differ, so salted_X_start ≠ salted_Y_end).
+        let salt = compute_salt_native(v.sk_u);
+        let salt_commitment = compute_salt_commitment_native(salt);
+        let salted_x_start = compute_salted_block_id_native(salt, &ctw.x_block_id);
+        let salted_y_end = compute_salted_block_id_native(salt, &ctw.y_block_id);
+        assert_ne!(salted_x_start, salted_y_end);
+        let instances = vec![
+            v.expected_poseidon_hash,
+            final_root_fr,
+            v.voucher_nominal_val,
+            v.token_type_val,
+            ephemeral_pubkey,
+            salted_x_start,
+            salted_y_end,
+            salt_commitment,
+        ];
+
+        println!("Cross-thread MockProver...");
+        let prover = MockProver::<Fr>::run(K, &circuit, vec![instances])
+            .unwrap();
+        prover.assert_satisfied();
+        println!("Cross-thread V2 test passed");
+    }
+
+    // -------------------------------------------------------------------
+    // V2 negative tests: each mutates one witness / public input and
+    // expects MockProver::verify() to fail.
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_dark_dex_circuit_new_bad_h07_sibling() {
+        use rand::rngs::StdRng;
+        use rand::SeedableRng;
+
+        let v = load_first_voucher();
+        let dense_hasher = DensePoseidonHasher::new();
+        let mut rng = StdRng::seed_from_u64(11);
+
+        let mut tw = build_two_level_tree(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
+        // Corrupt the h07 sibling AFTER v2_x_block_id was already
+        // derived from the original one; the depth-4 SHA opening will
+        // now yield a root ≠ x_block_id, so the assert_depth4 gadget
+        // must fail.
+        tw.v2_x_block_id_h07_sibling[0] ^= 0x01;
+
+        let (dense_chain, final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, 1, 130);
+        let final_root_fr = bytes_to_fr(&final_root_bytes);
+
+        let params = base_circuit_params();
+        let ephemeral_pubkey = Fr::from(0xDEADu64);
+        let circuit = make_v2_circuit(
+            v.sk_u,
+            ephemeral_pubkey,
+            v.entries.clone(),
+            &tw,
+            dense_chain,
+            1,
+            params,
+        );
+
+        let instances = make_v2_instances(&v, final_root_fr, ephemeral_pubkey, &tw);
+        let prover = MockProver::<Fr>::run(K, &circuit, vec![instances]).unwrap();
+        assert!(
+            prover.verify().is_err(),
+            "expected verify() to fail with corrupted h07 sibling"
+        );
+    }
+
+    #[test]
+    fn test_dark_dex_circuit_new_bad_ephemeral_pubkey() {
+        use rand::rngs::StdRng;
+        use rand::SeedableRng;
+
+        let v = load_first_voucher();
+        let dense_hasher = DensePoseidonHasher::new();
+        let mut rng = StdRng::seed_from_u64(22);
+        let tw = build_two_level_tree(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
+
+        let (dense_chain, final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, 1, 130);
+        let final_root_fr = bytes_to_fr(&final_root_bytes);
+
+        let params = base_circuit_params();
+        // Prover witnesses one pubkey…
+        let prover_eph = Fr::from(0xDEADu64);
+        let circuit = make_v2_circuit(
+            v.sk_u,
+            prover_eph,
+            v.entries.clone(),
+            &tw,
+            dense_chain,
+            1,
+            params,
+        );
+
+        // …but the public instance claims a DIFFERENT pubkey.
+        let mut instances = make_v2_instances(&v, final_root_fr, prover_eph, &tw);
+        instances[4] = Fr::from(0xBEEFu64); // ephemeral_pubkey slot
+
+        let prover = MockProver::<Fr>::run(K, &circuit, vec![instances]).unwrap();
+        assert!(
+            prover.verify().is_err(),
+            "expected verify() to fail with mismatched ephemeral_pubkey public"
+        );
+    }
+
+    #[test]
+    fn test_dark_dex_circuit_new_bad_salted_x_start() {
+        use rand::rngs::StdRng;
+        use rand::SeedableRng;
+
+        let v = load_first_voucher();
+        let dense_hasher = DensePoseidonHasher::new();
+        let mut rng = StdRng::seed_from_u64(33);
+        let tw = build_two_level_tree(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
+
+        let (dense_chain, final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, 1, 130);
+        let final_root_fr = bytes_to_fr(&final_root_bytes);
+
+        let params = base_circuit_params();
+        let ephemeral_pubkey = Fr::from(0xDEADu64);
+        let circuit = make_v2_circuit(
+            v.sk_u,
+            ephemeral_pubkey,
+            v.entries.clone(),
+            &tw,
+            dense_chain,
+            1,
+            params,
+        );
+
+        // Corrupt the salted_X_start public (index 5).
+        let mut instances = make_v2_instances(&v, final_root_fr, ephemeral_pubkey, &tw);
+        instances[5] = instances[5] + Fr::from(1u64);
+
+        let prover = MockProver::<Fr>::run(K, &circuit, vec![instances]).unwrap();
+        assert!(
+            prover.verify().is_err(),
+            "expected verify() to fail with corrupted salted_X_start public"
         );
     }
 }

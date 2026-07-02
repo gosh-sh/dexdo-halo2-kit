@@ -1,3 +1,4 @@
+pub mod block_id_tree;
 pub mod boc_helper;
 pub mod bundle_verifier;
 pub mod dark_dex_circuit_new;
