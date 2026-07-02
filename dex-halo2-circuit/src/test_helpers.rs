@@ -131,7 +131,7 @@ pub fn extract_voucher_fields(
 
 /// Load the first voucher from vouchers.txt and extract all fields.
 pub fn load_first_voucher() -> VoucherFields {
-    use crate::event_data_helper::read_event_data_from_file;
+    use crate::voucher_event_helper::read_event_data_from_file;
     let events = read_event_data_from_file("vouchers.txt");
     assert!(
         !events.is_empty(),
@@ -237,7 +237,7 @@ pub fn build_two_level_tree(
     num_events_leaves: usize,
     num_block_leaves: usize,
 ) -> TwoLevelWitnesses {
-    use crate::dark_dex_circuit::poseidon_hash_96_native;
+    use crate::poseidon_dex_helper::poseidon_hash_96_native;
 
     let mut dapp_id = [0u8; 32];
     let mut account_id_b = [0u8; 32];
@@ -349,7 +349,7 @@ pub fn build_v2_cross_thread_witness(
     num_events_leaves: usize,
     num_block_leaves: usize,
 ) -> V2CrossThreadWitness {
-    use crate::dark_dex_circuit::poseidon_hash_96_native;
+    use crate::poseidon_dex_helper::poseidon_hash_96_native;
 
     // -------- X side --------
     let mut x_dapp_id = [0u8; 32];
