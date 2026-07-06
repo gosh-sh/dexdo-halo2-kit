@@ -67,8 +67,7 @@
 //!      `c0 = tag_r[0..31]`,
 //!      `c1 = tag_r[31..34] (3 B) ‖ ref_block_id[0..28] (28 B)`,
 //!      `c2 = inner_product(ref_block_id[28..32], 256^[0..4])`.
-//!      The parent-slot layout (37 B tag) is *not* materialised in the
-//!      circuit — spec §5.1 excludes slot 0.
+
 //!    - Ref-tree walk uses `gosh_dense_balanced_tree::dense_merkle_root_circuit`
 //!      (`MAX_PROOF_BLOCK_REFS_DEPTH` levels). The gadget loads each
 //!      orientation bit as a witness cell (`assert_bit` + `cond_swap`), so
