@@ -8,9 +8,10 @@ use gosh_dense_balanced_tree::{
 };
 use halo2_base::gates::circuit::BaseCircuitParams;
 use halo2_base::gates::flex_gate::MultiPhaseThreadBreakPoints;
-use halo2_base::halo2_proofs::halo2curves::bn256::{Fr, G1Affine};
+use halo2_base::halo2_proofs::halo2curves::bn256::{Bn256, Fr, G1Affine};
 use halo2_base::halo2_proofs::halo2curves::ff::PrimeField;
-use halo2_base::halo2_proofs::plonk::{keygen_pk, keygen_vk, ProvingKey};
+use halo2_base::halo2_proofs::plonk::{keygen_pk, keygen_vk, ProvingKey, VerifyingKey};
+use halo2_base::halo2_proofs::poly::kzg::commitment::ParamsKZG;
 use halo2_base::halo2_proofs::SerdeFormat;
 use halo2_base::utils::fs::gen_srs;
 use halo2_base::utils::testing::gen_proof_with_instances;
@@ -444,10 +445,9 @@ fn load_break_points(path: &Path) -> Result<MultiPhaseThreadBreakPoints, ProverE
 // ---------------------------------------------------------------------------
 
 pub struct Prover {
-    srs: halo2_base::halo2_proofs::poly::kzg::commitment::ParamsKZG<
-        halo2_base::halo2_proofs::halo2curves::bn256::Bn256,
-    >,
+    srs: ParamsKZG<Bn256>,
     pk: Option<ProvingKey<G1Affine>>,
+    vk: Option<VerifyingKey<G1Affine>>,
     break_points: Option<MultiPhaseThreadBreakPoints>,
     cache_dir: Option<PathBuf>,
 }
@@ -482,9 +482,60 @@ impl Prover {
         Ok(Self {
             srs,
             pk,
+            vk: None,
             break_points,
             cache_dir,
         })
+    }
+
+    /// Create a new prover from an in-memory SRS blob in halo2 canonical raw
+    /// format (`[u32 k LE][g[..] raw][g_lagrange[..] raw][g2 raw][s_g2 raw]`).
+    ///
+    /// This is what lets a build tool feed a Hermez-derived SRS directly,
+    /// bypassing the disk cache path used by `gen_srs`. `cache_dir` still
+    /// applies for PK / break_points caching.
+    pub fn new_with_srs_bytes(
+        raw_srs: &[u8],
+        cache_dir: Option<&Path>,
+    ) -> Result<Self, ProverError> {
+        let mut cursor: &[u8] = raw_srs;
+        let srs = ParamsKZG::<Bn256>::read_custom(&mut cursor, SerdeFormat::RawBytesUnchecked)
+            .map_err(|e| ProverError::Keygen(format!("SRS parse from bytes: {e}")))?;
+
+        let cache_dir = cache_dir.map(PathBuf::from);
+        let (pk, break_points) = match &cache_dir {
+            Some(dir) => {
+                let pk_path = dir.join(PK_CACHE_FILE);
+                let bp_path = dir.join(BP_CACHE_FILE);
+                if pk_path.exists() && bp_path.exists() {
+                    let pk = load_pk(&pk_path, base_circuit_params())?;
+                    let bp = load_break_points(&bp_path)?;
+                    (Some(pk), Some(bp))
+                } else {
+                    (None, None)
+                }
+            }
+            None => (None, None),
+        };
+
+        Ok(Self {
+            srs,
+            pk,
+            vk: None,
+            break_points,
+            cache_dir,
+        })
+    }
+
+    /// Access the in-memory SRS.
+    pub fn srs(&self) -> &ParamsKZG<Bn256> {
+        &self.srs
+    }
+
+    /// Access the verifying key. Populated after the first `generate_proof`
+    /// call (or `keygen`).
+    pub fn verifying_key(&self) -> Option<&VerifyingKey<G1Affine>> {
+        self.vk.as_ref()
     }
 
     /// Generate a DarkDex ZK proof from a fixture JSON string.
@@ -531,8 +582,9 @@ impl Prover {
                     .map_err(|e| ProverError::Keygen(format!("VK write: {e}")))?;
             }
 
-            let pk = keygen_pk(&self.srs, vk, &keygen_circuit)
+            let pk = keygen_pk(&self.srs, vk.clone(), &keygen_circuit)
                 .map_err(|e| ProverError::Keygen(format!("keygen_pk: {e}")))?;
+            self.vk = Some(vk);
 
             let bp = keygen_circuit
                 .base_circuit_builder
@@ -609,6 +661,22 @@ pub fn compute_instances_from_json(fixture_json: &str) -> Result<InstanceValues,
     let parsed = parse_fixture(&json)?;
     let instances = compute_instances(&parsed);
     Ok(instances_to_values(&instances))
+}
+
+/// Same as [`compute_instances_from_json`] but returns raw `Fr` elements
+/// suitable for feeding into `check_proof_with_instances`.
+pub fn compute_fr_instances_from_json(fixture_json: &str) -> Result<Vec<Fr>, ProverError> {
+    let json: DexFixtureJson = serde_json::from_str(fixture_json)
+        .map_err(|e| ProverError::Fixture(format!("JSON parse: {e}")))?;
+    let parsed = parse_fixture(&json)?;
+    Ok(compute_instances(&parsed))
+}
+
+/// The `BaseCircuitParams` shape used by `DarkDexCircuitNew` at K=19.
+/// Mirrors `dark_dex_w128_config_params` in
+/// `tvm_vm/src/executor/zk_halo2_utils.rs`.
+pub fn config_params_default() -> BaseCircuitParams {
+    base_circuit_params()
 }
 
 // ---------------------------------------------------------------------------

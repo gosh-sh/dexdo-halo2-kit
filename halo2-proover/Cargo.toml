@@ -11,6 +11,10 @@ path = "src/lib.rs"
 name = "halo2-proover"
 path = "src/main.rs"
 
+[[bin]]
+name = "gen_hermez_kzg_and_vk"
+path = "src/bin/gen_hermez_kzg_and_vk.rs"
+
 [dependencies]
 thiserror = "2"
 hex = "0.4.3"
@@ -25,3 +29,8 @@ tvm_types = { git = "https://github.com/tvmlabs/tvm-sdk.git", package = "tvm_typ
 tvm_block = { git = "https://github.com/tvmlabs/tvm-sdk.git", package = "tvm_block" }
 pse-poseidon = { git = "https://github.com/axiom-crypto/pse-poseidon.git" }
 failure = "0.1"
+
+# Extra deps used only by the `gen_hermez_kzg_and_vk` bin.
+gosh-zk-snark-halo2-utils = { git = "https://github.com/gosh-sh/gosh-zk-snark-halo2-utils", branch = "bump-halo2-lib-v0.4.1" }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+clap = { version = "4", features = ["derive"] }

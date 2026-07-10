@@ -2,3 +2,4 @@
 **/target/
 **/params/
 .DS_Store
+/generated/
