@@ -1,6 +1,7 @@
 {
   "description": "L0 test case: 0 chain step(s), block height 197, W=8",
   "sk_u_hex": "5b8319acb34dc789c284c6977e835622994458d8a9500693ebe17861adb1ec07",
+  "ephemeral_pubkey_hex": "0a1b2c3d4e5f60718293a4b5c6d7e8f900112233445566778899aabbccddeeff",
   "event_boc_base64": "te6ccgEBAgEAnQABn+AAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIcAAAAAAAABl2ngIN1gAQCQY4DCGnQJ9L0+O/yjUNbEyhcl6s/44npaEV4pMr6Hmfsiu+0RAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAF0h26AAAAAAC",
   "events_proof_siblings_hex": [],
   "events_proof_position": 0,

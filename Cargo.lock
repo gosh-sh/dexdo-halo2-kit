@@ -1175,6 +1175,7 @@ dependencies = [
  "failure",
  "gosh-dense-balanced-tree",
  "gosh-sha256-chip",
+ "gosh-zk-snark-halo2-utils 0.1.0 (git+https://github.com/gosh-sh/gosh-zk-snark-halo2-utils?branch=main)",
  "halo2-base 0.4.1",
  "halo2-ecc",
  "hex",
@@ -1668,6 +1669,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "gosh-zk-snark-halo2-utils"
+version = "0.1.0"
+source = "git+https://github.com/gosh-sh/gosh-zk-snark-halo2-utils?branch=main#fdb8d106ad2713e0b8644cc26b2442b049eb0bdb"
+dependencies = [
+ "halo2-base 0.4.1",
+ "halo2_kzg_srs",
+ "halo2curves",
+ "rand 0.8.6",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "group"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1806,7 +1821,7 @@ dependencies = [
  "dex-halo2-circuit",
  "failure",
  "gosh-dense-balanced-tree",
- "gosh-zk-snark-halo2-utils",
+ "gosh-zk-snark-halo2-utils 0.1.0 (git+https://github.com/gosh-sh/gosh-zk-snark-halo2-utils?branch=bump-halo2-lib-v0.4.1)",
  "halo2-base 0.4.1",
  "hex",
  "pse-poseidon",

@@ -1,5 +1,6 @@
 /target/
 **/target/
 **/params/
+**/keys/
 .DS_Store
 /generated/
