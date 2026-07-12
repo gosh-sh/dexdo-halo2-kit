@@ -2,6 +2,7 @@
 name = "halo2-proover"
 version = "0.3.0"
 edition = "2021"
+default-run = "halo2-proover"
 
 [lib]
 name = "halo2_proover"

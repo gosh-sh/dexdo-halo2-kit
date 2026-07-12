@@ -1,5 +1,6 @@
 use gosh_dark_dex_halo2_new_circuit::boc_helper::{serialize_cells_tree_root_first, BocFlattenData};
 use gosh_dark_dex_halo2_new_circuit::dark_dex_circuit_new::DarkDexCircuitNew;
+use gosh_dark_dex_halo2_new_circuit::keygen::W128Fixture;
 use gosh_dark_dex_halo2_new_circuit::poseidon::poseidon_hash;
 
 use gosh_dense_balanced_tree::{
@@ -15,6 +16,11 @@ use halo2_base::halo2_proofs::poly::kzg::commitment::ParamsKZG;
 use halo2_base::halo2_proofs::SerdeFormat;
 use halo2_base::utils::fs::gen_srs;
 use halo2_base::utils::testing::gen_proof_with_instances;
+
+use gosh_zk_snark_halo2_utils::ptau::{
+    read_hermez_ptau_and_verify, HERMEZ_K20_PTAU_SIZE, HERMEZ_K20_PTAU_URL,
+    HERMEZ_K20_RAW_SRS_SHA256,
+};
 
 use serde::{Deserialize, Serialize};
 use tvm_block::{Deserializable, Message, Serializable};
@@ -32,6 +38,13 @@ const K: u32 = 19;
 const PK_CACHE_FILE: &str = "pk_cache.bin";
 const BP_CACHE_FILE: &str = "break_points_cache.bin";
 const VK_CACHE_FILE: &str = "vk_cache.bin";
+
+/// Cache filename for the downloaded Hermez ptau.
+const PTAU_FILENAME: &str = "powersOfTau28_hez_final_20.ptau";
+
+/// Default RNG seed for the synthetic two-level tree in [`Prover::generate_proof_synthetic`].
+/// Matches `TWO_LEVEL_TREE_SEED` in `dex-halo2-circuit::bin::gen_hermez_kzg_and_dark_dex_keys`.
+pub const DEFAULT_SYNTH_SEED: u64 = 99;
 
 const EVENT_SK_U_COMMIT_START: usize = 6;
 const EVENT_SK_U_COMMIT_END: usize = 38;
@@ -453,13 +466,20 @@ pub struct Prover {
 }
 
 impl Prover {
-    /// Create a new prover, loading SRS via `gen_srs(19)`.
+    /// **LEGACY / INSECURE.** Create a new prover, loading SRS via `gen_srs(19)` —
+    /// a self-generated, deterministic-from-seed KZG SRS whose trapdoor `s` is
+    /// knowable. Proofs produced with this SRS **do NOT verify against
+    /// production tvm-sdk / USDCBridge**, which are anchored to the Hermez
+    /// Perpetual Powers of Tau ceremony.
+    ///
+    /// Kept only for backward-compat reproduction of pre-Hermez behavior.
+    /// Prefer [`Prover::new_with_hermez`] for anything real.
     ///
     /// If `cache_dir` is provided and contains cached PK/break_points files,
     /// they are loaded immediately. Otherwise PK is generated on the first
     /// call to `generate_proof`.
     pub fn new(cache_dir: Option<&Path>) -> Result<Self, ProverError> {
-        eprintln!("Loading SRS (K={K})...");
+        eprintln!("[LEGACY] Loading self-generated SRS via gen_srs(K={K}) — insecure trapdoor!");
         let srs = gen_srs(K);
 
         let cache_dir = cache_dir.map(PathBuf::from);
@@ -525,6 +545,51 @@ impl Prover {
             break_points,
             cache_dir,
         })
+    }
+
+    /// Create a new prover using the **Hermez Perpetual Powers of Tau K=20**
+    /// ceremony as KZG SRS, downsized to `K=19` (the DarkDex W=128 circuit
+    /// degree). This is the secure path: the VK produced here matches
+    /// `DARK_DEX_W128_VK_BYTES` in tvm-sdk's `zk_halo2_utils.rs` and proofs
+    /// verify on-chain (`USDCBridge.sol`).
+    ///
+    /// Reproduces the SRS-loading flow of
+    /// `dex-halo2-circuit::bin::gen_hermez_kzg_and_dark_dex_keys`:
+    ///   1. Ensure `~/.cache/halo2-kzg-srs/powersOfTau28_hez_final_20.ptau`
+    ///      exists (download from the Polygon zkEVM GCS mirror on cache miss).
+    ///   2. `read_hermez_ptau_and_verify` — parse ptau, verify K=20 SHA-256
+    ///      anchor, downsize to K=19, re-serialize as halo2 raw SRS.
+    ///   3. Delegate to [`Prover::new_with_srs_bytes`].
+    ///
+    /// `ptau_cache` overrides the default cache location.
+    pub fn new_with_hermez(cache_dir: Option<&Path>) -> Result<Self, ProverError> {
+        Self::new_with_hermez_from(cache_dir, None)
+    }
+
+    /// Variant of [`Prover::new_with_hermez`] that lets the caller pin an
+    /// explicit ptau cache path (useful for tests / sandboxed builds).
+    pub fn new_with_hermez_from(
+        cache_dir: Option<&Path>,
+        ptau_cache: Option<&Path>,
+    ) -> Result<Self, ProverError> {
+        let ptau_path = ptau_cache
+            .map(PathBuf::from)
+            .unwrap_or_else(default_ptau_cache);
+        ensure_ptau_present(&ptau_path)?;
+
+        eprintln!(
+            "Reading Hermez ptau, verifying K=20 SHA-256 anchor, downsizing to k={K}..."
+        );
+        let mut reader = fs::File::open(&ptau_path)?;
+        let material = read_hermez_ptau_and_verify(&mut reader, K);
+        if material.k20_sha256 != HERMEZ_K20_RAW_SRS_SHA256 {
+            return Err(ProverError::Keygen(
+                "Hermez K=20 raw SRS SHA-256 anchor mismatch".into(),
+            ));
+        }
+        eprintln!("  Hermez anchor OK; raw SRS at k={K} is {} bytes", material.raw_srs.len());
+
+        Self::new_with_srs_bytes(&material.raw_srs, cache_dir)
     }
 
     /// Access the in-memory SRS.
@@ -646,6 +711,150 @@ impl Prover {
             ephemeral_pubkey: values.ephemeral_pubkey,
         })
     }
+
+}
+
+// ---------------------------------------------------------------------------
+// Synthetic W=128 fixture JSON emitter
+// ---------------------------------------------------------------------------
+
+/// Dump a **synthetic** W=128 fixture in the same `DexFixtureJson` schema that
+/// [`Prover::generate_proof`] consumes.
+///
+/// Live chain-snapshot fixtures are no longer captured — this is the
+/// authoritative replacement. Derives everything in-process from
+/// `vouchers.txt` (read from CWD) plus a deterministic `rng_seed` for the
+/// two-level tree. Sibling counts reflect the real W=128 tree geometry
+/// (`HISTORY_PROOF_WINDOW_SIZE = 128`, `BLOCK_TREE_LEAVES = 130`, tree
+/// depths ⌈log₂⌉).
+///
+/// `chain_len ∈ 0..=MAX_CHAIN_LEN`. Only the active links are emitted into
+/// `dense_chain[]`; [`Prover::generate_proof`] pads to `MAX_CHAIN_LEN`
+/// transparently.
+///
+/// Returned string is pretty-printed JSON ready to `fs::write` and hand to a
+/// third-party consumer.
+pub fn dump_synthetic_fixture_json(
+    chain_len: usize,
+    rng_seed: u64,
+) -> Result<String, ProverError> {
+    use gosh_dark_dex_halo2_new_circuit::dark_dex_circuit_new::BLOCK_TREE_LEAVES;
+    use gosh_dark_dex_halo2_new_circuit::event_data_helper::read_event_data_from_file;
+    use gosh_dark_dex_halo2_new_circuit::keygen::build_dense_chain;
+
+    assert!(
+        chain_len <= MAX_CHAIN_LEN,
+        "chain_len {chain_len} exceeds MAX_CHAIN_LEN {MAX_CHAIN_LEN}"
+    );
+
+    // Preserve event_boc_base64 by reading vouchers.txt directly —
+    // `W128Fixture::synth` drops it after parsing.
+    let events = read_event_data_from_file("vouchers.txt");
+    if events.is_empty() {
+        return Err(ProverError::Fixture("vouchers.txt is empty".into()));
+    }
+    let event_boc_base64 = events[0].event_boc.clone();
+
+    let fixture = W128Fixture::synth(rng_seed);
+    let (dense_chain, _final_root) =
+        build_dense_chain(fixture.tw.blocks_root_level_0, chain_len, BLOCK_TREE_LEAVES);
+
+    // `parse_fixture` decodes ephemeral_pubkey_hex via `bytes_to_fr_be` — BE
+    // 32-byte integer. `W128Fixture::synth` sets `Fr::from(0xDEAD)`; encode
+    // that as 30 zero bytes + `de ad`.
+    let ephemeral_bytes: [u8; 32] = {
+        let mut b = [0u8; 32];
+        b[30] = 0xDE;
+        b[31] = 0xAD;
+        b
+    };
+
+    let dense_chain_json: Vec<ChainLinkJson> = dense_chain
+        .iter()
+        .take(chain_len)
+        .map(|link| ChainLinkJson {
+            active: link.active,
+            siblings_hex: link.siblings.iter().map(|s| hex::encode(s)).collect(),
+            position: link.position,
+            leaf_hex: hex::encode(link.leaf_native),
+        })
+        .collect();
+
+    let json = DexFixtureJson {
+        description: format!(
+            "Synthetic W=128 fixture (chain_len={chain_len}, seed={rng_seed}). \
+             Sibling shapes match production HISTORY_PROOF_WINDOW_SIZE=128 / \
+             BLOCK_TREE_LEAVES=130. See halo2-proover/README.md."
+        ),
+        sk_u_hex: hex::encode(fixture.voucher.sk_u.to_repr()),
+        ephemeral_pubkey_hex: hex::encode(ephemeral_bytes),
+        event_boc_base64,
+        events_proof_siblings_hex: fixture
+            .tw
+            .events_siblings
+            .iter()
+            .map(|s| hex::encode(s))
+            .collect(),
+        events_proof_position: fixture.tw.events_pos,
+        account_dapp_id_hex: hex::encode(fixture.tw.account_dapp_id),
+        account_id_hex: hex::encode(fixture.tw.account_id),
+        block_id_hex: hex::encode(fixture.tw.block_id),
+        envelope_hash_hex: hex::encode(fixture.tw.envelope_hash_bytes),
+        block_proof_siblings_hex: fixture
+            .tw
+            .block_siblings
+            .iter()
+            .map(|s| hex::encode(s))
+            .collect(),
+        block_proof_position: fixture.tw.block_pos,
+        num_active_chain_steps: chain_len,
+        dense_chain: dense_chain_json,
+    };
+
+    serde_json::to_string_pretty(&json)
+        .map_err(|e| ProverError::Fixture(format!("serialize: {e}")))
+}
+
+// ---------------------------------------------------------------------------
+// Hermez ptau cache helpers (mirrors dex-halo2-circuit::bin helpers)
+// ---------------------------------------------------------------------------
+
+fn default_ptau_cache() -> PathBuf {
+    let home = std::env::var("HOME").expect("HOME must be set");
+    PathBuf::from(home).join(".cache/halo2-kzg-srs").join(PTAU_FILENAME)
+}
+
+fn ensure_ptau_present(path: &Path) -> Result<(), ProverError> {
+    if let Ok(meta) = fs::metadata(path) {
+        if meta.len() == HERMEZ_K20_PTAU_SIZE {
+            eprintln!("Ptau cached at {} ({} bytes) — OK", path.display(), meta.len());
+            return Ok(());
+        }
+        eprintln!(
+            "Ptau at {} has wrong size ({} vs expected {HERMEZ_K20_PTAU_SIZE}) — re-downloading",
+            path.display(),
+            meta.len(),
+        );
+    } else {
+        eprintln!("Ptau not cached — downloading from {HERMEZ_K20_PTAU_URL}");
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut resp = reqwest::blocking::get(HERMEZ_K20_PTAU_URL)
+        .and_then(|r| r.error_for_status())
+        .map_err(|e| ProverError::Keygen(format!("ptau download: {e}")))?;
+    let mut file = fs::File::create(path)?;
+    let bytes = std::io::copy(&mut resp, &mut file)?;
+    eprintln!("  Downloaded {bytes} bytes to {}", path.display());
+    let meta = fs::metadata(path)?;
+    if meta.len() != HERMEZ_K20_PTAU_SIZE {
+        return Err(ProverError::Keygen(format!(
+            "Downloaded ptau size mismatch: expected {HERMEZ_K20_PTAU_SIZE} got {}",
+            meta.len(),
+        )));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -687,8 +896,8 @@ pub fn config_params_default() -> BaseCircuitParams {
 mod tests {
     use super::*;
 
-    const FIXTURE_L1: &str = include_str!("../dex_fixture_live_L1_H277_S0.json");
-    const FIXTURE_L2: &str = include_str!("../dex_fixture_live_L2_H1904_S0.json");
+    const FIXTURE_L1: &str = include_str!("../dex_fixture_synth_L1.json");
+    const FIXTURE_L2: &str = include_str!("../dex_fixture_synth_L2.json");
 
     #[test]
     fn test_parse_fixture_l1() {
@@ -729,9 +938,16 @@ mod tests {
 
     #[test]
     fn test_different_fixtures_different_instances() {
+        // L1 and L2 synthetic fixtures share the same voucher (both derived from
+        // vouchers.txt[0]), so `deposit_identifier_hash` (voucher-only) matches.
+        // The chain-derived `final_layer_historical_hash_root` is what must differ.
         let v1 = compute_instances_from_json(FIXTURE_L1).unwrap();
         let v2 = compute_instances_from_json(FIXTURE_L2).unwrap();
-        assert_ne!(v1.deposit_identifier_hash, v2.deposit_identifier_hash);
+        assert_eq!(v1.deposit_identifier_hash, v2.deposit_identifier_hash);
+        assert_ne!(
+            v1.final_layer_historical_hash_root,
+            v2.final_layer_historical_hash_root
+        );
     }
 
     #[test]
