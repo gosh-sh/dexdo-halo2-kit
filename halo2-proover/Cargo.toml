@@ -11,10 +11,6 @@ path = "src/lib.rs"
 name = "halo2-proover"
 path = "src/main.rs"
 
-[[bin]]
-name = "gen_hermez_kzg_and_vk"
-path = "src/bin/gen_hermez_kzg_and_vk.rs"
-
 [dependencies]
 thiserror = "2"
 hex = "0.4.3"

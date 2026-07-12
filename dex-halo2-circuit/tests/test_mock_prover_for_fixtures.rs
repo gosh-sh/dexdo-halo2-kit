@@ -1,7 +1,7 @@
 //! MockProver smoke test — runs the circuit on every fixture in `tests/fixtures/`.
 //!
 //! ```bash
-//! cargo test --test test_mock_prover -- --nocapture
+//! cargo test --test test_mock_prover_for_fixtures -- --nocapture
 //! ```
 
 mod common;

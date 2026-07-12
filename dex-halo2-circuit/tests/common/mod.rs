@@ -1,5 +1,5 @@
 //! Shared fixture loading, parsing, and native instance computation for
-//! `test_mock_prover.rs`, `test_dark_dex.rs`, and `test_export_tvm_sdk.rs`.
+//! `test_mock_prover_for_fixtures.rs`, `test_real_prover_for_fixtures.rs`, and `test_export_tvm_sdk.rs`.
 
 // Each integration test compiles `common` independently, so any helper unused
 // by a given test file trips `dead_code`. Suppress at the module level.

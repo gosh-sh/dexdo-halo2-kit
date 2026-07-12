@@ -1,19 +1,36 @@
+//! Reusable keygen / fixture-synth helpers for `DarkDexCircuitNew`.
+//!
+//! Previously `#[cfg(test)] mod test_helpers` — promoted to a real public module
+//! so that `bin/gen_hermez_kzg_and_vk.rs` and the unit / integration tests can
+//! share the same W=128 fixture-synthesis path.
+//!
+//! Everything in this module reflects the canonical W=128 circuit shape used
+//! by the `gen_hermez_kzg_and_dark_dex_keys` and `gen_legacy_gen_srs_dark_dex_keys`
+//! bins and by `test_dark_dex_circuit_real_proof_for_fixed_k`
+//! (`HISTORY_PROOF_WINDOW_SIZE = 128`, `BLOCK_TREE_LEAVES = 130`, k=19). The
+//! historical W=8 fixture-JSON path is intentionally not represented here —
+//! it produced a circuit shape that does not match production tvm-sdk.
+
 use crate::boc_helper::*;
+use crate::dark_dex_circuit_new::{
+    poseidon_hash_96_native, DarkDexCircuitNew, BLOCK_TREE_LEAVES, HISTORY_PROOF_WINDOW_SIZE,
+};
 use crate::poseidon::*;
 use dense_balanced_tree::{
     dense_merkle_proof, dense_merkle_root, PoseidonHasher as DensePoseidonHasher,
 };
-use gosh_dense_balanced_tree::{
-    bytes_to_fr, fr_to_bytes, DenseChainLink, MAX_CHAIN_LEN,
-};
+use gosh_dense_balanced_tree::{bytes_to_fr, fr_to_bytes, DenseChainLink, MAX_CHAIN_LEN};
 use halo2_base::gates::circuit::BaseCircuitParams;
+use halo2_base::gates::flex_gate::MultiPhaseThreadBreakPoints;
 use halo2_base::halo2_proofs::halo2curves::bn256::Fr;
 use halo2_base::halo2_proofs::halo2curves::ff::PrimeField;
 use rand::Rng;
 use tvm_block::{Deserializable, Message, Serializable};
 
+/// Circuit degree used by the W=128 DarkDex circuit.
 pub const K: u32 = 19;
 
+/// `BaseCircuitParams` matching production tvm-sdk's `dark_dex_w128_config_params`.
 pub fn base_circuit_params() -> BaseCircuitParams {
     BaseCircuitParams {
         k: K as usize,
@@ -51,11 +68,9 @@ pub fn ceil_log2(n: usize) -> usize {
 
 /// Parse a single event BOC into flattened cell entries and repr_hash.
 pub fn parse_voucher_boc(event_boc: &str) -> ([BocFlattenData; 2], [u8; 32]) {
-    let msg =
-        Message::construct_from_base64(event_boc).expect("failed to parse BOC");
+    let msg = Message::construct_from_base64(event_boc).expect("failed to parse BOC");
     let msg_cell = msg.serialize().expect("failed to serialize");
-    let serialized =
-        serialize_cells_tree_root_first(&msg_cell).expect("failed to flatten");
+    let serialized = serialize_cells_tree_root_first(&msg_cell).expect("failed to flatten");
     assert_eq!(serialized.len(), 2, "expected 2 cells");
     let repr_hash = serialized[0].repr_hash;
     ([serialized[0].clone(), serialized[1].clone()], repr_hash)
@@ -98,9 +113,8 @@ pub fn extract_voucher_fields(
     let voucher_nominal_val = bytes_to_fr_be(
         &entries[1].cell_repr_data[EVENT_VOUCHER_NOMINAL_START..EVENT_VOUCHER_NOMINAL_END],
     );
-    let token_type_val = bytes_to_fr_be(
-        &entries[1].cell_repr_data[EVENT_TOKEN_TYPE_START..EVENT_TOKEN_TYPE_END],
-    );
+    let token_type_val =
+        bytes_to_fr_be(&entries[1].cell_repr_data[EVENT_TOKEN_TYPE_START..EVENT_TOKEN_TYPE_END]);
     let expected_poseidon_hash =
         poseidon_hash(&[voucher_nominal_val, token_type_val, sk_u, sk_u_commit_val]);
     VoucherFields {
@@ -113,7 +127,7 @@ pub fn extract_voucher_fields(
     }
 }
 
-/// Load the first voucher from vouchers.txt and extract all fields.
+/// Load the first voucher from `vouchers.txt` (relative to CWD) and extract all fields.
 pub fn load_first_voucher() -> VoucherFields {
     use crate::event_data_helper::read_event_data_from_file;
     let events = read_event_data_from_file("vouchers.txt");
@@ -204,8 +218,6 @@ pub fn build_two_level_tree(
     num_events_leaves: usize,
     num_block_leaves: usize,
 ) -> TwoLevelWitnesses {
-    use crate::dark_dex_circuit_new::poseidon_hash_96_native;
-
     let mut dapp_id = [0u8; 32];
     let mut account_id_b = [0u8; 32];
     let mut block_id = [0u8; 32];
@@ -249,5 +261,113 @@ pub fn build_two_level_tree(
         block_siblings,
         block_pos: 0,
         blocks_root_level_0: blocks_root,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Canonical W=128 fixture + circuit-builder helpers
+// ---------------------------------------------------------------------------
+
+/// Fully-synthesized W=128 fixture in native form. Everything the keygen and
+/// prover circuits need to be assembled.
+pub struct W128Fixture {
+    pub voucher: VoucherFields,
+    pub tw: TwoLevelWitnesses,
+    /// A cached ephemeral pubkey to make instance computation deterministic.
+    pub ephemeral_pubkey: Fr,
+}
+
+impl W128Fixture {
+    /// Build a canonical W=128 fixture: reads `vouchers.txt` from CWD for the
+    /// voucher BOC, synthesizes a fresh two-level tree with the given RNG seed.
+    ///
+    /// The `rng_seed` fixes the two-level tree; the dense chain (constructed by
+    /// [`build_dense_chain`]) has its own hard-coded seed (`123`) so runs are
+    /// bit-reproducible given the same voucher.
+    pub fn synth(rng_seed: u64) -> Self {
+        use rand::rngs::StdRng;
+        use rand::SeedableRng;
+
+        let voucher = load_first_voucher();
+        let dense_hasher = DensePoseidonHasher::new();
+        let mut rng = StdRng::seed_from_u64(rng_seed);
+        let tw = build_two_level_tree(
+            &voucher.repr_hash,
+            &mut rng,
+            &dense_hasher,
+            HISTORY_PROOF_WINDOW_SIZE,
+            BLOCK_TREE_LEAVES,
+        );
+        Self {
+            voucher,
+            tw,
+            ephemeral_pubkey: Fr::from(0xDEADu64),
+        }
+    }
+
+    /// Build the W=128 keygen circuit (chain_len=1, `DarkDexCircuitNew::new`).
+    ///
+    /// The circuit shape is chain-length-independent (the in-circuit chain
+    /// verifier always processes `MAX_CHAIN_LEN` links, active or padding), so
+    /// keygen is against `chain_len=1` 
+    pub fn build_keygen_circuit(&self) -> DarkDexCircuitNew {
+        let (dense_chain, _final_root) =
+            build_dense_chain(self.tw.blocks_root_level_0, 1, BLOCK_TREE_LEAVES);
+        DarkDexCircuitNew::new(
+            self.voucher.sk_u,
+            self.ephemeral_pubkey,
+            self.voucher.entries.clone(),
+            self.tw.events_siblings.clone(),
+            self.tw.events_pos,
+            self.tw.account_dapp_id,
+            self.tw.account_id,
+            self.tw.block_id,
+            self.tw.envelope_hash_bytes,
+            self.tw.block_siblings.clone(),
+            self.tw.block_pos,
+            dense_chain,
+            1,
+            base_circuit_params(),
+        )
+    }
+
+    /// Build a prover circuit for a specific `chain_len` (0..=MAX_CHAIN_LEN),
+    /// reusing the previously-computed break-points from keygen.
+    ///
+    /// Returns `(circuit, instances, final_root)` — `instances` are the 5
+    /// public field elements, in the order the on-chain verifier expects.
+    pub fn build_prover_circuit(
+        &self,
+        chain_len: usize,
+        break_points: MultiPhaseThreadBreakPoints,
+    ) -> (DarkDexCircuitNew, Vec<Fr>, Fr) {
+        let (dense_chain, final_root_bytes) =
+            build_dense_chain(self.tw.blocks_root_level_0, chain_len, BLOCK_TREE_LEAVES);
+        let final_root_fr = bytes_to_fr(&final_root_bytes);
+        let circuit = DarkDexCircuitNew::new_for_proving(
+            self.voucher.sk_u,
+            self.ephemeral_pubkey,
+            self.voucher.entries.clone(),
+            self.tw.events_siblings.clone(),
+            self.tw.events_pos,
+            self.tw.account_dapp_id,
+            self.tw.account_id,
+            self.tw.block_id,
+            self.tw.envelope_hash_bytes,
+            self.tw.block_siblings.clone(),
+            self.tw.block_pos,
+            dense_chain,
+            chain_len,
+            base_circuit_params(),
+            break_points,
+        );
+        let instances = vec![
+            self.voucher.expected_poseidon_hash,
+            final_root_fr,
+            self.voucher.voucher_nominal_val,
+            self.voucher.token_type_val,
+            self.ephemeral_pubkey,
+        ];
+        (circuit, instances, final_root_fr)
     }
 }
