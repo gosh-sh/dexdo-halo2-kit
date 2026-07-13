@@ -1176,7 +1176,7 @@ dependencies = [
  "failure",
  "gosh-dense-balanced-tree",
  "gosh-sha256-chip",
- "gosh-zk-snark-halo2-utils 0.1.0 (git+https://github.com/gosh-sh/gosh-zk-snark-halo2-utils?branch=main)",
+ "gosh-zk-snark-halo2-utils",
  "halo2-base 0.4.1",
  "halo2-ecc",
  "hex",
@@ -1659,20 +1659,6 @@ dependencies = [
 [[package]]
 name = "gosh-zk-snark-halo2-utils"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/gosh-zk-snark-halo2-utils?branch=bump-halo2-lib-v0.4.1#724e48cb4f5104848f782e49ae7a7f2e95b62bd3"
-dependencies = [
- "halo2-base 0.4.1",
- "halo2_kzg_srs",
- "halo2curves",
- "rand 0.8.6",
- "serde",
- "serde_json",
- "sha2 0.10.9",
-]
-
-[[package]]
-name = "gosh-zk-snark-halo2-utils"
-version = "0.1.0"
 source = "git+https://github.com/gosh-sh/gosh-zk-snark-halo2-utils?branch=main#fdb8d106ad2713e0b8644cc26b2442b049eb0bdb"
 dependencies = [
  "halo2-base 0.4.1",
@@ -1823,7 +1809,7 @@ dependencies = [
  "dex-halo2-circuit",
  "failure",
  "gosh-dense-balanced-tree",
- "gosh-zk-snark-halo2-utils 0.1.0 (git+https://github.com/gosh-sh/gosh-zk-snark-halo2-utils?branch=bump-halo2-lib-v0.4.1)",
+ "gosh-zk-snark-halo2-utils",
  "halo2-base 0.4.1",
  "hex",
  "pse-poseidon",
@@ -4155,7 +4141,7 @@ dependencies = [
 [[package]]
 name = "tvm_block"
 version = "3.0.2"
-source = "git+https://github.com/tvmlabs/tvm-sdk.git#3b6a038067fa162c5ab11ef28851d2cc9655a705"
+source = "git+https://github.com/tvmlabs/tvm-sdk#3b6a038067fa162c5ab11ef28851d2cc9655a705"
 dependencies = [
  "anyhow",
  "base64",
@@ -4205,7 +4191,7 @@ dependencies = [
 [[package]]
 name = "tvm_types"
 version = "3.0.2"
-source = "git+https://github.com/tvmlabs/tvm-sdk.git#3b6a038067fa162c5ab11ef28851d2cc9655a705"
+source = "git+https://github.com/tvmlabs/tvm-sdk#3b6a038067fa162c5ab11ef28851d2cc9655a705"
 dependencies = [
  "aes",
  "anyhow",

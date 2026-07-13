@@ -28,6 +28,6 @@ pse-poseidon = { git = "https://github.com/axiom-crypto/pse-poseidon.git" }
 failure = "0.1"
 
 # Extra deps used only by the `gen_hermez_kzg_and_vk` bin.
-gosh-zk-snark-halo2-utils = { git = "https://github.com/gosh-sh/gosh-zk-snark-halo2-utils", branch = "bump-halo2-lib-v0.4.1" }
+gosh-zk-snark-halo2-utils = { git = "https://github.com/gosh-sh/gosh-zk-snark-halo2-utils", branch = "main" }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 clap = { version = "4", features = ["derive"] }
