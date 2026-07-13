@@ -18,7 +18,7 @@ use halo2_base::utils::fs::gen_srs;
 use halo2_base::utils::testing::gen_proof_with_instances;
 
 use gosh_zk_snark_halo2_utils::ptau::{
-    read_hermez_ptau_and_verify, HERMEZ_K20_PTAU_SIZE, HERMEZ_K20_PTAU_URL,
+    default_ptau_cache_path, ensure_hermez_k20_ptau, read_hermez_ptau_and_verify,
     HERMEZ_K20_RAW_SRS_SHA256,
 };
 
@@ -38,9 +38,14 @@ const K: u32 = 19;
 const PK_CACHE_FILE: &str = "pk_cache.bin";
 const BP_CACHE_FILE: &str = "break_points_cache.bin";
 const VK_CACHE_FILE: &str = "vk_cache.bin";
+const SRS_CACHE_FILE: &str = "hermez_kzg_srs_k19.bin";
 
-/// Cache filename for the downloaded Hermez ptau.
-const PTAU_FILENAME: &str = "powersOfTau28_hez_final_20.ptau";
+/// Default URL for the Hermez-anchored K=19 KZG SRS in halo2 canonical raw
+/// format. Same material [`Prover::new_with_hermez`] produces, but
+/// pre-computed and hosted on the GOSH binaries mirror so consumers skip
+/// the ~1.2 GB ptau download + downsize.
+pub const DEFAULT_HERMEZ_KZG_SRS_URL: &str =
+    "https://binaries.gosh.sh/dexdo/hermez_kzg_bn254_19.srs";
 
 /// Default RNG seed for the synthetic two-level tree in [`Prover::generate_proof_synthetic`].
 /// Matches `TWO_LEVEL_TREE_SEED` in `dex-halo2-circuit::bin::gen_hermez_kzg_and_dark_dex_keys`.
@@ -453,6 +458,20 @@ fn load_break_points(path: &Path) -> Result<MultiPhaseThreadBreakPoints, ProverE
         .map_err(|e| ProverError::Io(std::io::Error::other(format!("break_points deserialize: {e}"))))
 }
 
+/// Blocking HTTP GET → SRS bytes. Streams via `std::io::copy` to avoid the
+/// buffered `Response::bytes()` path, which fails on ~64 MB bodies with
+/// "error decoding response body". Follows redirects (reqwest default:
+/// up to 10 hops).
+fn download_srs_bytes(url: &str) -> Result<Vec<u8>, ProverError> {
+    let mut resp = reqwest::blocking::get(url)
+        .map_err(|e| ProverError::Io(std::io::Error::other(format!("HTTP GET failed: {e}"))))?
+        .error_for_status()
+        .map_err(|e| ProverError::Io(std::io::Error::other(format!("HTTP status: {e}"))))?;
+    let mut buf: Vec<u8> = Vec::new();
+    std::io::copy(&mut resp, &mut buf)?;
+    Ok(buf)
+}
+
 // ---------------------------------------------------------------------------
 // Prover (stateful, holds SRS + PK in memory)
 // ---------------------------------------------------------------------------
@@ -574,8 +593,9 @@ impl Prover {
     ) -> Result<Self, ProverError> {
         let ptau_path = ptau_cache
             .map(PathBuf::from)
-            .unwrap_or_else(default_ptau_cache);
-        ensure_ptau_present(&ptau_path)?;
+            .unwrap_or_else(default_ptau_cache_path);
+        ensure_hermez_k20_ptau(&ptau_path)
+            .map_err(|e| ProverError::Keygen(format!("ptau download: {e}")))?;
 
         eprintln!(
             "Reading Hermez ptau, verifying K=20 SHA-256 anchor, downsizing to k={K}..."
@@ -590,6 +610,52 @@ impl Prover {
         eprintln!("  Hermez anchor OK; raw SRS at k={K} is {} bytes", material.raw_srs.len());
 
         Self::new_with_srs_bytes(&material.raw_srs, cache_dir)
+    }
+
+    /// Create a new prover by downloading a pre-computed KZG SRS blob from
+    /// `url` (halo2 canonical raw format, ready for
+    /// `ParamsKZG::<Bn256>::read_custom(RawBytesUnchecked)`).
+    ///
+    /// Simpler than [`Prover::new_with_hermez`]: no ~1.2 GB ptau download,
+    /// no downsize step — the file at `url` is already the K=19 raw SRS.
+    ///
+    /// If `url` is `None`, [`DEFAULT_HERMEZ_KZG_SRS_URL`] is used (currently
+    /// a Google Drive link hosting the Hermez K=19 KZG SRS; slated to be
+    /// swapped for an Andrey Shuvalov mirror).
+    ///
+    /// Caching behavior:
+    ///   * If `cache_dir` contains `hermez_kzg_srs_k19.bin`, it is read from
+    ///     disk (no HTTP).
+    ///   * Otherwise the URL is fetched via blocking HTTP and, if
+    ///     `cache_dir` is provided, cached at that path.
+    ///   * PK / break_points caching is delegated to
+    ///     [`Prover::new_with_srs_bytes`] — absent PK triggers keygen on the
+    ///     first `generate_proof` call.
+    pub fn new_with_srs_from_url(
+        url: Option<&str>,
+        cache_dir: Option<&Path>,
+    ) -> Result<Self, ProverError> {
+        let url = url.unwrap_or(DEFAULT_HERMEZ_KZG_SRS_URL);
+
+        let srs_bytes = if let Some(dir) = cache_dir {
+            let srs_path = dir.join(SRS_CACHE_FILE);
+            if srs_path.exists() {
+                eprintln!("Loading cached KZG SRS from {}", srs_path.display());
+                fs::read(&srs_path)?
+            } else {
+                fs::create_dir_all(dir)?;
+                eprintln!("KZG SRS not cached — downloading from {url}");
+                let bytes = download_srs_bytes(url)?;
+                fs::write(&srs_path, &bytes)?;
+                eprintln!("  Wrote {} bytes to {}", bytes.len(), srs_path.display());
+                bytes
+            }
+        } else {
+            eprintln!("No cache_dir — downloading KZG SRS from {url}");
+            download_srs_bytes(url)?
+        };
+
+        Self::new_with_srs_bytes(&srs_bytes, cache_dir)
     }
 
     /// Access the in-memory SRS.
@@ -813,48 +879,6 @@ pub fn dump_synthetic_fixture_json(
 
     serde_json::to_string_pretty(&json)
         .map_err(|e| ProverError::Fixture(format!("serialize: {e}")))
-}
-
-// ---------------------------------------------------------------------------
-// Hermez ptau cache helpers (mirrors dex-halo2-circuit::bin helpers)
-// ---------------------------------------------------------------------------
-
-fn default_ptau_cache() -> PathBuf {
-    let home = std::env::var("HOME").expect("HOME must be set");
-    PathBuf::from(home).join(".cache/halo2-kzg-srs").join(PTAU_FILENAME)
-}
-
-fn ensure_ptau_present(path: &Path) -> Result<(), ProverError> {
-    if let Ok(meta) = fs::metadata(path) {
-        if meta.len() == HERMEZ_K20_PTAU_SIZE {
-            eprintln!("Ptau cached at {} ({} bytes) — OK", path.display(), meta.len());
-            return Ok(());
-        }
-        eprintln!(
-            "Ptau at {} has wrong size ({} vs expected {HERMEZ_K20_PTAU_SIZE}) — re-downloading",
-            path.display(),
-            meta.len(),
-        );
-    } else {
-        eprintln!("Ptau not cached — downloading from {HERMEZ_K20_PTAU_URL}");
-    }
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let mut resp = reqwest::blocking::get(HERMEZ_K20_PTAU_URL)
-        .and_then(|r| r.error_for_status())
-        .map_err(|e| ProverError::Keygen(format!("ptau download: {e}")))?;
-    let mut file = fs::File::create(path)?;
-    let bytes = std::io::copy(&mut resp, &mut file)?;
-    eprintln!("  Downloaded {bytes} bytes to {}", path.display());
-    let meta = fs::metadata(path)?;
-    if meta.len() != HERMEZ_K20_PTAU_SIZE {
-        return Err(ProverError::Keygen(format!(
-            "Downloaded ptau size mismatch: expected {HERMEZ_K20_PTAU_SIZE} got {}",
-            meta.len(),
-        )));
-    }
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------

@@ -35,10 +35,16 @@ fn main() {
         process::exit(1);
     });
 
-    let mut prover = Prover::new_with_hermez(Some(&args.cache_dir)).unwrap_or_else(|e| {
-        eprintln!("Prover init (Hermez) failed: {e}");
-        process::exit(1);
-    });
+    // let mut prover = Prover::new_with_hermez(Some(&args.cache_dir)).unwrap_or_else(|e| {
+    //     eprintln!("Prover init (Hermez) failed: {e}");
+    //     process::exit(1);
+    // });
+
+    let mut prover = Prover::new_with_srs_from_url(None, Some(&args.cache_dir))
+        .unwrap_or_else(|e| {
+            eprintln!("Prover init (SRS from URL) failed: {e}");
+            process::exit(1);
+        });
 
     match prover.generate_proof(&fixture_json) {
         Ok(output) => println!("{}", serde_json::to_string(&output).unwrap()),
