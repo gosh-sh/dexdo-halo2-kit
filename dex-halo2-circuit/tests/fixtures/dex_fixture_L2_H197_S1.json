@@ -1,6 +1,7 @@
 {
   "description": "L2 test case: 2 chain step(s), block height 197, W=8",
   "sk_u_hex": "5b8319acb34dc789c284c6977e835622994458d8a9500693ebe17861adb1ec07",
+  "ephemeral_pubkey_hex": "2a4b6c8d0e1f3041526374859697a8b9c0d1e2f30415263748596a7b8c9d0e1f",
   "event_boc_base64": "te6ccgEBAgEAnQABn+AAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIcAAAAAAAABl2ngIN1gAQCQY4DCGnQJ9L0+O/yjUNbEyhcl6s/44npaEV4pMr6Hmfsiu+0RAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAF0h26AAAAAAC",
   "events_proof_siblings_hex": [],
   "events_proof_position": 0,

@@ -22,4 +22,4 @@ Input arguments:
 }
 
 
-cargo test --release --package gosh-dark-dex-halo2-new-circuit --lib -- dark_dex_circuit_new::tests::test_dark_dex_circuit_real_proof --exact --nocapture --include-ignored
+cargo test --release --package gosh-dark-dex-halo2-new-circuit --lib -- dark_dex_circuit_new::tests_with_synthetic_data::test_dark_dex_circuit_real_proof --exact --nocapture --include-ignored

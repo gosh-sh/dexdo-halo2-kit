@@ -35,6 +35,21 @@ use halo2_base::Context;
 
 pub const MAX_EVENTS_TREE_DEPTH: usize = 8;
 
+/// Number of leaves in the events tree of the two-level history-proof layout,
+/// i.e. the historical window size the on-chain verifier is pinned to.
+///
+/// Must stay in sync with
+/// `dark_dex_halo2_private_witness_export_lib::poseidon::HISTORY_PROOF_WINDOW_SIZE`
+/// and with tvm-sdk's `HISTORY_PROOF_WINDOW_SIZE`. Production = 128, **not** 8.
+pub const HISTORY_PROOF_WINDOW_SIZE: usize = 128;
+
+/// Number of leaves in the block tree (outer level of the two-level tree) and
+/// in each dense chain tree. Derived from `HISTORY_PROOF_WINDOW_SIZE`: two extra
+/// leaves push the Merkle depth from `ceil(log2(128)) = 7` up to
+/// `ceil(log2(130)) = 8`, matching the canonical W=128 layout the on-chain
+/// verifier expects.
+pub const BLOCK_TREE_LEAVES: usize = HISTORY_PROOF_WINDOW_SIZE + 2;
+
 const SHA256_HASH_LEN: usize = 32;
 const EVENT_BOC_DATA_BYTES_OFFSET: usize = 6;
 const EVENT_SK_U_COMMIT_FIELD_LEN: usize = 32;
@@ -83,7 +98,7 @@ fn chunk_96_bytes_to_fr(buf: &[u8; 96]) -> (Fr, Fr, Fr, Fr) {
 /// Native (off-circuit): Poseidon hash of 3 × 32-byte inputs chunked at 31-byte boundaries.
 ///
 /// Returns `fr_to_bytes(Poseidon(c0, c1, c2, c3))`.
-pub(crate) fn poseidon_hash_96_native(a: &[u8; 32], b: &[u8; 32], c: &[u8; 32]) -> [u8; 32] {
+pub fn poseidon_hash_96_native(a: &[u8; 32], b: &[u8; 32], c: &[u8; 32]) -> [u8; 32] {
     let mut buf = [0u8; 96];
     buf[..32].copy_from_slice(a);
     buf[32..64].copy_from_slice(b);
@@ -697,11 +712,22 @@ impl Circuit<Fr> for DarkDexCircuitNew {
     }
 }
 
-
+/// Unit tests for `DarkDexCircuitNew` driven **entirely by in-memory
+/// synthetic data** — no on-disk JSON fixtures involved.
+///
+/// The voucher BOC comes from `vouchers.txt` in the crate root; everything
+/// else (two-level Poseidon tree, dense chain, ephemeral pubkey, RNG-seeded
+/// account/block/envelope identifiers) is freshly synthesized on each run via
+/// the helpers in [`crate::keygen`], at the canonical **W=128** shape
+/// (`HISTORY_PROOF_WINDOW_SIZE = 128`, `BLOCK_TREE_LEAVES = 130`).
+///
+/// Contrast with `tests/test_mock_prover_for_fixtures.rs` and
+/// `tests/test_real_prover_for_fixtures.rs`, which drive keygen/prove/verify
+/// from serialized JSON fixtures under `tests/fixtures/` (currently legacy W=8).
 #[cfg(test)]
-mod tests {
+mod tests_with_synthetic_data {
     use super::*;
-    use crate::test_helpers::*;
+    use crate::keygen::*;
     use dense_balanced_tree::PoseidonHasher as DensePoseidonHasher;
     use halo2_base::halo2_proofs::dev::MockProver;
 
@@ -730,11 +756,12 @@ mod tests {
         for (idx, v) in all_vouchers.iter().enumerate() {
             println!("\n========== Voucher {} ==========", idx);
 
-            let tw = build_two_level_tree(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
+            let tw = build_two_level_tree(&v.repr_hash, &mut rng, &dense_hasher, HISTORY_PROOF_WINDOW_SIZE, BLOCK_TREE_LEAVES);
             println!("Events proof depth: {}", tw.events_siblings.len());
             println!("Block proof depth: {}", tw.block_siblings.len());
 
-            let (dense_chain, final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, 1, 130);
+            let chain_len = 1;
+            let (dense_chain, final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, chain_len, BLOCK_TREE_LEAVES);
             let final_root_fr = bytes_to_fr(&final_root_bytes);
 
             let ephemeral_pubkey = Fr::from(0xDEADu64);
@@ -751,7 +778,7 @@ mod tests {
                 tw.block_siblings,
                 tw.block_pos,
                 dense_chain,
-                1,
+                chain_len,
                 params.clone(),
             );
 
@@ -782,14 +809,14 @@ mod tests {
         let dense_hasher = DensePoseidonHasher::new();
         let mut rng = StdRng::seed_from_u64(77);
 
-        let tw = build_two_level_tree(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
+        let tw = build_two_level_tree(&v.repr_hash, &mut rng, &dense_hasher, HISTORY_PROOF_WINDOW_SIZE, BLOCK_TREE_LEAVES);
 
         let params = base_circuit_params();
 
-        for t in 0..=MAX_CHAIN_LEN {
-            println!("\n========== Chain T={} ==========", t);
+        for chain_len in 0..=MAX_CHAIN_LEN {
+            println!("\n========== Chain T={} ==========", chain_len);
 
-            let (dense_chain, final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, t, 130);
+            let (dense_chain, final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, chain_len, BLOCK_TREE_LEAVES);
             let final_root_fr = bytes_to_fr(&final_root_bytes);
 
             let ephemeral_pubkey = Fr::from(0xDEADu64);
@@ -806,11 +833,11 @@ mod tests {
                 tw.block_siblings.clone(),
                 tw.block_pos,
                 dense_chain,
-                t,
+                chain_len,
                 params.clone(),
             );
 
-            println!("Running MockProver for T={}...", t);
+            println!("Running MockProver for T={}...", chain_len);
             let prover = MockProver::<Fr>::run(
                 K,
                 &circuit,
@@ -818,7 +845,7 @@ mod tests {
             )
             .unwrap();
             prover.assert_satisfied();
-            println!("T={} passed!", t);
+            println!("T={} passed!", chain_len);
         }
         println!("\nAll chain lengths T=0..{} passed!", MAX_CHAIN_LEN);
     }
@@ -838,7 +865,7 @@ mod tests {
         let dense_hasher = DensePoseidonHasher::new();
         let mut rng = StdRng::seed_from_u64(99);
 
-        let tw = build_two_level_tree(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
+        let tw = build_two_level_tree(&v.repr_hash, &mut rng, &dense_hasher, HISTORY_PROOF_WINDOW_SIZE, BLOCK_TREE_LEAVES);
 
         let params = base_circuit_params();
 
@@ -847,7 +874,8 @@ mod tests {
 
         // Keygen once with T=1 (circuit shape is the same for all chain lengths
         // since verify_chain_of_dense_proofs always processes MAX_CHAIN_LEN links).
-        let (keygen_chain, _) = build_dense_chain(tw.blocks_root_level_0, 1, 130);
+        let chain_len = 1;
+        let (keygen_chain, _) = build_dense_chain(tw.blocks_root_level_0, chain_len, BLOCK_TREE_LEAVES);
         let ephemeral_pubkey = Fr::from(0xDEADu64);
         let keygen_circuit = DarkDexCircuitNew::new(
             v.sk_u,
@@ -862,7 +890,7 @@ mod tests {
             tw.block_siblings.clone(),
             tw.block_pos,
             keygen_chain,
-            1,
+            chain_len,
             params.clone(),
         );
 
@@ -890,7 +918,7 @@ mod tests {
         for &chain_len in &chain_lengths {
             println!("\n========== Real proof: chain_len={} ==========", chain_len);
 
-            let (dense_chain, final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, chain_len, 130);
+            let (dense_chain, final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, chain_len, BLOCK_TREE_LEAVES);
             let final_root_fr = bytes_to_fr(&final_root_bytes);
 
             let prover_circuit = DarkDexCircuitNew::new_for_proving(
@@ -947,372 +975,6 @@ mod tests {
         println!("\nAll chain lengths passed!");
     }
 
-    /// Export W=128 VK + proofs + instances for embedding in tvm-sdk.
-    ///
-    /// Usage:
-    ///   TVM_SDK_EXPORT_DIR=/path/to/tvm-sdk/tvm_vm/halo2_test_data \
-    ///   cargo test --release test_export_tvm_sdk_data_w128 -- --nocapture
-    ///
-    /// Writes:
-    ///   {TVM_SDK_EXPORT_DIR}/dark_dex_w128_vk.bin           (VK serialized with RawBytesUnchecked)
-    ///   {TVM_SDK_EXPORT_DIR}/dark_dex_w128_L{N}_proof.bin   (N ∈ {0,1,2})
-    ///   {TVM_SDK_EXPORT_DIR}/dark_dex_w128_L{N}_instances.bin  (5 × 32 bytes LE Fr)
-    ///
-    /// VK byte format matches `gosh_zk_snark_halo2_utils::io::read_vk` (SerdeFormat::RawBytesUnchecked).
-    /// Synthesizes a W=128 tree: 128 events leaves (depth 7), 130 block leaves (depth 8),
-    /// 130 leaves per dense chain tree (depth 8) — matches the canonical W=128 layout
-    /// used by `test_dark_dex_circuit_real_proof_for_fixed_k`.
-    #[test]
-    fn test_export_tvm_sdk_data_w128() {
-        use halo2_base::halo2_proofs::halo2curves::ff::PrimeField;
-        use halo2_base::halo2_proofs::plonk::{keygen_pk, keygen_vk};
-        use halo2_base::halo2_proofs::SerdeFormat;
-        use halo2_base::utils::fs::gen_srs;
-        use halo2_base::utils::testing::{check_proof_with_instances, gen_proof_with_instances};
-        use rand::rngs::StdRng;
-        use rand::SeedableRng;
-        use std::time::Instant;
-
-        let out_dir = match std::env::var("TVM_SDK_EXPORT_DIR") {
-            Ok(p) => std::path::PathBuf::from(p),
-            Err(_) => {
-                println!("TVM_SDK_EXPORT_DIR not set — skipping.");
-                return;
-            }
-        };
-        assert!(
-            out_dir.is_dir(),
-            "TVM_SDK_EXPORT_DIR is not a directory: {}",
-            out_dir.display()
-        );
-
-        let v = load_first_voucher();
-
-        let dense_hasher = DensePoseidonHasher::new();
-        let mut rng = StdRng::seed_from_u64(99);
-
-        // W=128 layout: 128 events leaves (depth 7) + 130 block leaves (depth 8).
-        let tw = build_two_level_tree(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
-
-        let params = base_circuit_params();
-        let ephemeral_pubkey = Fr::from(0xDEADu64);
-
-        println!("PARAMS_DIR = {:?}", std::env::var("PARAMS_DIR"));
-        println!("Loading SRS (K={})...", K);
-        let srs = gen_srs(K);
-
-        // Keygen against a 1-step chain circuit; circuit shape is the same for all chain
-        // lengths since verify_chain_of_dense_proofs always processes MAX_CHAIN_LEN links.
-        let (keygen_chain, _) = build_dense_chain(tw.blocks_root_level_0, 1, 130);
-        let keygen_circuit = DarkDexCircuitNew::new(
-            v.sk_u,
-            ephemeral_pubkey,
-            v.entries.clone(),
-            tw.events_siblings.clone(),
-            tw.events_pos,
-            tw.account_dapp_id,
-            tw.account_id,
-            tw.block_id,
-            tw.envelope_hash_bytes,
-            tw.block_siblings.clone(),
-            tw.block_pos,
-            keygen_chain,
-            1,
-            params.clone(),
-        );
-
-        let start = Instant::now();
-        let vk = keygen_vk(&srs, &keygen_circuit).expect("keygen_vk failed");
-        println!("keygen_vk time: {:?}", start.elapsed());
-
-        // Serialize VK with the same format tvm-sdk's read_vk uses.
-        let mut vk_bytes: Vec<u8> = Vec::new();
-        vk.write(&mut vk_bytes, SerdeFormat::RawBytesUnchecked)
-            .expect("vk.write failed");
-        let vk_path = out_dir.join("dark_dex_w128_vk.bin");
-        std::fs::write(&vk_path, &vk_bytes).expect("write vk");
-        println!("Wrote VK: {} ({} B)", vk_path.display(), vk_bytes.len());
-
-        let start = Instant::now();
-        let pk = keygen_pk(&srs, vk, &keygen_circuit).expect("keygen_pk failed");
-        println!("keygen_pk time: {:?}", start.elapsed());
-
-        let break_points = keygen_circuit.base_circuit_builder.borrow().break_points();
-
-        for chain_len in [0usize, 1, 2] {
-            let (dense_chain, final_root_bytes) =
-                build_dense_chain(tw.blocks_root_level_0, chain_len, 130);
-            let final_root_fr = bytes_to_fr(&final_root_bytes);
-
-            let prover_circuit = DarkDexCircuitNew::new_for_proving(
-                v.sk_u,
-                ephemeral_pubkey,
-                v.entries.clone(),
-                tw.events_siblings.clone(),
-                tw.events_pos,
-                tw.account_dapp_id,
-                tw.account_id,
-                tw.block_id,
-                tw.envelope_hash_bytes,
-                tw.block_siblings.clone(),
-                tw.block_pos,
-                dense_chain,
-                chain_len,
-                params.clone(),
-                break_points.clone(),
-            );
-
-            let instance_fr = vec![
-                v.expected_poseidon_hash,
-                final_root_fr,
-                v.voucher_nominal_val,
-                v.token_type_val,
-                ephemeral_pubkey,
-            ];
-            assert_eq!(instance_fr.len(), 5);
-
-            println!("\n[L{}] proving...", chain_len);
-            let start = Instant::now();
-            let proof_bytes = gen_proof_with_instances(&srs, &pk, prover_circuit, &[&instance_fr]);
-            println!(
-                "[L{}] proof = {} bytes in {}ms; sanity-verifying...",
-                chain_len,
-                proof_bytes.len(),
-                start.elapsed().as_millis()
-            );
-            check_proof_with_instances(&srs, pk.get_vk(), &proof_bytes, &[&instance_fr], true);
-
-            // 5 Fr × 32 bytes LE = 160 B; tvm-sdk decodes via Fr::from_bytes_le (byte-exact symmetric).
-            let mut instances_bytes: Vec<u8> = Vec::with_capacity(5 * 32);
-            for fr in &instance_fr {
-                instances_bytes.extend_from_slice(fr.to_repr().as_ref());
-            }
-            assert_eq!(instances_bytes.len(), 160);
-
-            let proof_path = out_dir.join(format!("dark_dex_w128_L{}_proof.bin", chain_len));
-            let instances_path = out_dir.join(format!("dark_dex_w128_L{}_instances.bin", chain_len));
-            std::fs::write(&proof_path, &proof_bytes).expect("write proof");
-            std::fs::write(&instances_path, &instances_bytes).expect("write instances");
-            println!(
-                "[L{}] wrote {} ({} B) and {} ({} B)",
-                chain_len,
-                proof_path.display(),
-                proof_bytes.len(),
-                instances_path.display(),
-                instances_bytes.len()
-            );
-        }
-
-        println!(
-            "\nDone — wrote VK + 3 (proof,instances) pairs to {}",
-            out_dir.display()
-        );
-    }
-
-    #[test]
-    fn test_k_sweep_benchmark() {
-        use halo2_base::halo2_proofs::plonk::{keygen_pk, keygen_vk};
-        use halo2_base::utils::fs::gen_srs;
-        use halo2_base::utils::testing::{check_proof_with_instances, gen_proof_with_instances};
-        use rand::rngs::StdRng;
-        use rand::SeedableRng;
-        use std::time::Instant;
-
-        let v = load_first_voucher();
-
-        let dense_hasher = DensePoseidonHasher::new();
-        let mut rng = StdRng::seed_from_u64(55);
-
-        let tw = build_two_level_tree(&v.repr_hash, &mut rng, &dense_hasher, 128, 130);
-
-        let (dense_chain, final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, 1, 130);
-        let final_root_fr = bytes_to_fr(&final_root_bytes);
-        let ephemeral_pubkey = Fr::from(0xDEADu64);
-
-        // ── Step 1: Measure cell counts using K=19 (known-good params) ──
-        println!("\n=== Step 1: Measuring circuit cell usage with K={} ===\n", K);
-        let (total_advice, total_lookup, total_fixed);
-        {
-            let params = base_circuit_params();
-            let measure_circuit = DarkDexCircuitNew::new(
-                v.sk_u,
-                ephemeral_pubkey,
-                v.entries.clone(),
-                tw.events_siblings.clone(),
-                tw.events_pos,
-                tw.account_dapp_id,
-                tw.account_id,
-                tw.block_id,
-                tw.envelope_hash_bytes,
-                tw.block_siblings.clone(),
-                tw.block_pos,
-                dense_chain.clone(),
-                1,
-                params,
-            );
-            let srs_measure = gen_srs(K);
-            let _ = keygen_vk(&srs_measure, &measure_circuit).expect("keygen_vk for measurement failed");
-
-            let stats = measure_circuit.base_circuit_builder.borrow().statistics();
-            total_advice = stats.gate.total_advice_per_phase[0];
-            total_lookup = stats.total_lookup_advice_per_phase[0];
-            total_fixed = stats.gate.total_fixed;
-            println!("Total advice cells: {}", total_advice);
-            println!("Total lookup advice cells: {}", total_lookup);
-            println!("Total fixed (constants): {}", total_fixed);
-        }
-
-        // ── Step 2: Sweep K = 14..=20 ──
-        println!("\n=== Step 2: K sweep benchmark ===\n");
-
-        struct BenchResult {
-            k: u32,
-            num_advice: usize,
-            num_lookup_advice: usize,
-            num_fixed: usize,
-            lookup_bits: usize,
-            total_columns: usize,
-            keygen_vk_ms: u128,
-            keygen_pk_ms: u128,
-            prove_ms: u128,
-            verify_ms: u128,
-            proof_size: usize,
-        }
-        let mut results: Vec<BenchResult> = Vec::new();
-
-        for k_val in 14u32..=20 {
-            println!("────────────────────────────────────────────");
-            println!("  K = {} (2^{} = {} rows)", k_val, k_val, 1u64 << k_val);
-            println!("────────────────────────────────────────────");
-
-            let usable_rows = (1usize << k_val) - 12;
-            let lookup_bits = (k_val - 1) as usize;
-
-            let num_advice = ((total_advice as f64 / usable_rows as f64) * 1.05).ceil() as usize;
-            let num_advice = num_advice.max(1);
-            let num_lookup_advice = ((total_lookup as f64 / usable_rows as f64) * 1.05).ceil() as usize;
-            let num_lookup_advice = num_lookup_advice.max(1);
-            let num_fixed = ((total_fixed as f64 / usable_rows as f64) * 1.05).ceil() as usize;
-            let num_fixed = num_fixed.max(1);
-
-            let total_columns = num_advice + num_lookup_advice + num_fixed + 1;
-
-            println!("  Usable rows: {}", usable_rows);
-            println!("  Config: num_advice={}, num_lookup_advice={}, num_fixed={}, lookup_bits={}",
-                     num_advice, num_lookup_advice, num_fixed, lookup_bits);
-            println!("  Total polynomial columns: {}", total_columns);
-
-            let params = BaseCircuitParams {
-                k: k_val as usize,
-                num_advice_per_phase: vec![num_advice],
-                num_fixed,
-                num_lookup_advice_per_phase: vec![num_lookup_advice],
-                lookup_bits: Some(lookup_bits),
-                num_instance_columns: 1,
-            };
-
-            let start = Instant::now();
-            let srs = gen_srs(k_val);
-            println!("  SRS gen:   {}ms", start.elapsed().as_millis());
-
-            // Keygen
-            let keygen_circuit = DarkDexCircuitNew::new(
-                v.sk_u,
-                ephemeral_pubkey,
-                v.entries.clone(),
-                tw.events_siblings.clone(),
-                tw.events_pos,
-                tw.account_dapp_id,
-                tw.account_id,
-                tw.block_id,
-                tw.envelope_hash_bytes,
-                tw.block_siblings.clone(),
-                tw.block_pos,
-                dense_chain.clone(),
-                1,
-                params.clone(),
-            );
-
-            let start = Instant::now();
-            let vk = keygen_vk(&srs, &keygen_circuit).expect("keygen_vk failed");
-            let keygen_vk_ms = start.elapsed().as_millis();
-            println!("  keygen_vk: {}ms", keygen_vk_ms);
-
-            let start = Instant::now();
-            let pk = keygen_pk(&srs, vk, &keygen_circuit).expect("keygen_pk failed");
-            let keygen_pk_ms = start.elapsed().as_millis();
-            println!("  keygen_pk: {}ms", keygen_pk_ms);
-
-            let break_points = keygen_circuit.base_circuit_builder.borrow().break_points();
-
-            // Prove
-            let prover_circuit = DarkDexCircuitNew::new_for_proving(
-                v.sk_u,
-                ephemeral_pubkey,
-                v.entries.clone(),
-                tw.events_siblings.clone(),
-                tw.events_pos,
-                tw.account_dapp_id,
-                tw.account_id,
-                tw.block_id,
-                tw.envelope_hash_bytes,
-                tw.block_siblings.clone(),
-                tw.block_pos,
-                dense_chain.clone(),
-                1,
-                params,
-                break_points,
-            );
-
-            let start = Instant::now();
-            let instance_fr = vec![v.expected_poseidon_hash, final_root_fr, v.voucher_nominal_val, v.token_type_val, ephemeral_pubkey];
-            let proof_bytes =
-                gen_proof_with_instances(&srs, &pk, prover_circuit, &[&instance_fr]);
-            let prove_ms = start.elapsed().as_millis();
-            println!("  prove:     {}ms", prove_ms);
-            println!("  proof size: {} bytes", proof_bytes.len());
-
-            // Verify (run 5 times and take median for stability)
-            let mut verify_times = Vec::new();
-            for _ in 0..5 {
-                let start = Instant::now();
-                check_proof_with_instances(&srs, pk.get_vk(), &proof_bytes, &[&instance_fr], true);
-                verify_times.push(start.elapsed().as_millis());
-            }
-            verify_times.sort();
-            let verify_ms = verify_times[2]; // median
-            println!("  verify:    {}ms (median of 5)", verify_ms);
-
-            results.push(BenchResult {
-                k: k_val,
-                num_advice,
-                num_lookup_advice,
-                num_fixed,
-                lookup_bits,
-                total_columns,
-                keygen_vk_ms,
-                keygen_pk_ms,
-                prove_ms,
-                verify_ms,
-                proof_size: proof_bytes.len(),
-            });
-        }
-
-        // ── Print summary table ──
-        println!("\n\n╔══════╤═════════╤══════════╤═══════╤═══════════╤═══════╤═══════════╤═══════════╤═══════════╤════════════╤════════════╗");
-        println!("║  K   │ advice  │ lkp_adv  │ fixed │ lkp_bits  │ cols  │ keygen_vk │ keygen_pk │  prove    │  verify    │ proof_size ║");
-        println!("╠══════╪═════════╪══════════╪═══════╪═══════════╪═══════╪═══════════╪═══════════╪═══════════╪════════════╪════════════╣");
-        for r in &results {
-            println!(
-                "║  {:>2}  │  {:>5}  │   {:>4}   │  {:>3}  │    {:>2}     │ {:>4}  │  {:>6}ms │  {:>6}ms │  {:>6}ms │   {:>6}ms  │  {:>6}B   ║",
-                r.k, r.num_advice, r.num_lookup_advice, r.num_fixed,
-                r.lookup_bits, r.total_columns,
-                r.keygen_vk_ms, r.keygen_pk_ms, r.prove_ms, r.verify_ms, r.proof_size,
-            );
-        }
-        println!("╚══════╧═════════╧══════════╧═══════╧═══════════╧═══════╧═══════════╧═══════════╧═══════════╧════════════╧════════════╝");
-    }
-
     #[test]
     fn test_dark_dex_circuit_variable_events_depth() {
         use rand::rngs::StdRng;
@@ -1336,12 +998,13 @@ mod tests {
             );
 
             let tw = build_two_level_tree(
-                &v.repr_hash, &mut rng, &dense_hasher, num_events_leaves, 130,
+                &v.repr_hash, &mut rng, &dense_hasher, num_events_leaves, BLOCK_TREE_LEAVES,
             );
             println!("Events proof depth: {}", tw.events_siblings.len());
             println!("Block proof depth: {}", tw.block_siblings.len());
 
-            let (dense_chain, final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, 1, 130);
+            let chain_len = 1;
+            let (dense_chain, final_root_bytes) = build_dense_chain(tw.blocks_root_level_0, chain_len, BLOCK_TREE_LEAVES);
             let final_root_fr = bytes_to_fr(&final_root_bytes);
 
             let ephemeral_pubkey = Fr::from(0xDEADu64);
@@ -1358,7 +1021,7 @@ mod tests {
                 tw.block_siblings,
                 tw.block_pos,
                 dense_chain,
-                1,
+                chain_len,
                 params.clone(),
             );
 

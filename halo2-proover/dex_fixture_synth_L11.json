@@ -1,0 +1,199 @@
+{
+  "description": "Synthetic W=128 fixture (chain_len=11, seed=99). Sibling shapes match production HISTORY_PROOF_WINDOW_SIZE=128 / BLOCK_TREE_LEAVES=130. See halo2-proover/README.md.",
+  "sk_u_hex": "470c199abfe8b22ee78bd71ab3430e5626fc4480b2ea50a8e5fb85362a790c1b",
+  "ephemeral_pubkey_hex": "000000000000000000000000000000000000000000000000000000000000dead",
+  "event_boc_base64": "te6ccgEBAgEAnQABn+AAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIcAAAAAAAAoJ2mmmKhgAQCQY4DCGmJ5ISCGMbyhgDMqxWRzAGVpG4lV54dtIO+ahzbvIoYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAF0h26AAAAAAC",
+  "events_proof_siblings_hex": [
+    "2bd2a075e181090bd1915b98ee14d55254a3bcdc12aebf6bd1e18b9600c175a7",
+    "a8ba735baa79b17e21748394f85055829ee55456dadbe33c11689b17adec2e1e",
+    "388da48687fd242ee00f851d7b0c3623d3f083268db0351d4bc613a29f03ed21",
+    "39711aaa42113a1a5e9100c86cdfe1163c4d6a3aec80396651cd0f745b7bb521",
+    "1222a4c29d8fe5ce5bc91f19a5da1b5f5d6f429bff80f06996500701ad8c131f",
+    "1e313795f075dc0534432c62575532e2c68117a372c8a042da990f7f9c530601",
+    "bcf9a08302661ceea1c010dc44f3517cca67b710f8cb55d139cbb7e7651c6413"
+  ],
+  "events_proof_position": 0,
+  "account_dapp_id_hex": "9c0217fd090a9da1346a76c1f65193b28a79dc6288c1c739d21ae3d1d45f9cd8",
+  "account_id_hex": "badfa72127e13af8ecb03eb878bf2e2079059a1da18ba05236f2e1555351e0c4",
+  "block_id_hex": "fe6fb5bb06e2ba04622ae8e59092314e1be95bdb400a80ad6ce99be749316ebd",
+  "envelope_hash_hex": "0115bdf33ba33921e19427dda54e3ce0160c736772312d1098eb2a047d16774d",
+  "block_proof_siblings_hex": [
+    "e937726cb16341272400a6ccb05d4e36db8943a24111e4e7a9166b4cffadfc44",
+    "d7da5f78ef372c5f5ee81eac1e6856adace20be5621479b5e389809780369019",
+    "837cd69ebb6c1a947ecd619a7aac7334b1b9b5fcc6e511e0fd313c63135aa221",
+    "2d181f8c46e59a2585c0cdfe1c3fae041d6dde143fc892b35cf6cfc059558005",
+    "f361cd52141bda1ec6aa8f4ca9c3bb91fc1e81364b25161776c04e2b07f50922",
+    "016c5d08cf52a456286aa8a585ae7c360300d043127e1efa4142e44c3ca8a729",
+    "03edfbf96e0fa66f876628d30868bf1c4d17b0efc2ef2ce14c4033cb05b17519",
+    "5077982c18ab50e0982de157191d61a8e9fca6bea12c8a6bb026799a60be1610"
+  ],
+  "block_proof_position": 0,
+  "num_active_chain_steps": 11,
+  "dense_chain": [
+    {
+      "active": true,
+      "siblings_hex": [
+        "eba6c6fb966a5a2caf58ebbb1ce6fc26f42f2c2285a23fee8746ad889aef156a",
+        "955d235fb1284e144d2482e1fa3fc80b2f83b22720eaafad42a27a19dc43012e",
+        "0339f91989723c7e15b8f4170940b48398c29c58af98b14f50157000c30f721b",
+        "1ff6c6413823384b049b297c50dc2bd4428d3e86f5aa0a3265788f124521d31c",
+        "f4b89f01ca2d36297c7afe85f21a9953014cf14748afdaf1a3596c72496f7513",
+        "95ac04e714d2d77c63dce56f9cfc85647693898cda98f53419dc568392678c11",
+        "0428006bc308962b13843f53b3dd65dcdb376391d4b240f88d3555894526a52b",
+        "9457ced3ea60abd79491e6f16b9c5b2a128764389a0c4dd92758ee960777cc10"
+      ],
+      "position": 0,
+      "leaf_hex": "fa63b96b1039f07ee04b4f4a8e7a6eddbd56cd8fb1eb97176b206821dbfd911a"
+    },
+    {
+      "active": true,
+      "siblings_hex": [
+        "f812f55912aca5d7143625d855af2ec7b9a5835d822e61781a1b20d7098773d1",
+        "21786925657638f9d8e3e6485fa5f268d5fe281a483e3c31b0781b8429dbab21",
+        "43d78dd68160bc8e81c3240706a869bc95caf9e79f586372e63269f924d1f423",
+        "8a9b197342c246dc017b71d019a81f53aa82b3f4ebef0ccb1a860ab1fba88f1d",
+        "ffd2042d766df93275dbe4f71389c299aca216373080767ab4014cebb701c923",
+        "fbe00889c0a7617b2899e20d95003f32fc9a15d4ac37505ec194d4d5d572d819",
+        "29c4fec526844d1473b049eb722a1de490d0b5314ebf9781b4c8a02f194fb00a",
+        "90c79d5d75558bb1cb9301af6b4b4fcc67c9d59a459711684c3f122da2cd971c"
+      ],
+      "position": 0,
+      "leaf_hex": "a4ce862513460dfc48a3ad5120f3fd71d2a901a01a3fad46e79bd72d05602c10"
+    },
+    {
+      "active": true,
+      "siblings_hex": [
+        "45679c36c05c8cecae06b8c064e4d6c6e61c968a5ea9405589b7258236a8f0a3",
+        "43fdd56f23faed87abf42a5e2fd61c71f1d28ab79a06f8dfd6b6234d6094d60c",
+        "9f352bde5aea2788afbeefedd7d9afd0726c882e16dc535cbd8b066e7b15e924",
+        "66da70bd0de4494bcc4ea41afcd05868182830a515c11d117398f30ed8cee026",
+        "2afc7cc09fb98af3ae328ebfa4709504ddb74bef30431ebbfe84aa474084b410",
+        "e3cfca4653563d2b28caa02fdd964e108220651196c248e1dca60ecaaf96660c",
+        "fa6f8b114a2e2899d7bc67b921ca9f68e7a46b9761bcb747c448ac26af3a672c",
+        "b984ec9f92b362593aa5a50dfe49ea1cf2cef01953163990d95efb6146bfae2e"
+      ],
+      "position": 0,
+      "leaf_hex": "138bcb73273b03e48415480dff464138b5aa3405602deed1d3dea693db88f618"
+    },
+    {
+      "active": true,
+      "siblings_hex": [
+        "fe584f7d9653d34fb8a85d2b0c674afbd44fab92d1ed7e465fb1bdd3491f8619",
+        "2a1f8c52599ea7de06370f2bea6208e9f0768168a3d7aff6785d6f69e48c980f",
+        "5f0082e17358ca47ad92d271939261b87518c1666c8083de8cf2d4f8b311d203",
+        "2796d1484f8f2ac3d3015813bf1e0dd6c81dccefff84bd4bd25235f507e2e90b",
+        "280f7a8c56417974f7c80ecebe676e61fa57b1fb69b8ab270a349bbbba284924",
+        "8b2848e7fc913efb85a1fd0af39c2c45934348a03fb94d7cc154b29fd4a6830b",
+        "e209d2543d230b58f9ffdbf34bec7b4b200f78a36fdec7abb50427bf2c495e16",
+        "83b73b9672fc78f2a945e4401e2e2ecc1511cd4f2556ebfc9d77050aa156911e"
+      ],
+      "position": 0,
+      "leaf_hex": "86e85cfbbb8b16a83d9980a8192dc0b1d45ac43acd064eb0d2150260b8f09a2b"
+    },
+    {
+      "active": true,
+      "siblings_hex": [
+        "3f5e99c94ab0165c09f1afe3a986a33abb9e89f0106f5e9a8bdd280c3dd77b7b",
+        "0257935088686de06412ea18c185cc27a6133152051b4c897042d61daee9341b",
+        "aa4418a00cc3d398e95c9e0b276fa97bf737cc674398bd71e3156cd1e3320428",
+        "5f5b7b519215bbe2c684d34a53d3e393f31bdc24c30ad72da1d4b7e5357f9c0b",
+        "f4c670a21304dc32f1db2c5d12dff3d10a0525d128420e4f974ff68135b1c024",
+        "05d4d862205e603b6cd871d85160e65d5bc1e8b95023751a9fd34d29dac7be04",
+        "ddc678065859328c17bd1b1e11ce71011ff02df4577a56786c032a02d275a920",
+        "9911ffacf4ec61555307e4eda362d2b5ebd49044c9fdabd9fdb53e085a51cc21"
+      ],
+      "position": 0,
+      "leaf_hex": "c89d5b26b1f7d8178fbbf4864e252b25529b7180b10a5e279768660b3491f318"
+    },
+    {
+      "active": true,
+      "siblings_hex": [
+        "4074a6737bfc51f26ebb0ec00a286375b892d608d8f5bff2ee0fafe1f0dd48f0",
+        "93eb7db8c395128939ebe6bcaa3198758e9e9a159159065b83e4cedee4caa01c",
+        "cc49370219ad8ce10a32f6f04faf0d3ab041f0a9153c7dacc50c5a494d0bdc24",
+        "a8a3eac1997f82abd71743f468455dc6da96a4728cc9b1321b482770f8a2550b",
+        "eef6557b86567d302bf934215e08fcd1d3f5a3dc882e6b1d7623220d35c6da24",
+        "05198271a876f2ce1b468a49dba8edfb633f9ebd78cd62618aab58f34d5db426",
+        "d50012f438dabcdd06361b02f873f74d6d2b9b4d46f405b99741b99394791928",
+        "e8723b5a8483a2782e5f7222f0cfd64cdb2292fd6598305a3141999e74879205"
+      ],
+      "position": 0,
+      "leaf_hex": "eadb204f2e649738c79318fd4aee419ab5bebffeeb0bdb0e7387f01493395303"
+    },
+    {
+      "active": true,
+      "siblings_hex": [
+        "82a9b45d2f9828a5ddca4871100e485f898a7024114512fd73cbdce3ffb6df52",
+        "14ef2a3cb27806be4978f9eb4364e7fb09f0d480ac4a069a9a7886441e6b8419",
+        "669d5fca2cfc4fb497376488b0cf2604b72dccf55e887929ec0fedf462f8322e",
+        "3fa39f1f2b9203290b5c4d4dd78331efbd001ff81714535c66dd3083a567c601",
+        "9a6fc8a4afba17a0d91ddb37f90307ddf7b86212ae42626634cd545d05690a16",
+        "25d20d9c2f02778de9008a2d1f77b37930843f437a71b833f2f63faefa827526",
+        "dc254e5d582f8e2b37cee3b5830d801728a09b53830ca9a6c3f65ae4c554b821",
+        "b1a229f542a72d00816513c7a2eaf9fb8dbe9c0e976de82d55c6021cc2914721"
+      ],
+      "position": 0,
+      "leaf_hex": "f97de00cd3473f4ba9859871d9093e1ea4caa3c77d37ea319712903d2409fa2d"
+    },
+    {
+      "active": true,
+      "siblings_hex": [
+        "561a8433e351534d148e0ec390e4efb52592b35d4278a3a55fd783e812253d5c",
+        "4000ff6038e0eebb96c91a2d8078482cc3343d3f11af70331901afe162d63e25",
+        "0db982e07772ce13050736a6e7ea1da3d6173371647bc75aa63d64b7a698592a",
+        "cf3d34ba65509b3cffa8fd27876c8c72efbf2b72217137419f5576210cb9af01",
+        "b625d64b16d3973bf3fe9a57cbc244751da5603895dd4ebf31f1af6862d5d921",
+        "ef5f28e9c82d591dae0a3ecbefe3f9e62991951f55095af1056b64c589b50e2f",
+        "e6946fe593572bea9abd6c80ce039fb27e056676df1e7fe2b4807231c3725c10",
+        "482253a2958ea17cb8a38df7f8b8486e43220043ec1f7b188128d3ada242aa2d"
+      ],
+      "position": 0,
+      "leaf_hex": "e1e8eb4bb8d84554dfbd6eb8f2dff2920538cb33f5ff96b28116848fe818ce0f"
+    },
+    {
+      "active": true,
+      "siblings_hex": [
+        "c06cf9eb1dc600e021ad657abe3ae328a37cef695efcb15b702743a64c93dd09",
+        "f94c7e2048060509bd6f09bd009a908d4c430b53cc4cf4bb8e0dc4a380e9b11f",
+        "69802e4ae5082074882a9d822627d63c42664c2d45280eccf49d8cce220df712",
+        "2ab441e8466b7de611b1c5a18b44546e453d22459b1743aebead6a5e17fb5111",
+        "02457f34541702ad556acb621f631e6b9e038fabccb3714bdc4293f2fdf3ba01",
+        "4a5de4c28012d0be60535788243f3d300252ae67f16374a905d0b50d8e8fac2f",
+        "5c110a834aad1ff3414c938c0e9a7fd728e5c86e72bdb7f8dc2b92450232b02a",
+        "9e7940dc989fa008ca83174752de9e00eb062315171e44a73c04bcfd397dce1b"
+      ],
+      "position": 0,
+      "leaf_hex": "218a62c1671fbfc4562d33eae7d4c94e0643e32027ffbc5cb6ee8db9768d4722"
+    },
+    {
+      "active": true,
+      "siblings_hex": [
+        "a02868db82220aede799613c2c7280b0755f83806bf552c34bd5e4d518e07c5b",
+        "961931e688b7e40054c957211056221aa7a887cb584a20527802ada5b777a909",
+        "edccb91156975f802e74bb0a3d10249fe3a665a0001b744214ea665a653bac29",
+        "acab93b4123f82be6dbffe0bf2ef8c3523a5668d30f0870a1f2922bd4c11042e",
+        "321d8446794db0476abba69e16e7401bee5b530461167bd60e9e5beed74f5f27",
+        "4ea8aec2f4ae96012a9c27579a7aa83e44cccba1e0fe904cdc3ea4e1ee6eb817",
+        "09956a55db45c1b253c50e03a0d64678b91dd343d6b2153912a2b482507cb527",
+        "58575fc29e9787e98bb56686e34e5cd4e3b5e3b3da80b1b43eead2b0a54dd00b"
+      ],
+      "position": 0,
+      "leaf_hex": "2db3c5eb478dd91121e1fc88f60f84e357cb0c272dfbf8d871f95b58009ed808"
+    },
+    {
+      "active": true,
+      "siblings_hex": [
+        "2c57827e00913a834eaabb14e0a9bbe5331d199c576f12c9666c345512af786a",
+        "d37815acc7f9964963f4eba65b6e87465f96ff4890f4f7f5c5e161670ea04617",
+        "62366a582d56fd05951ffb5bba5d57606a355cda47ed57b6085f1801afcb981e",
+        "d3e7fe9abc9af7a70ffa125e3393aaadf1581bcd34a200facd6c356ef9825725",
+        "b34e7d1b324d29c0c55d0b0df791677e973b4d916bc632781e342f8ff4bedb0a",
+        "9ad69cca1fe50976e43fbf2f17a4b14c30e383fc255b79cee9efa0e566ee8320",
+        "127e52bbb1521a0620559faf9eb14ef68ccc82dbdd6193db765959ad8af6fe2b",
+        "aec3035023738baaa2512f35409387c1a8e092347da3d5a2ae0b135a5f8d1d09"
+      ],
+      "position": 0,
+      "leaf_hex": "7834969a353575ffa1be2fe413d3fd40e77f0da3288463b68c4fd58f4dc13f19"
+    }
+  ]
+}

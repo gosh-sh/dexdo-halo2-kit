@@ -16,7 +16,7 @@ path = "src/main.rs"
 # All other history-proof / node-types code is vendored locally (see
 # src/poseidon.rs, src/types.rs) so we don't pull the acki-nacki monorepo.
 pse-poseidon = { git = "https://github.com/axiom-crypto/pse-poseidon.git" }
-halo2-base = { git = "https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381", branch = "main", default-features = false, features = ["halo2-axiom"] }
+halo2-base = { git = "https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381", branch = "bump-halo2-lib-v0.4.1", default-features = false, features = ["halo2-axiom"] }
 
 anyhow = "1.0.97"
 clap = { version = "4.5.2", features = ["derive"] }

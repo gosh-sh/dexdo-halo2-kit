@@ -1,0 +1,64 @@
+{
+  "description": "Synthetic W=128 fixture (chain_len=2, seed=99). Sibling shapes match production HISTORY_PROOF_WINDOW_SIZE=128 / BLOCK_TREE_LEAVES=130. See halo2-proover/README.md.",
+  "sk_u_hex": "470c199abfe8b22ee78bd71ab3430e5626fc4480b2ea50a8e5fb85362a790c1b",
+  "ephemeral_pubkey_hex": "000000000000000000000000000000000000000000000000000000000000dead",
+  "event_boc_base64": "te6ccgEBAgEAnQABn+AAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIcAAAAAAAAoJ2mmmKhgAQCQY4DCGmJ5ISCGMbyhgDMqxWRzAGVpG4lV54dtIO+ahzbvIoYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAF0h26AAAAAAC",
+  "events_proof_siblings_hex": [
+    "2bd2a075e181090bd1915b98ee14d55254a3bcdc12aebf6bd1e18b9600c175a7",
+    "a8ba735baa79b17e21748394f85055829ee55456dadbe33c11689b17adec2e1e",
+    "388da48687fd242ee00f851d7b0c3623d3f083268db0351d4bc613a29f03ed21",
+    "39711aaa42113a1a5e9100c86cdfe1163c4d6a3aec80396651cd0f745b7bb521",
+    "1222a4c29d8fe5ce5bc91f19a5da1b5f5d6f429bff80f06996500701ad8c131f",
+    "1e313795f075dc0534432c62575532e2c68117a372c8a042da990f7f9c530601",
+    "bcf9a08302661ceea1c010dc44f3517cca67b710f8cb55d139cbb7e7651c6413"
+  ],
+  "events_proof_position": 0,
+  "account_dapp_id_hex": "9c0217fd090a9da1346a76c1f65193b28a79dc6288c1c739d21ae3d1d45f9cd8",
+  "account_id_hex": "badfa72127e13af8ecb03eb878bf2e2079059a1da18ba05236f2e1555351e0c4",
+  "block_id_hex": "fe6fb5bb06e2ba04622ae8e59092314e1be95bdb400a80ad6ce99be749316ebd",
+  "envelope_hash_hex": "0115bdf33ba33921e19427dda54e3ce0160c736772312d1098eb2a047d16774d",
+  "block_proof_siblings_hex": [
+    "e937726cb16341272400a6ccb05d4e36db8943a24111e4e7a9166b4cffadfc44",
+    "d7da5f78ef372c5f5ee81eac1e6856adace20be5621479b5e389809780369019",
+    "837cd69ebb6c1a947ecd619a7aac7334b1b9b5fcc6e511e0fd313c63135aa221",
+    "2d181f8c46e59a2585c0cdfe1c3fae041d6dde143fc892b35cf6cfc059558005",
+    "f361cd52141bda1ec6aa8f4ca9c3bb91fc1e81364b25161776c04e2b07f50922",
+    "016c5d08cf52a456286aa8a585ae7c360300d043127e1efa4142e44c3ca8a729",
+    "03edfbf96e0fa66f876628d30868bf1c4d17b0efc2ef2ce14c4033cb05b17519",
+    "5077982c18ab50e0982de157191d61a8e9fca6bea12c8a6bb026799a60be1610"
+  ],
+  "block_proof_position": 0,
+  "num_active_chain_steps": 2,
+  "dense_chain": [
+    {
+      "active": true,
+      "siblings_hex": [
+        "eba6c6fb966a5a2caf58ebbb1ce6fc26f42f2c2285a23fee8746ad889aef156a",
+        "955d235fb1284e144d2482e1fa3fc80b2f83b22720eaafad42a27a19dc43012e",
+        "0339f91989723c7e15b8f4170940b48398c29c58af98b14f50157000c30f721b",
+        "1ff6c6413823384b049b297c50dc2bd4428d3e86f5aa0a3265788f124521d31c",
+        "f4b89f01ca2d36297c7afe85f21a9953014cf14748afdaf1a3596c72496f7513",
+        "95ac04e714d2d77c63dce56f9cfc85647693898cda98f53419dc568392678c11",
+        "0428006bc308962b13843f53b3dd65dcdb376391d4b240f88d3555894526a52b",
+        "9457ced3ea60abd79491e6f16b9c5b2a128764389a0c4dd92758ee960777cc10"
+      ],
+      "position": 0,
+      "leaf_hex": "fa63b96b1039f07ee04b4f4a8e7a6eddbd56cd8fb1eb97176b206821dbfd911a"
+    },
+    {
+      "active": true,
+      "siblings_hex": [
+        "f812f55912aca5d7143625d855af2ec7b9a5835d822e61781a1b20d7098773d1",
+        "21786925657638f9d8e3e6485fa5f268d5fe281a483e3c31b0781b8429dbab21",
+        "43d78dd68160bc8e81c3240706a869bc95caf9e79f586372e63269f924d1f423",
+        "8a9b197342c246dc017b71d019a81f53aa82b3f4ebef0ccb1a860ab1fba88f1d",
+        "ffd2042d766df93275dbe4f71389c299aca216373080767ab4014cebb701c923",
+        "fbe00889c0a7617b2899e20d95003f32fc9a15d4ac37505ec194d4d5d572d819",
+        "29c4fec526844d1473b049eb722a1de490d0b5314ebf9781b4c8a02f194fb00a",
+        "90c79d5d75558bb1cb9301af6b4b4fcc67c9d59a459711684c3f122da2cd971c"
+      ],
+      "position": 0,
+      "leaf_hex": "a4ce862513460dfc48a3ad5120f3fd71d2a901a01a3fad46e79bd72d05602c10"
+    }
+  ]
+}

@@ -2,6 +2,7 @@
 name = "halo2-proover"
 version = "0.3.0"
 edition = "2021"
+default-run = "halo2-proover"
 
 [lib]
 name = "halo2_proover"
@@ -19,9 +20,14 @@ serde_json = "1.0"
 sha2 = "0.10"
 
 gosh-dark-dex-halo2-new-circuit = { path = "../dex-halo2-circuit", package = "dex-halo2-circuit" }
-gosh-dense-balanced-tree = { git = "https://github.com/gosh-sh/gosh-halo2-crypto-lib", branch = "main" }
-halo2-base = { git = "https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381", branch = "main", default-features = false, features = ["halo2-axiom", "test-utils"] }
-tvm_types = { git = "https://github.com/tvmlabs/tvm-sdk.git", tag = "v3.0.3-rc.an", package = "tvm_types" }
-tvm_block = { git = "https://github.com/tvmlabs/tvm-sdk.git", tag = "v3.0.3-rc.an", package = "tvm_block" }
+gosh-dense-balanced-tree = { git = "https://github.com/gosh-sh/gosh-halo2-crypto-lib", branch = "bump-halo2-lib-v0.4.1" }
+halo2-base = { git = "https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381", branch = "bump-halo2-lib-v0.4.1", default-features = false, features = ["halo2-axiom", "test-utils"] }
+tvm_types = { git = "https://github.com/tvmlabs/tvm-sdk.git", package = "tvm_types" }
+tvm_block = { git = "https://github.com/tvmlabs/tvm-sdk.git", package = "tvm_block" }
 pse-poseidon = { git = "https://github.com/axiom-crypto/pse-poseidon.git" }
 failure = "0.1"
+
+# Extra deps used only by the `gen_hermez_kzg_and_vk` bin.
+gosh-zk-snark-halo2-utils = { git = "https://github.com/gosh-sh/gosh-zk-snark-halo2-utils", branch = "main", features = ["download"] }
+clap = { version = "4", features = ["derive"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }

@@ -1,0 +1,33 @@
+{
+  "description": "Synthetic W=128 fixture (chain_len=0, seed=99). Sibling shapes match production HISTORY_PROOF_WINDOW_SIZE=128 / BLOCK_TREE_LEAVES=130. See halo2-proover/README.md.",
+  "sk_u_hex": "470c199abfe8b22ee78bd71ab3430e5626fc4480b2ea50a8e5fb85362a790c1b",
+  "ephemeral_pubkey_hex": "000000000000000000000000000000000000000000000000000000000000dead",
+  "event_boc_base64": "te6ccgEBAgEAnQABn+AAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIcAAAAAAAAoJ2mmmKhgAQCQY4DCGmJ5ISCGMbyhgDMqxWRzAGVpG4lV54dtIO+ahzbvIoYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAF0h26AAAAAAC",
+  "events_proof_siblings_hex": [
+    "2bd2a075e181090bd1915b98ee14d55254a3bcdc12aebf6bd1e18b9600c175a7",
+    "a8ba735baa79b17e21748394f85055829ee55456dadbe33c11689b17adec2e1e",
+    "388da48687fd242ee00f851d7b0c3623d3f083268db0351d4bc613a29f03ed21",
+    "39711aaa42113a1a5e9100c86cdfe1163c4d6a3aec80396651cd0f745b7bb521",
+    "1222a4c29d8fe5ce5bc91f19a5da1b5f5d6f429bff80f06996500701ad8c131f",
+    "1e313795f075dc0534432c62575532e2c68117a372c8a042da990f7f9c530601",
+    "bcf9a08302661ceea1c010dc44f3517cca67b710f8cb55d139cbb7e7651c6413"
+  ],
+  "events_proof_position": 0,
+  "account_dapp_id_hex": "9c0217fd090a9da1346a76c1f65193b28a79dc6288c1c739d21ae3d1d45f9cd8",
+  "account_id_hex": "badfa72127e13af8ecb03eb878bf2e2079059a1da18ba05236f2e1555351e0c4",
+  "block_id_hex": "fe6fb5bb06e2ba04622ae8e59092314e1be95bdb400a80ad6ce99be749316ebd",
+  "envelope_hash_hex": "0115bdf33ba33921e19427dda54e3ce0160c736772312d1098eb2a047d16774d",
+  "block_proof_siblings_hex": [
+    "e937726cb16341272400a6ccb05d4e36db8943a24111e4e7a9166b4cffadfc44",
+    "d7da5f78ef372c5f5ee81eac1e6856adace20be5621479b5e389809780369019",
+    "837cd69ebb6c1a947ecd619a7aac7334b1b9b5fcc6e511e0fd313c63135aa221",
+    "2d181f8c46e59a2585c0cdfe1c3fae041d6dde143fc892b35cf6cfc059558005",
+    "f361cd52141bda1ec6aa8f4ca9c3bb91fc1e81364b25161776c04e2b07f50922",
+    "016c5d08cf52a456286aa8a585ae7c360300d043127e1efa4142e44c3ca8a729",
+    "03edfbf96e0fa66f876628d30868bf1c4d17b0efc2ef2ce14c4033cb05b17519",
+    "5077982c18ab50e0982de157191d61a8e9fca6bea12c8a6bb026799a60be1610"
+  ],
+  "block_proof_position": 0,
+  "num_active_chain_steps": 0,
+  "dense_chain": []
+}

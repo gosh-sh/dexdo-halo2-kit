@@ -3,8 +3,14 @@ resolver = "2"
 members = ["dex-halo2-circuit", "halo2-proover", "dark_dex_halo2_private_witness_export_lib", "sk-commit-tool"]
 
 # Ensure all transitive dependencies use the same halo2-base from git.
+# Pinned to `bump-halo2-lib-v0.4.1` to match the tvm-sdk on-chain verifier
+# (tvm_vm with the `gosh` feature) — both sides MUST resolve to the same
+# halo2-base / halo2-ecc / zkevm-hashes version, otherwise VK / proof
+# binary formats diverge (0.4.0 on `main` vs 0.4.1 on this branch).
 [patch.crates-io]
-halo2-base = { git = "https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381", branch = "main" }
+halo2-base = { git = "https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381", branch = "bump-halo2-lib-v0.4.1" }
+halo2-ecc = { git = "https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381", branch = "bump-halo2-lib-v0.4.1" }
+zkevm-hashes = { git = "https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381", branch = "bump-halo2-lib-v0.4.1" }
 
 [profile.dev]
 opt-level = 3
