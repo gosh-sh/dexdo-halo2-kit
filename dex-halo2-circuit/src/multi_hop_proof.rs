@@ -442,15 +442,29 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                         .map(|&b| ctx.load_witness(Fr::from(b as u64)))
                         .collect();
 
+                    // SHA-256 walk: BLOCK_MERKLE_DEPTH levels, leaf_index = 7.
+                    // For index 7 in a 16-leaf depth-4 tree the successive
+                    // node indices are 7, 3, 1, 0 — so the sibling sits on the
+                    // LEFT for the first (BLOCK_MERKLE_DEPTH - 1) levels and
+                    // on the RIGHT for the top level. Since leaf_index is
+                    // fixed, orientation is compile-time constant per level.
                     let mut cur_bytes = l7_bytes;
-                    for sib_bytes in &hop.block_merkle_leaf_proof_l7 {
+                    for (level, sib_bytes) in hop.block_merkle_leaf_proof_l7.iter().enumerate() {
                         let sib_cells: Vec<AssignedValue<Fr>> = sib_bytes
                             .iter()
                             .map(|&b| ctx.load_witness(Fr::from(b as u64)))
                             .collect();
                         let mut concat: Vec<AssignedValue<Fr>> = Vec::with_capacity(64);
-                        concat.extend_from_slice(&sib_cells);
-                        concat.extend_from_slice(&cur_bytes);
+                        // node_index at this level for leaf 7: 7 >> level.
+                        // Even → cur on left ( cur || sib ); odd → cur on right ( sib || cur ).
+                        let cur_on_right = ((7usize >> level) & 1) == 1;
+                        if cur_on_right {
+                            concat.extend_from_slice(&sib_cells);
+                            concat.extend_from_slice(&cur_bytes);
+                        } else {
+                            concat.extend_from_slice(&cur_bytes);
+                            concat.extend_from_slice(&sib_cells);
+                        }
                         let next = sha256_chip.digest_bytes(ctx, &concat);
                         assert_eq!(next.len(), SHA256_HASH_LEN);
                         cur_bytes = next;

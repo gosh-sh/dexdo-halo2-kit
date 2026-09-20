@@ -45,8 +45,8 @@
 //! - `block_id` (32 B): the hop's target block. Feeds the SHA-256 path
 //!   target and `salted_end_block_id`.
 //! - `l7` (32 B): the L7 ref-tree root sitting at `block_merkle_tree_leaves[7]`.
-//! - `block_merkle_leaf_proof_l7`: 3 SHA-256 siblings opening L7 against
-//!   `block_id` at leaf index 7.
+//! - `block_merkle_leaf_proof_l7`: `BLOCK_MERKLE_DEPTH` (= 4) SHA-256
+//!   siblings opening L7 against `block_id` at leaf index 7.
 //! - `proof_block_ref_inner_path`: `MAX_PROOF_BLOCK_REFS_DEPTH` byte-flat
 //!   Poseidon siblings opening the ref-leaf against L7 at the witnessed
 //!   `ref_index`.
@@ -57,10 +57,12 @@
 //!
 //! ## Constraints (byte-flat production parity)
 //!
-//! 1. **SHA-256 path** — three `Sha256Chip::digest_bytes` calls, each consuming
-//!    `sibling_bytes ‖ current_bytes` (leaf 7 puts the current node on the
-//!    right at every level). Final 32-byte digest is constrained equal to
-//!    `block_id` byte-by-byte.
+//! 1. **SHA-256 path** — `BLOCK_MERKLE_DEPTH` `Sha256Chip::digest_bytes`
+//!    calls. For leaf index 7 in the 16-leaf depth-4 tree the node index at
+//!    level `k` is `7 >> k`: odd for `k = 0,1,2` (current on the right,
+//!    consumes `sibling ‖ current`) and even for `k = 3` (current on the
+//!    left, consumes `current ‖ sibling`). Final 32-byte digest is
+//!    constrained equal to `block_id` byte-by-byte.
 //! 2. **Ref-tree path (byte-flat)** —
 //!    - `ref_leaf = Poseidon([c0, c1, c2])` where `(c0, c1, c2)` are the
 //!      31-byte chunks of `REFERENCED_REF_BLOCK_TAG (34 B) ‖ ref_block_id`:
@@ -384,17 +386,24 @@ impl Circuit<Fr> for HopProofCircuit {
                     .map(|&b| ctx.load_witness(Fr::from(b as u64)))
                     .collect();
 
-                // === SHA-256 walk: 3 levels, leaf_index=7 (cur always on right) ===
+                // === SHA-256 walk: BLOCK_MERKLE_DEPTH levels, leaf_index=7 ===
+                // Node index at level k for leaf 7 is `7 >> k`: odd (cur on
+                // right) at k=0,1,2 and even (cur on left) at k=3.
                 let mut cur_bytes = l7_bytes;
-                for sib_bytes in &self.hop.block_merkle_leaf_proof_l7 {
+                for (level, sib_bytes) in self.hop.block_merkle_leaf_proof_l7.iter().enumerate() {
                     let sib_cells: Vec<AssignedValue<Fr>> = sib_bytes
                         .iter()
                         .map(|&b| ctx.load_witness(Fr::from(b as u64)))
                         .collect();
-                    // sibling || current (leaf 7 always on the right)
                     let mut concat: Vec<AssignedValue<Fr>> = Vec::with_capacity(64);
-                    concat.extend_from_slice(&sib_cells);
-                    concat.extend_from_slice(&cur_bytes);
+                    let cur_on_right = ((7usize >> level) & 1) == 1;
+                    if cur_on_right {
+                        concat.extend_from_slice(&sib_cells);
+                        concat.extend_from_slice(&cur_bytes);
+                    } else {
+                        concat.extend_from_slice(&cur_bytes);
+                        concat.extend_from_slice(&sib_cells);
+                    }
                     let next = sha256_chip.digest_bytes(ctx, &concat);
                     assert_eq!(next.len(), SHA256_HASH_LEN);
                     cur_bytes = next;

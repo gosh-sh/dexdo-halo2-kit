@@ -71,16 +71,18 @@ Every block has `block_id = root of a 16-leaf SHA-256 Merkle tree of depth 4`. T
 
 | Leaf | Definition | Hash family |
 |------|------------|-------------|
-| L0 | Poseidon of the block's thread layer-root snapshot | Poseidon |
+| L0 | `Poseidon(layer_count ‖ (layer_id ‖ layer_root)×MAX_HISTORY_PROOF_LAYERS)` over the block's `history_proofs` map (populated only on thread-0 key blocks; zero elsewhere) | Poseidon |
 | L1 | `SHA-256(bincode(CommonSection))` | SHA-256 |
-| L2 | `Poseidon(old_bk_set_hash)` — zero if no BK change | Poseidon |
-| L3 | `Poseidon(new_bk_set_hash)` — zero if no BK change | Poseidon |
-| L4 | TVM block representation hash | SHA-256 / TVM |
-| L5 | `SHA-256(bincode(durable_state_update))` | SHA-256 |
-| L6 | `SHA-256(tx_cnt.to_be_bytes())` | SHA-256 |
-| L7 | Poseidon dense-Merkle root of `[parent_block_id, refs...]` | Poseidon |
-| **L8** | **`tracked_ext_out_messages_root`** — SHA-256 root of this block's ext-out messages tree | SHA-256 |
+| L2 | `Poseidon` dense-Merkle commitment to `old_bk_set` — zero if no BK change | Poseidon |
+| L3 | `Poseidon` dense-Merkle commitment to `new_bk_set` — zero if no BK change | Poseidon |
+| L4 | Poseidon dense-Merkle root over per-DApp TVM sub-block hashes (or tagged empty-block sentinel when the block carries no TVM transactions) | Poseidon |
+| L5 | `SHA-256(bincode(DurableThreadAccountsStateDiff))` | SHA-256 |
+| L6 | `SHA-256(tx_cnt.to_be_bytes())` (8-byte big-endian `u64`) | SHA-256 |
+| L7 | Poseidon dense-Merkle root of `[parent_block_id, refs...]` (see §2.3) | Poseidon |
+| **L8** | **`tracked_ext_out_messages_root`** — Poseidon dense-Merkle root of this block's tracked ext-out messages (see §2.4) | Poseidon |
 | L9..L15 | `[0u8; 32]` (fixed zero padding) | — |
+
+**Source of truth:** `node/src/types/ackinacki_block/mod.rs:499–567` (`block_merkle_leaves()`, `BLOCK_MERKLE_LEAF_COUNT = 16`); combine rule at `node/src/types/ackinacki_block/merkle.rs:11–37`. Cross-checked against `acki-nacki` HEAD `9f2916946` (2026-09-16). Landed 2026-07-08 in commit `4cd969bf9` ("Expanded Acki Nacki block Merkle leaves from 8 to 16").
 
 Combine rule at every level: `SHA-256(left_32B ‖ right_32B)`. Fifteen SHA-256 invocations total to fold 16 leaves into `block_id`.
 
@@ -138,7 +140,7 @@ REFERENCED_REF_BLOCK_TAG    = b"acki-nacki:referenced-block:ref:v1"     (34 byte
 leaf[i] = Poseidon( tag_i ‖ proof_block_refs[i] )    (32 bytes out)
 ```
 
-`proof_block_refs[0] = parent_block_id` (same thread by producer construction — see below); `proof_block_refs[1..1+n] = refs` (cross-thread). The tree is padded with literal `[0u8; 32]` leaves to the next power of two and folded with `Poseidon(left_32B ‖ right_32B)`. Depth ≤ 8 (`MAX_PROOF_BLOCK_REFS = 256`).
+`proof_block_refs[0] = parent_block_id` (same thread by producer construction — see below); `proof_block_refs[1..1+n] = refs` (cross-thread). The tree is padded with literal `[0u8; 32]` leaves to the next power of two and folded with `Poseidon(left_32B ‖ right_32B)`. Source: `node/libs/history-proof/src/lib.rs:195–215` (`compute_referenced_block_leaf_hash`, `compute_referenced_blocks_root`); empty ref-list yields `[0u8; 32]`. The chain imposes no hard ref-count ceiling — `refs` is a plain `Vec<BlockIdentifier>`; the `MAX_PROOF_BLOCK_REFS = 256` cap is a **circuit-side** witness bound (depth ≤ 8) chosen by the DEX design.
 
 **Slot-0 (`parent_block_id`) is same-thread by construction.** The producer for thread `t` selects its parent via `select_thread_last_finalized_block(&thread_id)` and sets the child's block height as `parent_height.next(&thread_id)` (`node/src/block/producer/producer_service/block_producer.rs:534,576,992`). The parent is therefore always in thread `t` itself. The only exception is the *spawn edge* — the first block of a newly-spawned thread T′ has as its parent the split block on the parent thread (`is_spawning_block(...)` at the same file, and `preprocessing.rs:162-190`). Spawn edges are irrelevant to voucher proofs: a producer that wants to witness such an edge for cross-thread anchoring can always add it to `refs`. **Consequence for §5:** the DEX circuit's L7 walk only opens `refs[0..n]` (slots `1..n`), never slot 0.
 
@@ -146,21 +148,22 @@ L7 is populated for **every** block and provides the outgoing edges the L7 walk 
 
 ### 2.4 L8 — tracked ext-out messages Merkle tree (the DEX-visible slot)
 
-`L8 = tracked_ext_out_messages_root` is the SHA-256 dense-Merkle root of the block's outgoing external messages. The voucher-generation event is emitted as one such message, and its `event_hash` is a leaf of this tree.
+`L8 = tracked_ext_out_messages_root` is the **Poseidon** dense-Merkle root of the block's tracked outgoing external messages. The voucher-generation event is emitted as one such message, and its Poseidon-tagged leaf is included in this tree.
 
-Tree parameters (to be confirmed with the producer team — see Open Q §11.2.1/2/3):
+Tree parameters (source: `node/libs/history-proof/src/lib.rs:162–193` — `compute_ext_out_messages_root`, `compute_ext_message_leaf_hash`):
 
-- Combine rule: `SHA-256(left_32B ‖ right_32B)` (assumed; matches the block-id outer tree family).
+- Combine rule: `Poseidon(left_32B ‖ right_32B)` via the shared `dense_merkle_root` routine (byte-flat sponge, same convention as L7 inner and the layer-N batch trees).
 - Padding: literal `[0u8; 32]` leaves to next power of 2.
-- Depth cap: `EXT_OUT_DEPTH_MAX = 8` (256 messages / block max; matches L7's cap).
-- Leaf format: raw `event_hash` (32 bytes); no tag prefix (assumed).
+- Depth cap: no on-chain enforced ceiling; the DEX circuit imposes `EXT_OUT_DEPTH_MAX = 8` (256 messages / block max) as a witness-side bound.
+- Leaf format: `Poseidon(account_dapp_id ‖ account_id ‖ ext_message_hash)` — a **96-byte** preimage, no tag prefix. This is the exact same shape as `DarkDexCircuit`'s `ext_msg_leaf` (§7.7 constraint 4).
+- Empty case: returns `[0u8; 32]` when the block has no tracked ext-out messages.
 
-The DEX circuit opens one Merkle path `event_hash → L8`.
+The DEX circuit opens one Poseidon Merkle path `ext_msg_leaf → L8`.
 
 ### 2.5 L0..L6 and L9..L15 in this design
 
-- **L0, L1, L2, L3, L4, L5, L6** — semantically unchanged from the base protocol. On the X-side, all seven collectively appear only as the aggregate `h0..7` witness (the sole live sibling required to open L8). The DEX circuit does **not** parse any of L0..L6 individually.
-- **L9..L15** — protocol-fixed as `[0u8; 32]`. Their contribution to the block-id tree collapses to two SHA-256 constants (§2.1) baked into the circuit.
+- **L0, L1, L2, L3, L4, L5, L6** — each defined by the chain per the table above. On the X-side, all seven collectively appear only as the aggregate `h0..7` witness (the sole live sibling required to open L8). The DEX circuit does **not** parse any of L0..L6 individually.
+- **L9..L15** — zero-initialised in the chain's `block_merkle_leaves()` and never overwritten (`node/src/types/ackinacki_block/mod.rs:556`). Their contribution to the block-id tree collapses to two SHA-256 constants (§2.1) baked into the circuit.
 
 ---
 
@@ -683,10 +686,10 @@ We estimate the practical phone ceiling at **K ≤ 17** (≈ 250 MB SRS, 1–3 G
 
 Must be answered with the team before circuit-side implementation begins.
 
-1. **Ext-out-messages tree combine rule.** SHA-256 dense-Merkle assumed. Alternatives: Poseidon dense-Merkle (much cheaper in circuit), or a bespoke rule. Impacts `DexFinalProof` cell budget by ≈ 2–4 SHA blocks.
-2. **Ext-out-messages tree depth bound.** Assumed ≤ 8 (256 messages / block). Confirm with the producer team.
-3. **Ext-out-messages leaf format.** Raw `event_hash` (32 B) vs tagged leaf (e.g. `Poseidon(tag ‖ event_hash)` analogous to L7). Impacts leaf-computation gadget in `DexFinalProof`.
-4. **L9..L15 padding value.** Assumed `[0u8; 32]`. If the producer's widened `block_merkle_leaves()` uses non-zero constants (e.g. `SHA-256(b"padding")` or a version-tagged constant), the circuit's hard-coded sibling constants (§2.1) must be updated to match.
+1. ~~**Ext-out-messages tree combine rule.**~~ **Resolved:** chain uses **Poseidon** dense-Merkle (`node/libs/history-proof/src/lib.rs:174–193`, `compute_ext_out_messages_root`). `DarkDexCircuit`'s ext-out walk already matches. See §2.4.
+2. ~~**Ext-out-messages tree depth bound.**~~ **Resolved:** chain-side unbounded (`BTreeMap`), circuit imposes `EXT_OUT_DEPTH_MAX = 8`. See §2.4.
+3. ~~**Ext-out-messages leaf format.**~~ **Resolved:** `Poseidon(account_dapp_id ‖ account_id ‖ ext_message_hash)`, 96-byte preimage, no tag (`node/libs/history-proof/src/lib.rs:162–172`). See §2.4.
+4. ~~**L9..L15 padding value.**~~ **Resolved:** chain uses literal `[0u8; 32]` (`node/src/types/ackinacki_block/mod.rs:556`). Circuit constants in §2.1 are correct.
 5. **Salted-endpoint direction.** `inst[5] = salted_X_start`, `inst[6] = salted_Y_end` (chain head → tail). Confirm the on-chain contract expects this order and not the reverse.
 6. **Real chain-length distribution on the testnet.** Production ceiling `L_MAX = 300` is set by the node team; measured p50/p99 distributions on real deployment are still open — informs how conservatively to size `N_BUNDLE` vs. batch dispatch cadence.
 7. **L7 walk direction in practice.** Spec assumes hops walk **into the past** (parent + refs both point backward). Confirm this matches canonical L7-walk direction in the multi-thread design.
@@ -851,7 +854,3 @@ Real-KZG runs after §12.1–6 land, on the reference laptop (release profile):
 
 - **`RootPN.sol` orchestration.** Register `VK_DexFinal`, `VK_MultiHop`; implement §7.4 in phase order (public-input consistency → KZG verification → settle). Solidity test harness against native-Rust bundle fixtures from §12.6 — every rejection path in `bundle_verifier.rs` must have a matching Solidity revert.
 - **Phone-side prover integration.** WASM / native build of all snarks; parallel proving where possible (`tvm-sdk` + phone wallet). Given the raised `L_MAX = 300` production ceiling, quantify the phone-side worst-case wall time at `N_BUNDLE = 60` before locking the prod dispatch policy (§11.2.6).
-
----
-
-*End of specification.*

@@ -9,9 +9,12 @@
 //! A bundle has `N_BUNDLE = 4` MultiHopProof snarks, each covering
 //! `H_HOPS_PER_PROOF = 5` hops (≤ 20 hops per bundle). Per hop:
 //!
-//! - **Outer block-merkle**: `BLOCK_MERKLE_LEAF_COUNT = 8` SHA-256 leaves
-//!   L0..L7 (only L7 is constrained at this level — it's the Poseidon root
-//!   over the block's ref chain; production calls it `proof_block_refs_root`).
+//! - **Outer block-merkle**: `BLOCK_MERKLE_LEAF_COUNT = 16` SHA-256 leaves
+//!   L0..L15 (depth-4 tree; only L7 is constrained at this level — it's the
+//!   Poseidon root over the block's ref chain; production calls it
+//!   `proof_block_refs_root`). L8..L15 are other block fields / zero padding
+//!   that the hop circuit never opens; they still contribute to the outer
+//!   SHA-256 walk against `block_id` via the depth-4 sibling path.
 //! - **Inner ref-tree**: up to `MAX_PROOF_BLOCK_REFS` Poseidon leaves
 //!   (`compute_referenced_block_leaf_hash(index, block_id)`), opened at
 //!   `ref_index` to prove the parent block id of the hop chain.
@@ -31,7 +34,8 @@
 //!
 //! ## Constants — sourced from production
 //!
-//! - `BLOCK_MERKLE_LEAF_COUNT = 8`  ← `gql_proof.rs:13`
+//! - `BLOCK_MERKLE_LEAF_COUNT = 16`  ← `gql_proof.rs::BLOCK_MERKLE_LEAF_COUNT`
+//! - `BLOCK_MERKLE_DEPTH = 4`        ← `gql_proof.rs::BLOCK_MERKLE_PROOF_DEPTH`
 //! - `MAX_HISTORY_PROOF_LAYERS = 10` ← `gql_proof.rs:15`
 //! - `HISTORY_PROOF_WINDOW_SIZE = 128` ← `history-proof/src/lib.rs`
 //! - `REFERENCED_PARENT_BLOCK_TAG` / `REFERENCED_REF_BLOCK_TAG`
@@ -46,13 +50,17 @@ use sha2::{Digest, Sha256};
 // Constants — mirror production
 // ---------------------------------------------------------------------------
 
-/// SHA-256 leaves in the per-block outer merkle. **Frozen at 8** by the
-/// production GQL layer (`gql_proof.rs:13`). L0 = history-proofs root,
-/// L1..L6 = misc block fields, L7 = `proof_block_refs_root` (Poseidon).
-pub const BLOCK_MERKLE_LEAF_COUNT: usize = 8;
+/// SHA-256 leaves in the per-block outer merkle. **Frozen at 16** by the
+/// production GQL layer (`gql_proof.rs::BLOCK_MERKLE_LEAF_COUNT`). L0 =
+/// history-proofs Poseidon commit, L1..L6 = misc block fields, L7 =
+/// `proof_block_refs_root` (Poseidon), L8 = `tracked_ext_out_messages_root`
+/// (Poseidon), L9..L15 = zero padding (see acki-nacki
+/// `node/src/types/ackinacki_block/mod.rs` `block_merkle_leaves`).
+pub const BLOCK_MERKLE_LEAF_COUNT: usize = 16;
 
-/// Depth of the per-block SHA-256 merkle (`log2(8) = 3`).
-pub const BLOCK_MERKLE_DEPTH: usize = 3;
+/// Depth of the per-block SHA-256 merkle (`log2(16) = 4`). Matches
+/// `gql_proof.rs::BLOCK_MERKLE_PROOF_DEPTH`.
+pub const BLOCK_MERKLE_DEPTH: usize = 4;
 
 /// Maximum number of layers in the recursive history-proof chain
 /// (`gql_proof.rs:15`).
@@ -153,8 +161,11 @@ pub struct HopWitness {
     /// against L7 via `proof_block_ref_inner_path`).
     pub block: BlockWitness,
 
-    /// L0..L6 SHA-256 merkle opening for `block.block_merkle_tree_leaves[7]`
-    /// against `block.block_id`. Always 3 siblings (depth = 3).
+    /// SHA-256 merkle opening for `block.block_merkle_tree_leaves[7]`
+    /// against `block.block_id`. Always 4 siblings (depth = 4). For
+    /// `leaf_index = 7`: `[L6, sha(L4,L5), sha(sha(L0,L1),sha(L2,L3)),
+    /// sha(sha(sha(L8..L15 quads)))]` — i.e. the siblings of node index 7 at
+    /// each level, cf. `gql_proof.rs::block_merkle_leaf_proof`.
     pub block_merkle_leaf_proof_l7: [[u8; 32]; BLOCK_MERKLE_DEPTH],
 
     /// Index of the *referenced parent* block within `block.proof_block_refs`.
@@ -186,7 +197,8 @@ pub struct MultiHopProofWitness {
 }
 
 // ---------------------------------------------------------------------------
-// Native SHA-256 8-leaf merkle helpers — byte-identical to `gql_proof.rs`.
+// Native SHA-256 depth-4 (16-leaf) merkle helpers — byte-identical to
+// `gql_proof.rs`.
 // ---------------------------------------------------------------------------
 
 fn sha256_pair(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
@@ -196,19 +208,38 @@ fn sha256_pair(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
     h.finalize().into()
 }
 
-/// SHA-256 depth-3 merkle root over 8 leaves. Mirrors
-/// `gql_proof.rs::block_merkle_root` exactly.
-pub fn block_merkle_root(leaves: &[[u8; 32]; BLOCK_MERKLE_LEAF_COUNT]) -> [u8; 32] {
-    let h0 = sha256_pair(&leaves[0], &leaves[1]);
-    let h1 = sha256_pair(&leaves[2], &leaves[3]);
-    let h2 = sha256_pair(&leaves[4], &leaves[5]);
-    let h3 = sha256_pair(&leaves[6], &leaves[7]);
-    let h01 = sha256_pair(&h0, &h1);
-    let h23 = sha256_pair(&h2, &h3);
-    sha256_pair(&h01, &h23)
+fn sibling_index(index: usize) -> usize {
+    if index % 2 == 0 { index + 1 } else { index - 1 }
 }
 
-/// 3-sibling path proving `leaves[leaf_index]` against `block_merkle_root`.
+/// SHA-256 subtree root over `leaves[start..start+width]`. `width` must be a
+/// power of two ≤ `BLOCK_MERKLE_LEAF_COUNT`. Mirrors
+/// `gql_proof.rs::block_merkle_subtree_root`.
+fn block_merkle_subtree_root(
+    leaves: &[[u8; 32]; BLOCK_MERKLE_LEAF_COUNT],
+    start: usize,
+    width: usize,
+) -> [u8; 32] {
+    match width {
+        1 => leaves[start],
+        2 => sha256_pair(&leaves[start], &leaves[start + 1]),
+        4 | 8 | 16 => {
+            let half = width / 2;
+            let left = block_merkle_subtree_root(leaves, start, half);
+            let right = block_merkle_subtree_root(leaves, start + half, half);
+            sha256_pair(&left, &right)
+        }
+        _ => unreachable!("block Merkle subtree width is fixed to powers of two"),
+    }
+}
+
+/// SHA-256 depth-4 merkle root over 16 leaves. Mirrors
+/// `gql_proof.rs::block_merkle_root` exactly.
+pub fn block_merkle_root(leaves: &[[u8; 32]; BLOCK_MERKLE_LEAF_COUNT]) -> [u8; 32] {
+    block_merkle_subtree_root(leaves, 0, BLOCK_MERKLE_LEAF_COUNT)
+}
+
+/// 4-sibling path proving `leaves[leaf_index]` against `block_merkle_root`.
 /// Mirrors `gql_proof.rs::block_merkle_leaf_proof` exactly.
 pub fn block_merkle_leaf_proof(
     leaves: &[[u8; 32]; BLOCK_MERKLE_LEAF_COUNT],
@@ -218,26 +249,15 @@ pub fn block_merkle_leaf_proof(
         leaf_index < BLOCK_MERKLE_LEAF_COUNT,
         "leaf_index {leaf_index} out of range"
     );
-    let h0 = sha256_pair(&leaves[0], &leaves[1]);
-    let h1 = sha256_pair(&leaves[2], &leaves[3]);
-    let h2 = sha256_pair(&leaves[4], &leaves[5]);
-    let h3 = sha256_pair(&leaves[6], &leaves[7]);
-    let h01 = sha256_pair(&h0, &h1);
-    let h23 = sha256_pair(&h2, &h3);
-    match leaf_index {
-        0 => [leaves[1], h1, h23],
-        1 => [leaves[0], h1, h23],
-        2 => [leaves[3], h0, h23],
-        3 => [leaves[2], h0, h23],
-        4 => [leaves[5], h3, h01],
-        5 => [leaves[4], h3, h01],
-        6 => [leaves[7], h2, h01],
-        7 => [leaves[6], h2, h01],
-        _ => unreachable!("checked above"),
-    }
+    let mut proof = [[0u8; 32]; BLOCK_MERKLE_DEPTH];
+    proof[0] = leaves[sibling_index(leaf_index)];
+    proof[1] = block_merkle_subtree_root(leaves, sibling_index(leaf_index / 2) * 2, 2);
+    proof[2] = block_merkle_subtree_root(leaves, sibling_index(leaf_index / 4) * 4, 4);
+    proof[3] = block_merkle_subtree_root(leaves, sibling_index(leaf_index / 8) * 8, 8);
+    proof
 }
 
-/// Verify a 3-sibling SHA-256 path against `root`. Mirrors
+/// Verify a 4-sibling SHA-256 path against `root`. Mirrors
 /// `gql_proof.rs::verify_block_merkle_leaf_proof`.
 pub fn verify_block_merkle_leaf_proof(
     root: &[u8; 32],
@@ -484,17 +504,19 @@ mod tests {
 
     #[test]
     fn constants_match_gql_proof_layout() {
-        assert_eq!(BLOCK_MERKLE_LEAF_COUNT, 8);
-        assert_eq!(BLOCK_MERKLE_DEPTH, 3);
+        assert_eq!(BLOCK_MERKLE_LEAF_COUNT, 16);
+        assert_eq!(BLOCK_MERKLE_DEPTH, 4);
+        assert_eq!(1 << BLOCK_MERKLE_DEPTH, BLOCK_MERKLE_LEAF_COUNT);
         assert_eq!(MAX_HISTORY_PROOF_LAYERS, 10);
         assert_eq!(1 << MAX_PROOF_BLOCK_REFS_DEPTH, MAX_PROOF_BLOCK_REFS);
     }
 
     #[test]
     fn block_merkle_root_and_proof_roundtrip() {
-        let leaves: [[u8; 32]; 8] = std::array::from_fn(|i| [i as u8 + 1; 32]);
+        let leaves: [[u8; 32]; BLOCK_MERKLE_LEAF_COUNT] =
+            std::array::from_fn(|i| [i as u8 + 1; 32]);
         let root = block_merkle_root(&leaves);
-        for i in 0..8 {
+        for i in 0..BLOCK_MERKLE_LEAF_COUNT {
             let proof = block_merkle_leaf_proof(&leaves, i);
             assert!(
                 verify_block_merkle_leaf_proof(&root, &leaves[i], i, &proof),
@@ -505,7 +527,8 @@ mod tests {
 
     #[test]
     fn block_merkle_proof_rejects_tampering() {
-        let leaves: [[u8; 32]; 8] = std::array::from_fn(|i| [i as u8 + 10; 32]);
+        let leaves: [[u8; 32]; BLOCK_MERKLE_LEAF_COUNT] =
+            std::array::from_fn(|i| [i as u8 + 10; 32]);
         let root = block_merkle_root(&leaves);
         let mut proof = block_merkle_leaf_proof(&leaves, 3);
         proof[1] = [0xFFu8; 32];

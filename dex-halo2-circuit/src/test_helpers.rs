@@ -298,14 +298,17 @@ pub struct SynthChain {
 /// Build a deterministic synthetic K-hop chain matching the GQL shape.
 ///
 /// Each real hop's target block has:
-/// - L0..L6 filled with distinct sentinel bytes (sentinel = `0x10 + i`)
+/// - L0..L6 filled with distinct sentinel bytes (sentinel = `0x10 + i`),
+///   L8..L15 zero-padded — mirrors the acki-nacki depth-4 layout in which
+///   the DEX hop circuit only opens L7 while the outer SHA walk still spans
+///   all 16 leaves.
 /// - L7 = `proof_block_refs_root_native(&[slot0_placeholder, hop_predecessor_id])`
 ///   (slot 0 is the same-thread parent slot — filled with a deterministic
 ///   placeholder because slot 0 is same-thread by producer construction per
 ///   spec §2.3 and never opened as a hop edge; slot 1 holds the actual
 ///   cross-thread hop predecessor. The ref-tree machinery still pads to
 ///   `MAX_PROOF_BLOCK_REFS`.)
-/// - `block_id = block_merkle_root(L0..L7)`
+/// - `block_id = block_merkle_root(L0..L15)`
 /// - `block_merkle_leaf_proof_l7` opens L7 against `block_id`
 /// - `ref_index = 1` (cross-thread ref slot; spec §5.1 forbids slot 0)
 /// - `proof_block_ref_inner_path` opens leaf 1 of the ref-tree against L7
@@ -383,7 +386,7 @@ pub fn synth_chain(seed: u64, k_hops: usize) -> SynthChain {
         let mut leaves = [[0u8; 32]; BLOCK_MERKLE_LEAF_COUNT];
         for (j, slot) in leaves.iter_mut().enumerate().take(7) {
             *slot = [0x10 + i as u8; 32];
-            slot[0] = j as u8; // keep all 8 leaves distinct
+            slot[0] = j as u8; // keep the seven L0..L6 leaves distinct
         }
         leaves[7] = l7;
 
