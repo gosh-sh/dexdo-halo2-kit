@@ -236,7 +236,7 @@ Slot 0 of L7 (`parent_block_id`) is **not** used as a hop edge: per §2.3 it is 
 
 ### 5.2 What one hop constrains
 
-The hop is a **building block, not a standalone snark** — it has no public inputs of its own. Block IDs and L7 material must stay hidden for DEX anonymity (§10.1); they only leave the circuit boundary through the salted endpoints of the enclosing `MultiHopProof` (see §7.3 — the outer snark exposes `salted_start_block_id` and `salted_end_block_id`, computed as `Poseidon(salt ‖ block_id)`).
+The hop is a **building block, not a standalone snark** — it has no public inputs of its own. Block IDs and L7 material must stay hidden for DEX anonymity (§10.1); they only leave the circuit boundary through the salted endpoints of the enclosing `MultiHopProof` (see §7.3 — the outer snark exposes `salted_start_block_id` and `salted_end_block_id`, computed as position-tagged `salted_id(block_id, bundle_index·H + h)`).
 
 **Shape-witnessing preamble.** The L7 tree on the chain side is variable-depth (§2.3). Since Halo2 constraints are a fixed circuit, we size the inner path array to the worst case (`MAX_PROOF_BLOCK_REFS_DEPTH = 8`) and carry a per-hop witness `refs_tree_depth ∈ [0, 8]` that tells the circuit how many combine steps of the pre-allocated 8-step fold are *live* for this hop. The remaining steps are gated off. This mirrors the pattern already used in `DarkDexCircuit` for the variable-depth ext-out-messages tree opening (`num_ext_out_levels`).
 
@@ -336,7 +336,7 @@ Key properties:
 - **The L7 walk is a pure L7 traversal.** Each hop opens the outer depth-4 SHA-256 tree of some block B, extracts B.L7, and opens one slot of L7's inner Poseidon dense-Merkle to reveal an edge to some older block A.
 - **Y is a thread-0 block.** Y carries its own `history_proofs` (or does not — Y need not be a key block; only that the batch tree containing `block_leaf(Y)` is anchored). The Y-side follows the single-thread flow of §4 verbatim.
 - **`Y.envelope_hash` and `Y.tracked_ext_out_messages_root` are unconstrained witnesses.** The event content is already bound on the X-side.
-- **Uniformity for `t = 0`.** When X is in thread 0, X = Y, the L7 walk collapses (all hops `is_active = 0`), and `DexFinalProof` performs both the X-side event binding and the Y-side anchor on the same block. The public inputs then satisfy `salted_X_start == salted_Y_end`; the bundle shape is indistinguishable from the multi-thread case.
+- **Uniformity for `t = 0`.** When X is in thread 0, X = Y, the L7 walk collapses (all hops `is_active = 0`), and `DexFinalProof` performs both the X-side event binding and the Y-side anchor on the same block. Because each salted endpoint absorbs its **bundle-global position** (see §7.3), `salted_X_start` (position 0) and `salted_Y_end` (position `N_BUNDLE·H`) remain distinct even when `X.block_id == Y.block_id`, so the bundle shape is indistinguishable from the multi-thread case.
 
 ---
 
@@ -359,11 +359,29 @@ The full scheme of §6 cannot fit in a single Halo2 circuit at smartphone-feasib
 
 ### 7.3 Salted endpoints — on-chain continuity
 
-Every snark of a bundle exposes salted endpoints to allow the contract to chain them without seeing real block_ids:
+Every snark of a bundle exposes salted endpoints to allow the contract to chain them without seeing real block_ids. Each endpoint absorbs a **bundle-global position tag** in addition to the salt and block_id (BC-005 fix, 2026-09-20):
 
 ```
-salted_id  :=  Poseidon( salt , block_id )    // one Poseidon, 64 bytes input, 32 bytes out
+salted_id( block_id , position )
+    :=  Poseidon( [ salt_chunk0 , salt_chunk1 , salt_chunk2 , position ] )
 ```
+
+Where `salt_chunk{0,1,2}` are the three 31-byte chunks of the byte-flat serialization `fr_to_bytes(salt) ‖ block_id_LE` (32 + 32 = 64 bytes ⇒ chunks `[0..31]`, `[31..62]`, `[62..64]` zero-padded to 31 bytes each — the canonical byte-flat Poseidon convention of memory `dex_phase4_byteflat_migration`). `position` is a `u64` embedded directly as an `Fr` field element.
+
+**Position enumeration** (bundle-global). With `H = H_HOPS_PER_PROOF = 5`:
+
+| Endpoint | Position |
+|---|---|
+| `DexFinal.salted_X_start` | `0` |
+| Snark `b`, hop `h`: `salted_start` | `b·H + h` |
+| Snark `b`, hop `h`: `salted_end` | `b·H + h + 1` |
+| `DexFinal.salted_Y_end` | `N_BUNDLE · H` |
+
+Cross-snark continuity is automatic: snark `b`'s tail (`(b+1)·H`) equals snark `b+1`'s head (`(b+1)·H`) whenever the underlying block_ids agree, exactly as before position tags were introduced.
+
+**Rationale for the position tag (BC-005).** Without it, `salted_X_start = Poseidon(salt, X.block_id)` and `salted_Y_end = Poseidon(salt, Y.block_id)` collapse to equal values whenever `X.block_id == Y.block_id` (uniform single-thread `t = 0` case). Since both are public, an on-chain observer of `inst[5] == inst[6]` could learn same-thread membership without knowing `salt` — a leak of the anonymity set contradicting §10.1. Position tags force distinct outputs at every bundle-global position, closing this leak.
+
+**Why `bundle_index` is private.** The snark's bundle-slot index `b ∈ [0, N_BUNDLE)` is a **private witness** inside `MultiHopProofCircuit` (range-checked, unconditional). Making it public would let observers correlate a snark with its position, negating the purpose. The on-chain continuity check in `RootPN.sol` still enforces the correct sequence: a snark whose `bundle_index` disagrees with its bundle-slot produces salted endpoints at wrong positions that fail to chain to `DexFinal` — caught by `salted_start` / `salted_end` continuity.
 
 `salt` is a voucher-scoped per-user secret:
 
@@ -376,13 +394,13 @@ DOMAIN_TAG_FR    = bytes_to_fr( DOMAIN_TAG_BYTES  zero-padded to 32 LE bytes )
 
 `salt` is a **private witness** in every proof of the bundle. Two vouchers from the same user produce uncorrelated salted ids (different `sk_u`).
 
-> **Canonical convention.** The constants and Poseidon shape are enforced by `DexFinalProof` and defined in `dex-halo2-circuit/src/salt.rs`. `RootPN.sol` equality-checks `salt_commitment` across all snarks of a bundle; any divergence between this spec and `salt.rs` breaks the orchestrator. **`salt.rs` is the source of truth.**
+> **Canonical convention.** The constants, chunking, and Poseidon shape are enforced by `DexFinalProof` and defined in `dex-halo2-circuit/src/salt.rs` (`compute_salted_block_id_native` and `salted_block_id_poseidon_circuit`). `RootPN.sol` equality-checks `salt_commitment` across all snarks of a bundle; any divergence between this spec and `salt.rs` breaks the orchestrator. **`salt.rs` is the source of truth.**
 
 #### Per-`MultiHopProof` public inputs (3)
 
 ```
-inst[0] = salted_start_block_id  =  Poseidon( [ salt , B_0.block_id ] )
-inst[1] = salted_end_block_id    =  Poseidon( [ salt , B_H.block_id ] )
+inst[0] = salted_start_block_id  =  salted_id( B_0.block_id , bundle_index·H       )
+inst[1] = salted_end_block_id    =  salted_id( B_H.block_id , bundle_index·H + H   )
 inst[2] = salt_commitment        =  Poseidon( [ salt ] )
 ```
 
@@ -394,8 +412,8 @@ inst[1]  = finalLayerHistoricalHashRoot                               // checked
 inst[2]  = voucherNominalFr
 inst[3]  = tokenTypeFr
 inst[4]  = ephemeralPubkey
-inst[5]  = salted_X_start  =  Poseidon( [ salt , X.block_id ] )       // chain head (event block, thread t)
-inst[6]  = salted_Y_end    =  Poseidon( [ salt , Y.block_id ] )       // chain tail (anchor, thread 0)
+inst[5]  = salted_X_start  =  salted_id( X.block_id , 0 )             // chain head (event block, thread t)
+inst[6]  = salted_Y_end    =  salted_id( Y.block_id , N_BUNDLE·H )    // chain tail (anchor, thread 0)
 inst[7]  = salt_commitment                                            // bundle binder
 inst[8]  = x_account_dapp_id_lo   =  LE( x_account_dapp_id[ 0..16] )  // DEX contract dApp ID, lo 128 bits
 inst[9]  = x_account_dapp_id_hi   =  LE( x_account_dapp_id[16..32] )  // DEX contract dApp ID, hi 128 bits
@@ -487,11 +505,11 @@ Phase 1 is cheap (field comparisons + one VM callback); phase 2 is the only heav
 
 Every voucher claim submits exactly `N_BUNDLE` `MultiHopProof` snarks regardless of true chain length. `N_BUNDLE = 4`, supporting chains up to `4 × H = 20` real hops.
 
-- **t = 0** (X in thread 0): true chain length L = 0. All 4 `MultiHopProof`s are submitted with `is_active = 0` everywhere; each is constrained to `salted_start_block_id == salted_end_block_id`. `DexFinalProof` has `salted_X_start == salted_Y_end` (X = Y).
+- **t = 0** (X in thread 0): true chain length L = 0. All 4 `MultiHopProof`s are submitted with `is_active = 0` everywhere; each snark's `salted_start_block_id` and `salted_end_block_id` sit at distinct bundle-global positions (`b·H` and `b·H+H`), so they are two distinct pseudo-random field elements — indistinguishable from an active snark by shape. Cross-snark continuity still holds (snark `b`'s end equals snark `b+1`'s start). `DexFinalProof` also has `salted_X_start != salted_Y_end` (positions `0` vs `N_BUNDLE·H`) even though X = Y.
 - **t ≠ 0, L ≤ 5**: 1 `MultiHopProof` has up to 5 active hops; the remaining 3 are fully inactive.
 - **L up to 20**: up to 4 partially- or fully-active proofs.
 
-The verifier cannot tell from public inputs whether any individual `MultiHopProof` is active or inactive — `salted_start == salted_end` is one of many possible combinations of two pseudo-random-looking field values.
+The verifier cannot tell from public inputs whether any individual `MultiHopProof` is active or inactive — every hop, in either mode, produces a `salted_start != salted_end` pair (different positions), and each endpoint is a pseudo-random-looking Poseidon output under the `salt` random-oracle model.
 
 ### 7.6 `MultiHopProof` circuit detail
 
@@ -501,6 +519,7 @@ The verifier cannot tell from public inputs whether any individual `MultiHopProo
 witnesses:
   salt                                              (1 Fr)
   voucher_secret_seed                               (1 Fr; sk_u = voucher_secret_seed, for salt derivation)
+  bundle_index ∈ [0, N_BUNDLE)                      (u32; private; range-checked)
   for h in 0..H:
     is_active[h]                                    (bool)
     hop_current_block_id[h], hop_next_block_id[h]   (32 bytes each)
@@ -512,12 +531,27 @@ constraints:
   1. salt_commitment_check:
         salt_commitment_pub == Poseidon([salt])
         salt                == Poseidon([DOMAIN_TAG_FR, voucher_secret_seed])
-  2. salted_endpoint_check:
-        salted_start_block_id_pub == Poseidon([salt, hop_current_block_id[0]])
-        salted_end_block_id_pub   == Poseidon([salt, hop_next_block_id[H-1]])
+  2. salted_endpoint_check (position-tagged, BC-005; see §7.3):
+        position_base := bundle_index * H
+        salted_start_block_id_pub ==
+            salted_id(hop_current_block_id[0],   position_base)
+        salted_end_block_id_pub   ==
+            salted_id(hop_next_block_id[H-1],    position_base + H)
+        Additionally, for each h in 0..H the per-hop salted endpoints
+        salted_id(hop_current_block_id[h], position_base + h) and
+        salted_id(hop_next_block_id[h],    position_base + h + 1)
+        are computed unconditionally (used for internal-glue check 4).
   3. for each hop h in 0..H:
         when is_active[h]: full hop constraints of §5.2 (depth-4 outer opening)
-        when !is_active[h]: hop_next_block_id[h] == hop_current_block_id[h]
+        when !is_active[h]: byte-equality
+            ref_block_id_bytes[h] == block_id_bytes[h]
+            (i.e. the reference at slot `ref_index[h]` equals the hop's
+            current block_id — under position tags, salted_start !=
+            salted_end even for inactive hops, so the pre-BC-005
+            propagation rule `hop_next_block_id[h] == hop_current_block_id[h]`
+            no longer suffices; byte-equality on the ref combined with the
+            padding convention `pad_bid = block_ids[k_hops]` still forces
+            the inactive tail to propagate a single block_id).
   4. for each h in 0..H-1:
         hop_current_block_id[h+1] == hop_next_block_id[h]        (internal chain glue)
 ```
@@ -599,11 +633,11 @@ constraints:
         block_leaf(Y) -- depth-8 Poseidon dense-Merkle path --> #L1(M_Y)
         #L1(M_Y)      -- dense chain (≤ 11 links)          --> finalLayerHistoricalHashRoot
 
-  6. Salt + salted endpoints:
+  6. Salt + salted endpoints (position-tagged, BC-005; see §7.3):
         salt                   == Poseidon([DOMAIN_TAG_FR, voucher_secret_seed])
         salt_commitment_pub    == Poseidon([salt])                                // instance [7]
-        salted_X_start_pub     == Poseidon([salt, X.block_id])                     // instance [5]
-        salted_Y_end_pub       == Poseidon([salt, Y.block_id])                     // instance [6]
+        salted_X_start_pub     == salted_id(X.block_id, 0)                        // instance [5]
+        salted_Y_end_pub       == salted_id(Y.block_id, N_BUNDLE * H)             // instance [6]
 
   7. Public voucher fields at instances [0..4] (unchanged from single-thread DEX).
 
@@ -616,7 +650,7 @@ constraints:
         the on-chain verifier compares each half against a hard-coded
         expected value (see §7.4).
 
-  8. Uniformity for t=0: the prover passes X = Y as identical witness bytes. All X-side and Y-side gates hold simultaneously; the bundle's MultiHopProofs are all inactive; salted_X_start == salted_Y_end trivially.
+  8. Uniformity for t=0: the prover passes X = Y as identical witness bytes. All X-side and Y-side gates hold simultaneously; the bundle's MultiHopProofs are all inactive. Under position tags (§7.3), salted_X_start (position 0) and salted_Y_end (position N_BUNDLE·H) remain distinct even though X.block_id == Y.block_id — the shape of the DexFinal publics is indistinguishable from the multi-thread case.
 ```
 
 Cell budget: X-side is **2 SHA (BOC hash reconstruction) + 4 SHA (L8 depth-4 opening) = 6 SHA compressions**, plus the ext-out Poseidon dense-Merkle walk (up to `EXT_OUT_DEPTH_MAX` Poseidon nodes, ≤ 1 M cells) and byte-slice field extraction (negligible). Adds ≈ +2.1 M SHA cells + ≈ 1 M Poseidon cells over the existing K = 14 single-thread DEX baseline (≈ 1.7 M cells). Total ≈ 5 M cells. K = 16 provides ≈ 7 M cells with 110 advice columns → ~30 % margin. Estimated phone proving time: 2–3 minutes.
@@ -683,9 +717,10 @@ We estimate the practical phone ceiling at **K ≤ 17** (≈ 250 MB SRS, 1–3 G
 
 ### 10.1 What is hidden
 
-- **`X.block_id`, `X.height`, X's thread `t`** — fully hidden behind the voucher binding and the salted endpoints.
+- **`X.block_id`, `X.height`, X's thread `t`** — fully hidden behind the voucher binding and the salted endpoints. (Requires the BC-005 position-tag fix of §7.3; without it, `t = 0` would be publicly distinguishable via `salted_X_start == salted_Y_end`.)
 - **All intermediate block_ids `B_1 .. B_{L-1}`** — private witnesses inside `MultiHopProof`s.
-- **`Y.block_id`** — only `salted_Y_end = Poseidon(salt, Y.block_id)` is exposed. Pseudo-random without `salt`.
+- **`Y.block_id`** — only `salted_Y_end = salted_id(Y.block_id, N_BUNDLE·H)` is exposed. Pseudo-random without `salt`.
+- **`bundle_index`** — the private per-snark witness `b ∈ [0, N_BUNDLE)` that drives the position tag. Observers see only the salted endpoints, which are pseudo-random.
 - **`Y.envelope_hash`, `Y.tracked_ext_out_messages_root`** — unconstrained witnesses inside `DexFinalProof`.
 - **True chain length L** — hidden by fixed `N_BUNDLE = 4`.
 - **The salt itself** — private witness in every proof of the bundle.
@@ -699,8 +734,9 @@ We estimate the practical phone ceiling at **K ≤ 17** (≈ 250 MB SRS, 1–3 G
 
 ### 10.3 What is *not* a leak
 
-- **Cross-voucher linkability** — each voucher has its own `voucher_secret_seed`, hence its own `salt` and its own `Poseidon(salt, *)` outputs. Two vouchers from the same physical user are not linkable via salted endpoints under the Poseidon random-oracle model.
-- **`salted_start == salted_end`** inside a `MultiHopProof` (indicating an inactive proof) is not distinguishable from an active proof whose chain happens to loop, without knowing `salt`.
+- **Cross-voucher linkability** — each voucher has its own `voucher_secret_seed`, hence its own `salt` and its own `salted_id(·, ·)` outputs. Two vouchers from the same physical user are not linkable via salted endpoints under the Poseidon random-oracle model.
+- **`salted_X_start == salted_Y_end`** (the pre-BC-005 t=0 tell). Under position tags (§7.3), `salted_X_start` sits at position 0 and `salted_Y_end` at position `N_BUNDLE·H`, so the two are distinct Poseidon outputs even when `X.block_id == Y.block_id`. On-chain observers can no longer read same-thread membership off the DexFinal publics.
+- **Inactive hops** — every hop, active or padded, produces a `salted_start != salted_end` pair (different positions). Whether a specific `MultiHopProof` is active or padded is not distinguishable from public inputs without knowing `salt`.
 
 ### 10.4 Threats
 
@@ -709,7 +745,7 @@ We estimate the practical phone ceiling at **K ≤ 17** (≈ 250 MB SRS, 1–3 G
 
 ### 10.5 Hash strength
 
-`Poseidon([salt, block_id])` collision resistance and pseudo-randomness over BN254 scalar field (~127-bit collision security). Sufficient for salting.
+`salted_id(block_id, position) = Poseidon([salt_chunk0, salt_chunk1, salt_chunk2, position])` (see §7.3) — 4-input Poseidon over BN254 scalar field with ~127-bit collision security and pseudo-randomness under the random-oracle model. Sufficient for salting; the added position input does not weaken the primitive.
 
 ---
 
