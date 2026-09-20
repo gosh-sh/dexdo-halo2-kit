@@ -758,110 +758,21 @@ Must be answered with the team before circuit-side implementation begins.
 
 ---
 
-## 12. Circuit implementation plan
+## 12. Circuit implementation status
 
-Snapshot of what has landed in `dex-halo2-circuit` and what remains. §§12.1–12.6 are **DONE** (as of 2026-09-20) modulo the variable-depth L7 rewrite tracked in §12.4. §12.7 (K-budget verification) is partially done through stress tests. §12.8 (off-tree work — Solidity orchestrator + phone-side prover) is still open.
+All in-circuit modules of `dex-halo2-circuit` are **DONE** as of 2026-09-20 (variable-depth L7 landed in commit `22bb07b`). §12.1 records the K / column / proof-size envelope; §12.2 lists the remaining off-tree work.
 
-Open Question §11.2.1 (SHA-vs-Poseidon for the ext-out-messages tree) landed as **Poseidon** (see §2.4); no follow-on blocks remain from the original Open-Q list except §11.2.6 (phone-side wall-time confirmation for `N_BUNDLE = 60`).
+Open Question §11.2.1 (SHA-vs-Poseidon for the ext-out-messages tree) landed as **Poseidon** (see §2.4). No follow-on blocks remain from the original Open-Q list except §11.2.6 (phone-side wall-time confirmation for `N_BUNDLE = 60`).
 
-### 12.1 Protocol constants module — **DONE**
+### 12.1 K-budget & performance envelope — **PARTIALLY DONE**
 
-**File:** `dex-halo2-circuit/src/block_id_tree.rs`.
+- **K = 16** for `DarkDexCircuit`; **K = 17** for `MultiHopProofCircuit`. Both leave healthy row headroom on real-KZG stress runs.
+- **Column footprint after variable-depth L7**: `num_advice_per_phase = 200`, `num_lookup_advice_per_phase = 14` (measured — up from 110 / 8 for the old fixed depth-4 fold; the padded gated fold performs ~2× the SHA-work per hop). Proof size, VK layout, and public-input shapes are unchanged.
+- **Real-KZG stress runs at L = 50 / 100 / 300** exist as `#[ignore]` tests (`tests/test_bundle_stress_l{50,100,300}.rs`); linear-in-`L_MAX` scaling confirmed empirically at `N_BUNDLE = 60`.
+- **§11.1 (K, H, N_BUNDLE) triple** locked at **(17, 5, 60)** for production; prototyping still uses `N_BUNDLE = 4` (`L_MAX = 20`).
+- **Follow-up.** Re-run the L=300 stress fixture after any future circuit change to confirm the per-snark cell count still fits comfortably at K = 17.
 
-Shared by `DarkDexCircuit` and `MultiHopProofCircuit`:
+### 12.2 Off-tree work — **OPEN**
 
-- Depth-4 shape: `BLOCK_ID_TREE_DEPTH = 4`, `BLOCK_ID_TREE_LEAVES = 16`, `L8_INDEX = 8`, `L7_INDEX = 7`, `ZERO_LEAF = [0u8; 32]`.
-- Native helper `compute_block_id_depth4(leaves: &[[u8;32];16]) -> [u8;32]` — used by test fixtures on both sides.
-
-Consumed only by `DarkDexCircuit`:
-
-- `H10_11_CONST = sha256(ZERO_LEAF ‖ ZERO_LEAF)`
-- `H12_15_CONST = sha256(H10_11_CONST ‖ H10_11_CONST)`
-
-### 12.2 Ext-out-messages Merkle gadget — **DONE (integrated into DarkDexCircuit)**
-
-Contrary to the original plan, the ext-out gadget did **not** get its own `ext_out_merkle.rs` module. The Poseidon dense-Merkle walk from `ext_msg_leaf` up to L8 lives directly inside `dex-halo2-circuit/src/dark_dex_circuit.rs`. It uses the same `hash_bytes_flat` byte-flat Poseidon convention as everywhere else in the kit; `num_ext_out_levels` is a private witness range-checked in `[0, MAX_EVENTS_TREE_DEPTH = 8]`.
-
-If the L7 walk of §12.4 grows a shared byte-flat Poseidon Merkle helper (which is the natural refactor when the variable-depth L7 fold lands), that helper should be lifted to a common module and this ext-out walk re-plumbed to consume it. Not a hard blocker — both call sites are ~30 lines and easy to keep in sync until the refactor becomes worthwhile.
-
-### 12.3 `DarkDexCircuit` — **DONE**
-
-**File:** `dex-halo2-circuit/src/dark_dex_circuit.rs`.
-
-Implements the 12-public voucher-binding circuit of §7.7 (X-side BOC + L8 opening + Y-side layer walk + salted endpoints + DEX-contract-identity pins). Cross-references from memory:
-
-- `dex_phase3_salt_publics` — 7 → 12 publics migration (salt_commitment + event_salted_block_id + 4 DEX-contract-identity pins).
-- `dex_phase4_byteflat_migration` — every Poseidon input now derives from byte cells; no `bytes_to_fr(32B)` reductions in production paths.
-
-MockProver + real-KZG runs pass at K = 16 (fallback K = 17 unused). Public-input layout locked; tests at `tests/test_bundle_binding.rs`.
-
-### 12.4 `MultiHopProofCircuit` — variable-depth L7 walk (**PENDING**)
-
-**Files:** `dex-halo2-circuit/src/multi_hop_proof.rs`, `dex-halo2-circuit/src/multi_hop_witness.rs`, `dex-halo2-circuit/src/hop_proof.rs`, `dex-halo2-circuit/src/test_helpers.rs`.
-
-**Status.** Depth-4 outer opening and slot-0 pruning **landed** (`ref_index` in `1..=MAX_PROOF_BLOCK_REFS`, tag is always `REFERENCED_REF_BLOCK_TAG`, no ref_index-0 branch). The remaining, currently blocking, work is the L7 inner-tree rewrite from a **fixed-depth-4** fold to a **variable-depth-≤-8** fold driven by a per-hop `refs_tree_depth` witness — the change decided on 2026-09-20 (see memory `dex_l7_variable_depth_decision`).
-
-**Motivation.** The acki-nacki team has declined to fix the L7 leaf count (§2.3); real chain blocks today emit L7 with variable leaf counts (observed depths 0..8; Michael's T=2 test emits blocks with 1 or 2 L7 leaves → depth 0 or 1). The current fixed-depth-4 fold rejects every one of those hops outright. See §5.2 for the constraint sketch and §5.3 for the cost update.
-
-**Concrete edits (in dependency order).**
-
-1. **`multi_hop_witness.rs` — constants + witness field.**
-   - Bump `MAX_PROOF_BLOCK_REFS = 16 → 256`. `MAX_PROOF_BLOCK_REFS_DEPTH` derives automatically to 8 (via `.next_power_of_two().ilog2()`). Drop the `TODO: bump to 256` comment.
-   - Extend `HopWitness`:
-     ```rust
-     /// The live depth of this hop's L7 inner Poseidon dense-Merkle tree.
-     /// Equal to `ceil(log2(1 + block.proof_block_refs.len()))` (or 0 for
-     /// the empty-ref-list case). Range-checked in-circuit to
-     /// `[0, MAX_PROOF_BLOCK_REFS_DEPTH]`.
-     pub refs_tree_depth: u8,
-     ```
-     `proof_block_ref_inner_path` stays a fixed `[[u8;32]; MAX_PROOF_BLOCK_REFS_DEPTH]` (now length 8); entries beyond `refs_tree_depth` are padding, ignored by the gated fold.
-   - Update the doc-comment on `MAX_PROOF_BLOCK_REFS` to reflect that the cap is now the **max L7 leaf count** (parent + refs), not merely a testing knob.
-
-2. **`test_helpers.rs` — native path + witness generation.**
-   - `proof_block_ref_inner_path_native(leaves: &[[u8;32]], leaf_index: usize) -> ([[u8;32]; 8], u8)`: compute the dense-Merkle path plus the true `refs_tree_depth = ceil(log2(leaves.len()))` (or 0 when empty). Zero-pad the returned path up to length 8.
-   - Every `synth_chain*` call site computes `refs_tree_depth` per hop from `block.proof_block_refs.len() + 1` and stores it in the built `HopWitness`.
-   - Fixture negative test: build a hop with a wrong `refs_tree_depth` and confirm MockProver rejects (either via the depth range-check or via `ref_index ≥ 2^refs_tree_depth`).
-
-3. **`multi_hop_proof.rs` — gated 8-step fold.**
-   - In the per-hop path currently at multi_hop_proof.rs:411-423 (fixed depth-4 fold via `preprocess_dense_proof_padded` + `dense_merkle_root_circuit`), replace with an inlined 8-step fold:
-     - Assign `refs_tree_depth` as an `AssignedValue`, range-check `[0, 8]`.
-     - Unary-decompose into 8 live-flags `d0..d7` (monotone; use lookup or 8 selector gates).
-     - Bit-decompose `ref_index` into 8 bits `b0..b7`; assert `bk · (1 − dk) == 0` for each k.
-     - For k in `0..8`: `acc = select(live_k, poseidon_combine(bit_k, acc, siblings[k]), acc)`.
-     - Final root-equality gate `acc_8 == B.L7_root` — unchanged compared to today (still enforced only on `is_active` hops).
-   - The gated fold reuses `hash_bytes_flat` (byte-flat Poseidon) to stay byte-identical to acki-nacki `node/libs/history-proof::dense_merkle_root`.
-
-4. **`hop_proof.rs` — helper propagation.** If `hop_proof.rs` exposes a per-hop L7-open helper consumed by `multi_hop_proof.rs`, thread the new `refs_tree_depth` `AssignedValue` through its signature. If the fold is inlined directly in `multi_hop_proof.rs` (option 3 above), `hop_proof.rs` is untouched.
-
-**Budget & K envelope.**
-- K stays 17; columns / rows / proof size / VK all unchanged.
-- Per-hop cell cost: ~1.42 M → ~1.47 M (~+3–4 %); per-snark margin at K=17 stays ~48 %.
-- Prover wall: ~+3–4 %.
-- `dark_dex_circuit.rs`, `bundle_verifier`, `DexFinalProof` public layout — all untouched.
-- Public instances unchanged; `refs_tree_depth` is a private witness (one `u8` per hop, 5 bytes per snark at `H = 5`).
-
-**Tests to update.**
-- `tests/test_bundle_e2e.rs`, `tests/test_bundle_negative.rs`, `tests/test_bundle_stress*.rs` — witness builders switch to the new helper; assert that a hop with `refs_tree_depth = 1` (Michael's T=2 case) verifies.
-- MockProver-only negative case: same-tree witness with mis-declared `refs_tree_depth` must fail.
-
-**Reversibility.** If acki-nacki ever adopts a fixed-shape 256-leaf L7, the variable-depth circuit continues to work — the chain simply always emits `refs_tree_depth = 8`. No downstream re-work required.
-
-### 12.5 `bundle_verifier.rs` — **DONE**
-
-**File:** `dex-halo2-circuit/src/bundle_verifier.rs`. Head-link, tail-link, salt-commitment, and continuity guards are all in place, matching §7.4's fail-fast ordering; `test_bundle_negative.rs` covers each rejection path.
-
-### 12.6 Synthetic chain helpers — **DONE**
-
-**File:** `dex-halo2-circuit/src/test_helpers.rs`. `synth_chain_n` + `split_into_bundle_snarks_n` power the `L = 50 / 100 / 300` stress tests (`tests/test_bundle_stress_l{50,100,300}.rs`); `synthetic_dex_final` uses the 3-arg `(salt_commitment, salted_x_start, salted_y_end)` signature. The §12.4 variable-depth L7 change extends the helper output (depth witness) without altering the public shape.
-
-### 12.7 K-budget final sizing — **PARTIALLY DONE**
-
-- **Real-KZG runs at L = 50 / 100 / 300** exist as `#[ignore]` stress tests; linear-in-`L_MAX` scaling confirmed empirically (see `test_bundle_stress_l300.rs` at N_BUNDLE = 60).
-- **§11.1 (K, H, N_BUNDLE) triple** is locked at (17, 5, 60) for production; prototyping still uses N_BUNDLE = 4 (L_MAX = 20).
-- **Follow-up after §12.4 lands:** rerun `test_bundle_stress_l300.rs` and confirm the new per-snark cell count still fits comfortably at K = 17 with the ~+3–4 % overhead.
-
-### 12.8 Off-tree work — **OPEN**
-
-- **`RootPN.sol` orchestration.** Register `VK_DexFinal`, `VK_MultiHop`; implement §7.4 phase order (public-input consistency → KZG verification → settle). Solidity test harness against native-Rust bundle fixtures from §12.6.
+- **`RootPN.sol` orchestration.** Register `VK_DexFinal`, `VK_MultiHop`; implement §7.4 phase order (public-input consistency → KZG verification → settle). Solidity test harness against native-Rust bundle fixtures.
 - **Phone-side prover integration.** WASM / native build of all snarks; parallel proving where possible. Given `L_MAX = 300` in production and `N_BUNDLE = 60`, quantify phone-side worst-case wall time before locking the prod dispatch policy (§11.2.6).

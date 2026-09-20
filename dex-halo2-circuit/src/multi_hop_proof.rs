@@ -99,7 +99,7 @@ use std::cell::RefCell;
 use crate::boc_helper::SHA256_HASH_LEN;
 use crate::multi_hop_witness::{
     ref_leaf_hash_native, ref_leaf_ref_tag_chunk0_fr, ref_leaf_ref_tag_chunk1_lo_fr,
-    BLOCK_MERKLE_DEPTH, H_HOPS_PER_PROOF, MAX_PROOF_BLOCK_REFS_DEPTH,
+    BLOCK_MERKLE_DEPTH, H_HOPS_PER_PROOF, MAX_PROOF_BLOCK_REFS_DEPTH, N_BUNDLE,
 };
 use crate::salt::{compute_salt_native, domain_tag_hop_salt_fr, salted_block_id_poseidon_circuit};
 
@@ -145,6 +145,10 @@ pub struct MultiHopProofCircuitConfig {
 pub struct MultiHopProofCircuit {
     pub sk_u: Fr,
     pub hops: [MultiHopWitness; H_HOPS_PER_PROOF],
+    /// Snark's position within the bundle (`0..N_BUNDLE`). Feeds the
+    /// per-hop bundle-global position tag mixed into salted-endpoint Poseidon.
+    /// Private witness, range-checked to `[0, N_BUNDLE)` in `synthesize`.
+    pub bundle_index: u32,
     pub base_circuit_params: BaseCircuitParams,
     pub base_circuit_builder: RefCell<BaseCircuitBuilder<Fr>>,
 }
@@ -153,6 +157,7 @@ impl MultiHopProofCircuit {
     pub fn new(
         sk_u: Fr,
         hops: [MultiHopWitness; H_HOPS_PER_PROOF],
+        bundle_index: u32,
         base_circuit_params: BaseCircuitParams,
     ) -> Self {
         let base_circuit_builder = RefCell::new(
@@ -161,6 +166,7 @@ impl MultiHopProofCircuit {
         Self {
             sk_u,
             hops,
+            bundle_index,
             base_circuit_params,
             base_circuit_builder,
         }
@@ -169,6 +175,7 @@ impl MultiHopProofCircuit {
     pub fn new_for_proving(
         sk_u: Fr,
         hops: [MultiHopWitness; H_HOPS_PER_PROOF],
+        bundle_index: u32,
         base_circuit_params: BaseCircuitParams,
         break_points: MultiPhaseThreadBreakPoints,
     ) -> Self {
@@ -179,6 +186,7 @@ impl MultiHopProofCircuit {
         Self {
             sk_u,
             hops,
+            bundle_index,
             base_circuit_params,
             base_circuit_builder,
         }
@@ -426,18 +434,40 @@ fn prove_hop_block_merkle_sha256(
     }
 }
 
-/// Prove one hop's salted-endpoint bindings.
+/// Prove one hop's salted-endpoint bindings (BC-005 anonymity fix, position-tagged).
 ///
-/// Layers three gated constraints:
-/// * `(salted_start_w - start_computed) · is_active == 0`
-/// * `(salted_end_w   - end_computed)   · is_active == 0`
-/// * `(salted_start_w - salted_end_w)   · not_active == 0`
-///   (padding propagation — inactive hops carry a terminal value through).
+/// Constraints:
+/// * `salted_start_w == Poseidon(salt, ref_block_id, start_position)`
+///   — **unconditional** (both active and inactive hops).
+/// * `salted_end_w   == Poseidon(salt, block_id,     end_position)`
+///   — **unconditional**.
+/// * `(ref_block_id_bytes[i] - block_id_bytes[i]) · not_active == 0` for all 32 bytes
+///   — inactive hops must have `ref_block_id == block_id`, forcing padding
+///   hops to carry a single block_id value.
+///
+/// This design replaces the pre-fix "inactive hop propagates
+/// `salted_start == salted_end`" rule, which broke once each endpoint
+/// absorbs a distinct bundle-global `position` (different positions ⇒
+/// different Poseidon outputs even for the same block_id).
+///
+/// Why it stays sound:
+/// * Active hops: block_id is bound by the SHA-256 block-merkle walk;
+///   ref_block_id is bound by the L7 dense-merkle opening.
+/// * Inactive hops: byte-equality collapses to a single "padding block_id"
+///   value per hop. The intra-snark continuity equality
+///   (`salted_end[i] == salted_start[i+1]`) combined with Poseidon
+///   collision resistance and the byte-equality rule chains the padding
+///   block_id across all inactive hops. The DexFinal head-link
+///   (`salted_start[0] == Poseidon(salt, x_block_id, 0)`) and tail-link
+///   (`salted_end[last] == Poseidon(salt, y_block_id, N·H)`) then force
+///   the padding block_id to equal the last active hop's block_id (or
+///   `x_block_id == y_block_id` in the same-thread case).
 ///
 /// `start_computed` / `end_computed` are derived via
-/// [`salted_block_id_poseidon_circuit`] over `ref_block_id_bytes` /
-/// `block_id_bytes` respectively, using the caller's prior
-/// `salt_chunk0 + salt_hi · 2^248` decomposition of `salt`.
+/// [`salted_block_id_poseidon_circuit`], using the caller's prior
+/// `salt_chunk0 + salt_hi · 2^248` decomposition of `salt`, and mixing
+/// the bundle-global `start_position` / `end_position` as the 4th
+/// Poseidon input.
 ///
 /// Returns the assigned `(salted_start_w, salted_end_w)` witnesses so the
 /// caller can wire them into intra-snark continuity across hops.
@@ -450,57 +480,39 @@ fn prove_hop_salted_endpoints(
     salt_hi: AssignedValue<Fr>,
     ref_block_id_bytes: &[AssignedValue<Fr>],
     block_id_bytes: &[AssignedValue<Fr>],
-    salted_start_hint: Fr,
-    salted_end_hint: Fr,
-    is_active: AssignedValue<Fr>,
+    start_position: AssignedValue<Fr>,
+    end_position: AssignedValue<Fr>,
     not_active: AssignedValue<Fr>,
 ) -> (AssignedValue<Fr>, AssignedValue<Fr>) {
-    let start_computed = salted_block_id_poseidon_circuit(
-        ctx, gate, hasher, powers_le_32, salt_chunk0, salt_hi, ref_block_id_bytes,
+    let salted_start_block_id_w = salted_block_id_poseidon_circuit(
+        ctx,
+        gate,
+        hasher,
+        powers_le_32,
+        salt_chunk0,
+        salt_hi,
+        ref_block_id_bytes,
+        start_position,
     );
-    let end_computed = salted_block_id_poseidon_circuit(
-        ctx, gate, hasher, powers_le_32, salt_chunk0, salt_hi, block_id_bytes,
+    let salted_end_block_id_w = salted_block_id_poseidon_circuit(
+        ctx,
+        gate,
+        hasher,
+        powers_le_32,
+        salt_chunk0,
+        salt_hi,
+        block_id_bytes,
+        end_position,
     );
 
-    // Authoritative endpoint witnesses (both active and inactive hops).
-    let salted_start_block_id_w = ctx.load_witness(salted_start_hint);
-    let salted_end_block_id_w = ctx.load_witness(salted_end_hint);
-
-    // Active-gated: salted_start_block_id == start_computed.
-    {
+    // Inactive-hop rule: force ref_block_id == block_id (byte-wise).
+    // Combined with intra-snark continuity + Poseidon collision resistance,
+    // this collapses all inactive hops to carry the terminal block_id.
+    for (r, b) in ref_block_id_bytes.iter().zip(block_id_bytes.iter()) {
         let diff = gate.sub(
             ctx,
-            QuantumCell::Existing(salted_start_block_id_w),
-            QuantumCell::Existing(start_computed),
-        );
-        let gated = gate.mul(
-            ctx,
-            QuantumCell::Existing(diff),
-            QuantumCell::Existing(is_active),
-        );
-        gate.assert_is_const(ctx, &gated, &Fr::zero());
-    }
-    // Active-gated: salted_end_block_id == end_computed.
-    {
-        let diff = gate.sub(
-            ctx,
-            QuantumCell::Existing(salted_end_block_id_w),
-            QuantumCell::Existing(end_computed),
-        );
-        let gated = gate.mul(
-            ctx,
-            QuantumCell::Existing(diff),
-            QuantumCell::Existing(is_active),
-        );
-        gate.assert_is_const(ctx, &gated, &Fr::zero());
-    }
-    // Inactive-gated: salted_start_block_id == salted_end_block_id
-    // (propagate terminal value through padding hops).
-    {
-        let diff = gate.sub(
-            ctx,
-            QuantumCell::Existing(salted_start_block_id_w),
-            QuantumCell::Existing(salted_end_block_id_w),
+            QuantumCell::Existing(*r),
+            QuantumCell::Existing(*b),
         );
         let gated = gate.mul(
             ctx,
@@ -543,7 +555,7 @@ impl Circuit<Fr> for MultiHopProofCircuit {
         };
         let hops: [MultiHopWitness; H_HOPS_PER_PROOF] =
             std::array::from_fn(|_| dummy_hop());
-        Self::new(Fr::zero(), hops, self.base_circuit_params.clone())
+        Self::new(Fr::zero(), hops, 0, self.base_circuit_params.clone())
     }
 
     fn configure(meta: &mut ConstraintSystem<Fr>) -> Self::Config {
@@ -646,10 +658,26 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                     ctx.constrain_equal(&reconstructed, &salt_assigned);
                 }
 
+                // bundle_index: private witness, range-checked to
+                // [0, N_BUNDLE). Position tag base = bundle_index * H.
+                let bundle_index_assigned =
+                    ctx.load_witness(Fr::from(self.bundle_index as u64));
+                let bundle_index_bits = (N_BUNDLE as u64).next_power_of_two().trailing_zeros();
+                assert!(
+                    bundle_index_bits > 0 && bundle_index_bits < 32,
+                    "N_BUNDLE must fit in a small range check"
+                );
+                range.range_check(ctx, bundle_index_assigned, bundle_index_bits as usize);
+                let position_base = gate.mul(
+                    ctx,
+                    QuantumCell::Existing(bundle_index_assigned),
+                    QuantumCell::Constant(Fr::from(H_HOPS_PER_PROOF as u64)),
+                );
+
                 let mut hop_endpoints: Vec<(AssignedValue<Fr>, AssignedValue<Fr>)> =
                     Vec::with_capacity(H_HOPS_PER_PROOF);
 
-                for hop in &self.hops {
+                for (h_idx, hop) in self.hops.iter().enumerate() {
                     // is_active + not_active flags for the whole hop.
                     let is_active = ctx.load_witness(if hop.is_active {
                         Fr::one()
@@ -662,6 +690,20 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                         ctx,
                         QuantumCell::Existing(one_const),
                         QuantumCell::Existing(is_active),
+                    );
+
+                    // Bundle-global position tags for this hop.
+                    //   start_pos = bundle_index * H + h_idx
+                    //   end_pos   = bundle_index * H + h_idx + 1
+                    let start_position = gate.add(
+                        ctx,
+                        QuantumCell::Existing(position_base),
+                        QuantumCell::Constant(Fr::from(h_idx as u64)),
+                    );
+                    let end_position = gate.add(
+                        ctx,
+                        QuantumCell::Existing(position_base),
+                        QuantumCell::Constant(Fr::from((h_idx + 1) as u64)),
                     );
 
                     // Gadget 1: L7 ref-tree opening (byte-flat Poseidon +
@@ -696,9 +738,9 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                         is_active,
                     );
 
-                    // Gadget 3: salted endpoints (spec §5.4) — active/inactive
-                    // gated Poseidon(salt‖endpoint_id) equality + inactive
-                    // padding propagation.
+                    // Gadget 3: salted endpoints (spec §5.4) — position-tagged
+                    // Poseidon bound unconditionally + inactive byte-equality
+                    // padding rule (BC-005 fix).
                     let (salted_start_block_id_w, salted_end_block_id_w) =
                         prove_hop_salted_endpoints(
                             ctx,
@@ -709,9 +751,8 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                             salt_hi,
                             &ref_block_id_bytes,
                             &block_id_bytes,
-                            hop.salted_start_block_id,
-                            hop.salted_end_block_id,
-                            is_active,
+                            start_position,
+                            end_position,
                             not_active,
                         );
 
@@ -811,7 +852,7 @@ mod tests {
             num_instance_columns: 1,
         };
 
-        let circuit = MultiHopProofCircuit::new(chain.sk_u, multi_hops, params);
+        let circuit = MultiHopProofCircuit::new(chain.sk_u, multi_hops, 0, params);
         let instances = vec![vec![first_salted_start_block_id, last_salted_end_block_id, salt_commitment]];
         let prover = MockProver::<Fr>::run(K, &circuit, instances).unwrap();
         prover.assert_satisfied();
@@ -819,9 +860,11 @@ mod tests {
 
     /// MockProver — all-inactive snark (chain ends before this snark).
     ///
-    /// `synth_chain(seed, 0)` ⇒ every hop in every snark is inactive, all
-    /// salted endpoints equal `bundle_head_salted`. Exercises the case where
-    /// no SHA-256 / ref-tree constraint is enforced at all.
+    /// `synth_chain(seed, 0)` ⇒ every hop in every snark is inactive. Under
+    /// BC-005 position tags, salted endpoints step through Poseidon at
+    /// consecutive positions (they are NOT equal to bundle_head_salted).
+    /// Exercises the case where no SHA-256 / ref-tree constraint is
+    /// enforced at all — only the `not_active` byte-equality rule.
     #[test]
     fn all_inactive_mock_prover() {
         use crate::test_helpers::{split_into_bundle_snarks, synth_chain};
@@ -831,9 +874,8 @@ mod tests {
         let snark0 = &snarks[0];
         for hop in snark0.hops.iter() {
             assert!(!hop.is_active);
-            assert_eq!(hop.salted_start_block_id, hop.salted_end_block_id);
-            assert_eq!(hop.salted_start_block_id, chain.bundle_head_salted);
         }
+        assert_eq!(snark0.hops[0].salted_start_block_id, chain.bundle_head_salted);
 
         let multi_hops: [MultiHopWitness; H_HOPS_PER_PROOF] =
             std::array::from_fn(|i| hop_to_multi_hop(&snark0.hops[i]));
@@ -848,10 +890,10 @@ mod tests {
             num_instance_columns: 1,
         };
 
-        let circuit = MultiHopProofCircuit::new(chain.sk_u, multi_hops, params);
+        let circuit = MultiHopProofCircuit::new(chain.sk_u, multi_hops, 0, params);
         let instances = vec![vec![
-            chain.bundle_head_salted,
-            chain.bundle_head_salted,
+            snark0.hops[0].salted_start_block_id,
+            snark0.hops[H_HOPS_PER_PROOF - 1].salted_end_block_id,
             chain.salt_commitment,
         ]];
         let prover = MockProver::<Fr>::run(K, &circuit, instances).unwrap();

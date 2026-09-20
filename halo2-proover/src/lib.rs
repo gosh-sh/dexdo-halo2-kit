@@ -1,6 +1,7 @@
 use gosh_dark_dex_halo2_new_circuit::block_id_tree::compute_block_id_from_l8_native;
 use gosh_dark_dex_halo2_new_circuit::boc_helper::{serialize_cells_tree_root_first, BocFlattenData};
 use gosh_dark_dex_halo2_new_circuit::dark_dex_circuit::DarkDexCircuit;
+use gosh_dark_dex_halo2_new_circuit::multi_hop_witness::{H_HOPS_PER_PROOF, N_BUNDLE};
 use gosh_dark_dex_halo2_new_circuit::salt::{
     compute_salt_commitment_native, compute_salt_native, compute_salted_block_id_native,
 };
@@ -427,12 +428,19 @@ fn compute_instances(parsed: &ParsedFixture) -> Vec<Fr> {
     };
 
     // Salt-derived publics (must match the in-circuit derivation in
-    // `DarkDexCircuit::synthesize`). In the uniform single-thread t=0
-    // case, X_block_id == Y_block_id == parsed.block_id, so
-    // salted_x_start == salted_y_end.
+    // `DarkDexCircuit::synthesize`). BC-005 fix: each salted endpoint absorbs
+    // its bundle-global position, so even in the uniform single-thread t=0
+    // case (X_block_id == Y_block_id == parsed.block_id), salted_x_start
+    // (position 0) and salted_y_end (position N_BUNDLE * H) differ.
     let salt = compute_salt_native(parsed.sk_u);
     let salt_commitment = compute_salt_commitment_native(salt);
-    let salted = compute_salted_block_id_native(salt, &parsed.block_id);
+    let salted_x_start =
+        compute_salted_block_id_native(salt, &parsed.block_id, 0);
+    let salted_y_end = compute_salted_block_id_native(
+        salt,
+        &parsed.block_id,
+        (N_BUNDLE * H_HOPS_PER_PROOF) as u64,
+    );
 
     vec![
         poseidon_commitment,
@@ -440,8 +448,8 @@ fn compute_instances(parsed: &ParsedFixture) -> Vec<Fr> {
         voucher_nominal_val,
         token_type_val,
         ephemeral_pubkey_val,
-        salted, // salted_x_start
-        salted, // salted_y_end (== salted_x_start under uniform t=0)
+        salted_x_start,
+        salted_y_end,
         salt_commitment,
     ]
 }
@@ -736,8 +744,10 @@ mod tests {
         assert_eq!(values.salt_commitment.len(), 64);
         assert_eq!(values.salted_x_start.len(), 64);
         assert_eq!(values.salted_y_end.len(), 64);
-        // Uniform t=0: X_block_id == Y_block_id ⇒ start == end.
-        assert_eq!(values.salted_x_start, values.salted_y_end);
+        // BC-005: even when X_block_id == Y_block_id (uniform t=0), position
+        // tags (0 vs N_BUNDLE*H) make salted_x_start and salted_y_end differ,
+        // preventing on-chain observers from linking the two publics.
+        assert_ne!(values.salted_x_start, values.salted_y_end);
     }
 
     #[test]

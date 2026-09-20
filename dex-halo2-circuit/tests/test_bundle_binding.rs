@@ -16,6 +16,7 @@
 use dex_halo2_circuit::bundle_verifier::{
     verify_bundle, BundleError, BundleProof, DEX_FINAL_LEN, MULTI_HOP_LEN,
 };
+use dex_halo2_circuit::multi_hop_witness::H_HOPS_PER_PROOF;
 use dex_halo2_circuit::salt::{
     compute_salt_commitment_native, compute_salt_native, compute_salted_block_id_native,
 };
@@ -61,25 +62,25 @@ fn multihop_instances(salted_start_block_id: Fr, salted_end_block_id: Fr, salt_c
 ///
 /// All `salt_commitment` slots get the same canonical value, derived from
 /// `sk_u` via `compute_salt_native` then `compute_salt_commitment_native`.
+///
+/// BC-005 position tags: each salted endpoint absorbs its bundle-global
+/// position. Snark `b`'s start endpoint sits at position `b * H`, its end
+/// at position `(b + 1) * H`. `H = H_HOPS_PER_PROOF`.
 fn synthesize_bundle_instances(sk_u: Fr, block_ids: &[[u8; 32]; 5]) -> (Vec<Fr>, [Vec<Fr>; N_BUNDLE]) {
     let salt = compute_salt_native(sk_u);
     let sc = compute_salt_commitment_native(salt);
+    let h = H_HOPS_PER_PROOF as u64;
 
-    // Pre-compute compute_salted_block_id_native(salt, b_id) for every block_id.
-    let salted: Vec<Fr> = block_ids
-        .iter()
-        .map(|b| compute_salted_block_id_native(salt, b))
-        .collect();
+    // Position-tagged salted values: `salted[i]` corresponds to block_ids[i]
+    // at snark-boundary position `i * H`.
+    let salted_at = |i: usize| compute_salted_block_id_native(salt, &block_ids[i], (i as u64) * h);
 
-    // DexFinal's bundle-head = `salted[0]` (i.e. salted_id of the
-    // event-block-id we just claimed — same as what hop[0] starts from).
-    // Bundle-tail = `salted[N_BUNDLE]` (last hop's `salted_end_block_id`).
-    let dex_final = make_dex_final_instances(sc, salted[0], salted[N_BUNDLE]);
+    let dex_final = make_dex_final_instances(sc, salted_at(0), salted_at(N_BUNDLE));
     let hops = [
-        multihop_instances(salted[0], salted[1], sc),
-        multihop_instances(salted[1], salted[2], sc),
-        multihop_instances(salted[2], salted[3], sc),
-        multihop_instances(salted[3], salted[4], sc),
+        multihop_instances(salted_at(0), salted_at(1), sc),
+        multihop_instances(salted_at(1), salted_at(2), sc),
+        multihop_instances(salted_at(2), salted_at(3), sc),
+        multihop_instances(salted_at(3), salted_at(4), sc),
     ];
 
     (dex_final, hops)
@@ -216,27 +217,35 @@ fn tampered_dex_final_head_rejected() {
     }
 }
 
-/// All-inactive hops (T=0 case, §6.4): the chain degenerates to
-/// `salted_start_block_id == salted_end_block_id == event_salted_block_id`. The verifier
-/// accepts; this confirms the verifier's continuity check doesn't
-/// over-constrain the "no real hops" case.
+/// All-inactive hops (T=0 case, §6.4): every hop's underlying block_id is the
+/// same head block, but under BC-005 position tags each snark boundary yields
+/// a distinct salted endpoint. The verifier still accepts because continuity
+/// holds — snark `b`'s end (position `(b+1)*H`) equals snark `b+1`'s start.
 #[test]
 fn all_inactive_hops_t_eq_0_accepted() {
     let sk_u = Fr::from(0x111u64);
     let single_block: [u8; 32] = [99u8; 32];
 
-    // For an all-inactive bundle, every salted endpoint equals
-    // `Poseidon(salt, single_block_id)`.
     let salt = compute_salt_native(sk_u);
     let sc = compute_salt_commitment_native(salt);
-    let p = compute_salted_block_id_native(salt, &single_block);
+    let h = H_HOPS_PER_PROOF as u64;
+    // 5 distinct position-tagged salted values, all bound to `single_block`.
+    let p_at = |i: u64| compute_salted_block_id_native(salt, &single_block, i * h);
+    let p0 = p_at(0);
+    let p1 = p_at(1);
+    let p2 = p_at(2);
+    let p3 = p_at(3);
+    let p4 = p_at(4);
+    // BC-005 sanity: distinct positions ⇒ distinct Poseidon outputs.
+    assert_ne!(p0, p1);
+    assert_ne!(p0, p4);
 
-    let dex_final = make_dex_final_instances(sc, p, p);
+    let dex_final = make_dex_final_instances(sc, p0, p4);
     let hops = [
-        multihop_instances(p, p, sc),
-        multihop_instances(p, p, sc),
-        multihop_instances(p, p, sc),
-        multihop_instances(p, p, sc),
+        multihop_instances(p0, p1, sc),
+        multihop_instances(p1, p2, sc),
+        multihop_instances(p2, p3, sc),
+        multihop_instances(p3, p4, sc),
     ];
     let bundle = build_bundle(dex_final, hops);
     assert_eq!(verify_bundle(&bundle), Ok(()));

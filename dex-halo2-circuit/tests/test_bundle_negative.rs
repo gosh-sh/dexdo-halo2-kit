@@ -126,7 +126,7 @@ fn bundle_e2e_negatives() {
     let keygen_hops: [MultiHopWitness; H_HOPS_PER_PROOF] =
         std::array::from_fn(|i| hop_to_multi_hop(&snarks_a[0].hops[i]));
     let keygen_circuit =
-        MultiHopProofCircuit::new(chain_a.sk_u, keygen_hops, params.clone());
+        MultiHopProofCircuit::new(chain_a.sk_u, keygen_hops, 0, params.clone());
 
     let t0 = Instant::now();
     let vk = keygen_vk(&srs, &keygen_circuit).expect("keygen_vk failed");
@@ -161,6 +161,7 @@ fn bundle_e2e_negatives() {
         let prover_circuit = MultiHopProofCircuit::new_for_proving(
             chain_sk_u,
             hops,
+            0,
             params.clone(),
             break_points.clone(),
         );

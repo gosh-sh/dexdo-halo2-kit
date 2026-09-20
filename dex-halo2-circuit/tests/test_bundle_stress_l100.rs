@@ -116,7 +116,7 @@ fn bundle_stress_l100_n20() {
     let keygen_hops: [MultiHopWitness; H_HOPS_PER_PROOF] =
         std::array::from_fn(|i| hop_to_multi_hop(&snarks[0].hops[i]));
     let keygen_circuit =
-        MultiHopProofCircuit::new(chain.sk_u, keygen_hops, params.clone());
+        MultiHopProofCircuit::new(chain.sk_u, keygen_hops, 0, params.clone());
 
     let t0 = Instant::now();
     let vk = keygen_vk(&srs, &keygen_circuit).expect("keygen_vk failed");
@@ -147,6 +147,7 @@ fn bundle_stress_l100_n20() {
         let prover_circuit = MultiHopProofCircuit::new_for_proving(
             chain.sk_u,
             hops,
+            snark_idx as u32,
             params.clone(),
             break_points.clone(),
         );

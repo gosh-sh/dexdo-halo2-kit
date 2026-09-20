@@ -16,9 +16,24 @@
 //! - [`compute_salt_native`] — `salt = Poseidon([tag_fr, sk_u])`
 //! - [`compute_salt_commitment_native`] — `salt_commitment = Poseidon([salt])`
 //! - [`compute_salted_block_id_native`] —
-//!   `hash_bytes_flat(fr_to_bytes(salt) ‖ block_id)`
+//!   `Poseidon([salt_chunk0, salt_hi + 256·block_id_lo30, block_id_hi2, position])`
+//!
+//! ## Position tag (BC-005 anonymity fix)
+//!
+//! Each salted-block-id absorbs a **bundle-global position** as a 4th Poseidon
+//! input. Positions run `0..=N_BUNDLE * H_HOPS_PER_PROOF` and are unique per
+//! endpoint slot in the DexFinal + N × MultiHopProof composition:
+//!
+//! * DexFinal `salted_x_start` — position `0`
+//! * MultiHop bundle `b`, hop `h` — start at `b·H+h`, end at `b·H+h+1`
+//! * DexFinal `salted_y_end` — position `N_BUNDLE · H_HOPS_PER_PROOF`
+//!
+//! Without the position tag, in the same-thread (t=0) case the entire chain
+//! collapses to a single value, and observers reading the public instances
+//! could distinguish it from the cross-thread case by simple equality checks.
+//! Mixing the position in makes every salted-block-id fresh Poseidon output
+//! regardless of whether the underlying `block_id` is repeated.
 
-use crate::multi_hop_witness::poseidon_bytes_flat_native;
 use gosh_dense_balanced_tree::{bytes_to_fr, fr_to_bytes, poseidon_hash_native, RATE, T};
 use halo2_base::gates::GateInstructions;
 use halo2_base::halo2_proofs::halo2curves::bn256::Fr;
@@ -60,32 +75,55 @@ pub fn compute_salt_commitment_native(salt: Fr) -> Fr {
     poseidon_hash_native(&[salt])
 }
 
-/// Native: `salted_block_id = hash_bytes_flat(fr_to_bytes(salt) ‖ block_id_le)`.
+/// Native: `salted_block_id = Poseidon([salt_chunk0, salt_hi + 256·lo30, hi2, position_fr])`.
 ///
-/// The salt is serialised as its 32-byte LE field-element representation
-/// (top byte < `0x40` because `salt < Fr_modulus`), concatenated with the
-/// 32-byte block_id, and the 64-byte stream is fed through the byte-flat
-/// Poseidon sponge. Every absorbed Fr chunk is guaranteed `< Fr_modulus`,
-/// so no silent mod-p reduction.
-pub fn compute_salted_block_id_native(salt: Fr, block_id_le: &[u8; 32]) -> Fr {
-    let mut concat = [0u8; 64];
-    concat[..32].copy_from_slice(&fr_to_bytes(salt));
-    concat[32..].copy_from_slice(block_id_le);
-    bytes_to_fr(&poseidon_bytes_flat_native(&concat))
+/// The salt is decomposed as `salt = salt_chunk0 + 2^248 · salt_hi` (LE, 248+8
+/// bits). The 32-byte block_id decomposes as `lo30` (bytes 0..30) and `hi2`
+/// (bytes 30..32). The 4th Poseidon input is `position` — a bundle-global
+/// counter that makes each salted endpoint slot a fresh Poseidon image even
+/// when the same `(salt, block_id)` pair recurs across hops. See module docs
+/// for the position enumeration.
+///
+/// This must stay byte-for-byte equivalent to
+/// [`salted_block_id_poseidon_circuit`].
+pub fn compute_salted_block_id_native(salt: Fr, block_id_le: &[u8; 32], position: u64) -> Fr {
+    let salt_bytes = fr_to_bytes(salt);
+    // salt = salt_chunk0 (bytes 0..31 LE) + 2^248 * salt_hi (byte 31)
+    let mut chunk0_bytes = [0u8; 32];
+    chunk0_bytes[..31].copy_from_slice(&salt_bytes[..31]);
+    let salt_chunk0 = bytes_to_fr(&chunk0_bytes);
+    let salt_hi = Fr::from(salt_bytes[31] as u64);
+
+    // chunk1 = salt_hi + 256 * LE(block_id[0..30])
+    let mut lo30_bytes = [0u8; 32];
+    lo30_bytes[..30].copy_from_slice(&block_id_le[..30]);
+    let block_id_lo30 = bytes_to_fr(&lo30_bytes);
+    let chunk1 = salt_hi + Fr::from(256u64) * block_id_lo30;
+
+    // chunk2 = LE(block_id[30..32])
+    let chunk2 = Fr::from(block_id_le[30] as u64) + Fr::from(256u64) * Fr::from(block_id_le[31] as u64);
+
+    poseidon_hash_native(&[salt_chunk0, chunk1, chunk2, Fr::from(position)])
 }
 
 /// In-circuit twin of [`compute_salted_block_id_native`].
 ///
-/// Computes `Poseidon([salt_chunk0, chunk1, chunk2])` where
+/// Computes `Poseidon([salt_chunk0, chunk1, chunk2, position])` where
 /// `chunk1 = salt_hi + 256 · LE(block_id_bytes[0..30])` and
-/// `chunk2 = LE(block_id_bytes[30..32])`. This is the byte-flat sponge of
-/// the 64-byte stream `fr_to_bytes(salt) ‖ block_id`, chunked as 31+31+2.
+/// `chunk2 = LE(block_id_bytes[30..32])`.
+///
+/// The `position` input is a bundle-global endpoint counter (see module
+/// docs) that ensures each salted-block-id is a fresh Poseidon output
+/// even when the same `(salt, block_id)` pair recurs across hops. Without
+/// it, the same-thread (t=0) case would produce equal publics in a
+/// pattern distinguishable from the cross-thread case.
 ///
 /// Callers must supply:
 ///   * `salt_chunk0` / `salt_hi` — a prior 248+8-bit decomposition of the
 ///     salt Fr (constrained elsewhere to equal the Poseidon-derived `salt`).
 ///   * `powers_le_32` — a shared `[256^i]` table with at least 30 entries.
 ///   * `block_id_bytes` — exactly 32 cells, already range-checked to 8 bits.
+///   * `position` — assigned cell holding the bundle-global position.
 pub(crate) fn salted_block_id_poseidon_circuit(
     ctx: &mut Context<Fr>,
     gate: &impl GateInstructions<Fr>,
@@ -94,6 +132,7 @@ pub(crate) fn salted_block_id_poseidon_circuit(
     salt_chunk0: AssignedValue<Fr>,
     salt_hi: AssignedValue<Fr>,
     block_id_bytes: &[AssignedValue<Fr>],
+    position: AssignedValue<Fr>,
 ) -> AssignedValue<Fr> {
     assert_eq!(block_id_bytes.len(), 32, "block_id must be exactly 32 bytes");
     assert!(powers_le_32.len() >= 30, "powers_le_32 needs at least 30 entries");
@@ -117,7 +156,7 @@ pub(crate) fn salted_block_id_poseidon_circuit(
             .collect();
         gate.inner_product(ctx, cells, powers_le_32[0..2].iter().cloned())
     };
-    hasher.hash_fix_len_array(ctx, gate, &[salt_chunk0, chunk1, chunk2])
+    hasher.hash_fix_len_array(ctx, gate, &[salt_chunk0, chunk1, chunk2, position])
 }
 
 #[cfg(test)]
@@ -140,11 +179,15 @@ mod tests {
         let salt = compute_salt_native(sk_u);
         let comm = compute_salt_commitment_native(salt);
         let block_id = [7u8; 32];
-        let salted = compute_salted_block_id_native(salt, &block_id);
+        let salted = compute_salted_block_id_native(salt, &block_id, 0);
 
         assert_eq!(salt, compute_salt_native(sk_u));
         assert_eq!(comm, compute_salt_commitment_native(salt));
-        assert_eq!(salted, compute_salted_block_id_native(salt, &block_id));
+        assert_eq!(salted, compute_salted_block_id_native(salt, &block_id, 0));
+
+        // Position tag: different positions produce different outputs.
+        let salted_pos_1 = compute_salted_block_id_native(salt, &block_id, 1);
+        assert_ne!(salted, salted_pos_1);
     }
 
     /// Different `sk_u` ⇒ different salt.

@@ -26,6 +26,7 @@ use std::cell::RefCell;
 use crate::block_id_tree::assert_depth4_l8_opening_circuit;
 use crate::boc_helper::*;
 use crate::poseidon_dex_helper::{poseidon_hash_96_circuit_bytes, poseidon_hash_96_native};
+use crate::multi_hop_witness::{H_HOPS_PER_PROOF, N_BUNDLE};
 use crate::salt::{compute_salt_native, domain_tag_hop_salt_fr, salted_block_id_poseidon_circuit};
 use crate::voucher_event_helper::{
     EVENT_SK_U_COMMIT_END, EVENT_SK_U_COMMIT_FIELD_LEN, EVENT_SK_U_COMMIT_START,
@@ -736,7 +737,9 @@ impl Circuit<Fr> for DarkDexCircuit {
                     &x_block_id_bytes,
                 );
 
-                // === X.e salted_X_start = byte-flat Poseidon on x_block_id ===
+                // === X.e salted_X_start = Poseidon(salt, x_block_id, position=0) ===
+                // Position 0 is the head of the bundle-global salted chain.
+                let salted_x_start_position = ctx.load_constant(Fr::zero());
                 let salted_x_start = salted_block_id_poseidon_circuit(
                     ctx,
                     gate,
@@ -745,6 +748,7 @@ impl Circuit<Fr> for DarkDexCircuit {
                     salt_chunk0,
                     salt_hi,
                     &x_block_id_bytes,
+                    salted_x_start_position,
                 );
 
                 // ================================================================
@@ -810,7 +814,12 @@ impl Circuit<Fr> for DarkDexCircuit {
                     ctx, &range, &hasher, y_history_window_root, &self.y_dense_chain, num_active,
                 );
 
-                // === Y.d salted_Y_end = byte-flat Poseidon on y_block_id ===
+                // === Y.d salted_Y_end = Poseidon(salt, y_block_id, position=N·H) ===
+                // Position N_BUNDLE * H_HOPS_PER_PROOF is the tail of the
+                // bundle-global salted chain.
+                let salted_y_end_position = ctx.load_constant(
+                    Fr::from((N_BUNDLE * H_HOPS_PER_PROOF) as u64),
+                );
                 let salted_y_end = salted_block_id_poseidon_circuit(
                     ctx,
                     gate,
@@ -819,6 +828,7 @@ impl Circuit<Fr> for DarkDexCircuit {
                     salt_chunk0,
                     salt_hi,
                     &y_block_id_bytes,
+                    salted_y_end_position,
                 );
 
                 // === LE lo/hi 128-bit packing of x_account_dapp_id / x_account_id ===
@@ -1000,9 +1010,11 @@ mod tests {
     /// salted_Y_end, salt_commitment, x_account_dapp_id_lo,
     /// x_account_dapp_id_hi, x_account_id_lo, x_account_id_hi]`.
     ///
-    /// Works for both the uniform t=0 case (`x_block_id == y_block_id`, so
-    /// `salted_X_start == salted_Y_end`) and the cross-thread case
-    /// (`x_block_id ≠ y_block_id`).
+    /// Works for both the uniform t=0 case (`x_block_id == y_block_id`) and
+    /// the cross-thread case (`x_block_id ≠ y_block_id`). BC-005 anonymity
+    /// fix: `salted_X_start` and `salted_Y_end` now include distinct
+    /// bundle-global position tags (0 and `N_BUNDLE * H_HOPS_PER_PROOF`),
+    /// so they no longer collide even when `x_block_id == y_block_id`.
     #[cfg(test)]
     fn make_instances(
         v: &VoucherFields,
@@ -1012,8 +1024,12 @@ mod tests {
     ) -> Vec<Fr> {
         let salt = compute_salt_native(v.sk_u);
         let salt_commitment = compute_salt_commitment_native(salt);
-        let salted_x_start = compute_salted_block_id_native(salt, &tw.x_block_id);
-        let salted_y_end = compute_salted_block_id_native(salt, &tw.y_block_id);
+        let salted_x_start = compute_salted_block_id_native(salt, &tw.x_block_id, 0);
+        let salted_y_end = compute_salted_block_id_native(
+            salt,
+            &tw.y_block_id,
+            (N_BUNDLE * H_HOPS_PER_PROOF) as u64,
+        );
         let (dapp_lo, dapp_hi) = pack_lo_hi_le(&tw.x_account_dapp_id);
         let (acct_lo, acct_hi) = pack_lo_hi_le(&tw.x_account_id);
         vec![

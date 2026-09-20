@@ -374,7 +374,10 @@ fn append_trailing_publics(
     let salt = compute_salt_native(sk_u);
     instances.push(ephemeral_pubkey);
     instances.push(compute_salt_commitment_native(salt));
-    instances.push(compute_salted_block_id_native(salt, block_id));
+    // BC-005: legacy single-block trailing-publics helper; use position 0.
+    // (This test file predates the multi-hop DarkDex refactor and is already
+    // stale — kept compiling only.)
+    instances.push(compute_salted_block_id_native(salt, block_id, 0));
 }
 
 /// Native poseidon_hash_96: hash 3 × 32-byte inputs with 31-byte chunking.

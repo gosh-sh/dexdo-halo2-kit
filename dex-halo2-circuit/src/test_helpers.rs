@@ -2,7 +2,7 @@ use crate::multi_hop_witness::{
     assert_ref_index_is_cross_thread, block_merkle_leaf_proof, block_merkle_root,
     proof_block_ref_inner_path_native, proof_block_refs_root_native, BlockWitness, HopWitness,
     MultiHopProofWitness, BLOCK_MERKLE_DEPTH, BLOCK_MERKLE_LEAF_COUNT, H_HOPS_PER_PROOF,
-    MAX_PROOF_BLOCK_REFS_DEPTH, N_BUNDLE,
+    N_BUNDLE,
 };
 use crate::salt::{
     compute_salt_commitment_native, compute_salt_native, compute_salted_block_id_native,
@@ -352,18 +352,13 @@ pub fn synth_chain(seed: u64, k_hops: usize) -> SynthChain {
         block_ids.push(id);
     }
 
-    // Compute salted endpoints for each real block.
-    let salted: Vec<Fr> = block_ids
-        .iter()
-        .map(|b| compute_salted_block_id_native(salt, b))
-        .collect();
-    let bundle_head_salted = salted[0];
-    // Terminal salted endpoint for inactive padding.
-    let terminal_salted = if k_hops == 0 {
-        bundle_head_salted
-    } else {
-        salted[k_hops]
-    };
+    // BC-005 anonymity fix: `salted_block_id` now absorbs a bundle-global
+    // `position` tag. Positions run `0..=total_slots`:
+    //   * DexFinal.salted_X_start           — position 0
+    //   * hop[g].salted_start_block_id      — position g
+    //   * hop[g].salted_end_block_id        — position g+1
+    //   * DexFinal.salted_Y_end             — position total_slots
+    let bundle_head_salted = compute_salted_block_id_native(salt, &block_ids[0], 0);
 
     let mut hops = Vec::with_capacity(total_slots);
 
@@ -395,25 +390,19 @@ pub fn synth_chain(seed: u64, k_hops: usize) -> SynthChain {
         let computed_block_id = block_merkle_root(&leaves);
         block_ids[i + 1] = computed_block_id;
 
-        // Recompute salted endpoints since we replaced block_ids[i+1].
-        // (block_ids[0..=i] are unchanged; future ones still random until
-        // their loop iteration overwrites them.)
-        let salted_end_block_id = compute_salted_block_id_native(salt, &computed_block_id);
+        // Position-tagged salted endpoints. Global position g == i.
+        //   salted_start = Poseidon(salt, block_ids[i],   i)
+        //   salted_end   = Poseidon(salt, block_ids[i+1], i+1)
+        let salted_start_block_id =
+            compute_salted_block_id_native(salt, &block_ids[i], i as u64);
+        let salted_end_block_id =
+            compute_salted_block_id_native(salt, &computed_block_id, (i + 1) as u64);
 
         let block_merkle_leaf_proof_l7 = block_merkle_leaf_proof(&leaves, 7);
         let ref_index = 1usize;
         assert_ref_index_is_cross_thread(ref_index);
         let (proof_block_ref_inner_path, refs_tree_depth) =
             proof_block_ref_inner_path_native(&proof_block_refs, ref_index);
-
-        let salted_start_block_id = if i == 0 {
-            bundle_head_salted
-        } else {
-            // Previous hop's salted_end_block_id (which is `salted_block_id of
-            // block_ids[i]`, the now-finalized block we just constructed in
-            // iteration i-1).
-            compute_salted_block_id_native(salt, &block_ids[i])
-        };
 
         // Sanity: hop chain continuity is intrinsic to the construction.
         debug_assert_ne!(target_id_expected, [0u8; 32]); // (silences unused)
@@ -434,40 +423,46 @@ pub fn synth_chain(seed: u64, k_hops: usize) -> SynthChain {
         });
     }
 
-    // Recompute true terminal after possible block_id overwrites above.
-    let final_terminal_salted = if k_hops == 0 {
-        bundle_head_salted
-    } else {
-        hops[k_hops - 1].salted_end_block_id
-    };
-    let _ = terminal_salted; // silence
+    // Padding block_id: the last active hop's block_id (== `block_ids[k_hops]`
+    // by construction), or the initial `block_ids[0]` if `k_hops == 0` (all
+    // inactive, same-thread case). Inactive hops must satisfy the circuit's
+    // `not_active` byte-equality rule (`ref_block_id == block_id`), so we
+    // supply the padding block_id in both roles.
+    let pad_bid = block_ids[k_hops];
 
-    // Pad with inactive hops carrying terminal_salted at both endpoints.
+    // Pad with inactive hops carrying position-tagged salted endpoints.
     while hops.len() < total_slots {
-        // Inactive padding: zero everything that the circuit will gate out
-        // with `is_active`. Endpoints must equal terminal_salted so RootPN's
-        // continuity check passes.
+        let g = hops.len(); // global position of this inactive hop
         // `ref_index = 1` is required even for padding because the in-circuit
         // range check + `ref_index != 0` assertion are unconditional (spec §5.1).
         // `refs_tree_depth = 1` gives the ref_index=1 a valid live-flag slot
         // (unary decomposition covers indices 0..2) while still being ≤ MAX
         // — the fold output is discarded by the `is_active` gate anyway.
+        //
+        // For the new `not_active`-byte-equality rule, `proof_block_refs`
+        // (used only by native `l7` re-derivation) must place `pad_bid` at
+        // slot 1 so that `ref_block_id == block_id == pad_bid`. The circuit's
+        // ref-tree gate stays fully gated by `is_active` so no L7 constraint
+        // fires for inactive hops; only the byte-equality gate does.
+        let inactive_proof_refs: Vec<[u8; 32]> =
+            vec![SLOT0_PARENT_PLACEHOLDER, pad_bid];
+        let (inactive_inner_path, inactive_depth) =
+            proof_block_ref_inner_path_native(&inactive_proof_refs, 1);
         let zero_leaves = [[0u8; 32]; BLOCK_MERKLE_LEAF_COUNT];
         let zero_l7_proof = [[0u8; 32]; BLOCK_MERKLE_DEPTH];
-        let zero_inner_path = [[0u8; 32]; MAX_PROOF_BLOCK_REFS_DEPTH];
         hops.push(HopWitness {
             is_active: false,
             block: BlockWitness {
-                block_id: [0u8; 32],
+                block_id: pad_bid,
                 block_merkle_tree_leaves: zero_leaves,
-                proof_block_refs: Vec::new(),
+                proof_block_refs: inactive_proof_refs,
             },
             block_merkle_leaf_proof_l7: zero_l7_proof,
             ref_index: 1,
-            refs_tree_depth: 1,
-            proof_block_ref_inner_path: zero_inner_path,
-            salted_start_block_id: final_terminal_salted,
-            salted_end_block_id: final_terminal_salted,
+            refs_tree_depth: inactive_depth,
+            proof_block_ref_inner_path: inactive_inner_path,
+            salted_start_block_id: compute_salted_block_id_native(salt, &pad_bid, g as u64),
+            salted_end_block_id: compute_salted_block_id_native(salt, &pad_bid, (g + 1) as u64),
         });
     }
 
@@ -526,11 +521,8 @@ pub fn synth_chain_n(seed: u64, k_hops: usize, n_bundle: usize) -> SynthChain {
         block_ids.push(id);
     }
 
-    let salted_head: Vec<Fr> = block_ids
-        .iter()
-        .map(|b| compute_salted_block_id_native(salt, b))
-        .collect();
-    let bundle_head_salted = salted_head[0];
+    // BC-005: position-tagged salted head (see `synth_chain` for scheme).
+    let bundle_head_salted = compute_salted_block_id_native(salt, &block_ids[0], 0);
 
     let mut hops = Vec::with_capacity(total_slots);
 
@@ -556,19 +548,17 @@ pub fn synth_chain_n(seed: u64, k_hops: usize, n_bundle: usize) -> SynthChain {
         let computed_block_id = block_merkle_root(&leaves);
         block_ids[i + 1] = computed_block_id;
 
-        let salted_end_block_id = compute_salted_block_id_native(salt, &computed_block_id);
+        // Position-tagged salted endpoints. Global position g == i.
+        let salted_start_block_id =
+            compute_salted_block_id_native(salt, &block_ids[i], i as u64);
+        let salted_end_block_id =
+            compute_salted_block_id_native(salt, &computed_block_id, (i + 1) as u64);
 
         let block_merkle_leaf_proof_l7 = block_merkle_leaf_proof(&leaves, 7);
         let ref_index = 1usize;
         assert_ref_index_is_cross_thread(ref_index);
         let (proof_block_ref_inner_path, refs_tree_depth) =
             proof_block_ref_inner_path_native(&proof_block_refs, ref_index);
-
-        let salted_start_block_id = if i == 0 {
-            bundle_head_salted
-        } else {
-            compute_salted_block_id_native(salt, &block_ids[i])
-        };
 
         hops.push(HopWitness {
             is_active: true,
@@ -586,32 +576,32 @@ pub fn synth_chain_n(seed: u64, k_hops: usize, n_bundle: usize) -> SynthChain {
         });
     }
 
-    let final_terminal_salted = if k_hops == 0 {
-        bundle_head_salted
-    } else {
-        hops[k_hops - 1].salted_end_block_id
-    };
+    let pad_bid = block_ids[k_hops];
 
     while hops.len() < total_slots {
+        let g = hops.len();
+        let inactive_proof_refs: Vec<[u8; 32]> =
+            vec![SLOT0_PARENT_PLACEHOLDER, pad_bid];
+        let (inactive_inner_path, inactive_depth) =
+            proof_block_ref_inner_path_native(&inactive_proof_refs, 1);
         let zero_leaves = [[0u8; 32]; BLOCK_MERKLE_LEAF_COUNT];
         let zero_l7_proof = [[0u8; 32]; BLOCK_MERKLE_DEPTH];
-        let zero_inner_path = [[0u8; 32]; MAX_PROOF_BLOCK_REFS_DEPTH];
         hops.push(HopWitness {
             is_active: false,
             block: BlockWitness {
-                block_id: [0u8; 32],
+                block_id: pad_bid,
                 block_merkle_tree_leaves: zero_leaves,
-                proof_block_refs: Vec::new(),
+                proof_block_refs: inactive_proof_refs,
             },
             block_merkle_leaf_proof_l7: zero_l7_proof,
-            // Padding still needs `ref_index != 0` (unconditional constraint).
             ref_index: 1,
-            refs_tree_depth: 1,
-            proof_block_ref_inner_path: zero_inner_path,
-            salted_start_block_id: final_terminal_salted,
-            salted_end_block_id: final_terminal_salted,
+            refs_tree_depth: inactive_depth,
+            proof_block_ref_inner_path: inactive_inner_path,
+            salted_start_block_id: compute_salted_block_id_native(salt, &pad_bid, g as u64),
+            salted_end_block_id: compute_salted_block_id_native(salt, &pad_bid, (g + 1) as u64),
         });
     }
+    let _ = bundle_head_salted; // referenced for spec-comment discoverability
 
     SynthChain {
         sk_u,
@@ -651,6 +641,7 @@ pub fn split_into_bundle_snarks_n(
         snarks.push(MultiHopProofWitness {
             hops: arr,
             salt_commitment: chain.salt_commitment,
+            bundle_index: snark_idx as u32,
         });
     }
     snarks
@@ -672,6 +663,7 @@ pub fn split_into_bundle_snarks(chain: &SynthChain) -> [MultiHopProofWitness; N_
         snarks.push(MultiHopProofWitness {
             hops: arr,
             salt_commitment: chain.salt_commitment,
+            bundle_index: snark_idx as u32,
         });
     }
     snarks
@@ -686,15 +678,32 @@ mod synth_chain_tests {
         verify_block_merkle_leaf_proof, verify_proof_block_ref_inner_path, ref_leaf_hash_native,
     };
 
-    /// k_hops=0: degenerate inactive chain. All endpoints equal head.
+    /// k_hops=0: degenerate inactive chain. BC-005 position tags:
+    /// endpoints are Poseidon at consecutive positions (not equal to head).
+    /// The bundle_head_salted is Poseidon at position 0.
     #[test]
     fn synth_chain_k0_all_inactive() {
         let c = synth_chain(0xC0FFEE, 0);
         assert_eq!(c.hops.len(), N_BUNDLE * H_HOPS_PER_PROOF);
+        // Every hop must be inactive.
         for h in &c.hops {
             assert!(!h.is_active);
-            assert_eq!(h.salted_start_block_id, c.bundle_head_salted);
-            assert_eq!(h.salted_end_block_id, c.bundle_head_salted);
+        }
+        // Head salted equals hop[0].start (position 0).
+        assert_eq!(c.hops[0].salted_start_block_id, c.bundle_head_salted);
+        // Position-tagged endpoints differ across hops.
+        for i in 0..N_BUNDLE * H_HOPS_PER_PROOF - 1 {
+            assert_eq!(
+                c.hops[i].salted_end_block_id,
+                c.hops[i + 1].salted_start_block_id,
+                "continuity broken between hop {i} and hop {}",
+                i + 1
+            );
+            assert_ne!(
+                c.hops[i].salted_start_block_id,
+                c.hops[i].salted_end_block_id,
+                "hop {i} start/end must differ (position tags 0 vs 1)"
+            );
         }
     }
 
@@ -748,12 +757,10 @@ mod synth_chain_tests {
             );
         }
 
-        // Inactive hops sit at terminal.
-        let terminal = c.hops[4].salted_end_block_id;
+        // Inactive hops chain from the terminal block_id via position tags
+        // (start[g] == end[g-1] enforced above); no longer a single value.
         for i in 5..N_BUNDLE * H_HOPS_PER_PROOF {
             assert!(!c.hops[i].is_active);
-            assert_eq!(c.hops[i].salted_start_block_id, terminal);
-            assert_eq!(c.hops[i].salted_end_block_id, terminal);
         }
     }
 
