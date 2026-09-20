@@ -4,8 +4,6 @@ Target embodiment: `dexdo-halo2-kit/dex-halo2-circuit` (DEX voucher circuit).
 
 This document describes the cryptographic mechanism for proving, in zero knowledge, that a voucher-generation event in **any thread t** of Acki Nacki can be anchored, via cross-thread chaining when `t ≠ 0`, against a layer-N batch hash retained in thread 0's window of `GlobalHistoricalData`, and how the DEX circuit embodies that mechanism.
 
-The canonical branch for this design is `poseidon_dex` on `acki-nacki`. All field names and helpers below refer to that branch.
-
 ## 0. Terminology
 
 | Term | Meaning |
@@ -142,7 +140,7 @@ leaf[i] = Poseidon( tag_i ‖ proof_block_refs[i] )    (32 bytes out)
 
 `proof_block_refs[0] = parent_block_id` (same thread by producer construction — see below); `proof_block_refs[1..1+n] = refs` (cross-thread). The tree is padded with literal `[0u8; 32]` leaves to the next power of two and folded with `Poseidon(left_32B ‖ right_32B)`. Depth ≤ 8 (`MAX_PROOF_BLOCK_REFS = 256`).
 
-**Slot-0 (`parent_block_id`) is same-thread by construction.** In `poseidon_dex`, the producer for thread `t` selects its parent via `select_thread_last_finalized_block(&thread_id)` and sets the child's block height as `parent_height.next(&thread_id)` (`node/src/block/producer/producer_service/block_producer.rs:534,576,992`). The parent is therefore always in thread `t` itself. The only exception is the *spawn edge* — the first block of a newly-spawned thread T′ has as its parent the split block on the parent thread (`is_spawning_block(...)` at the same file, and `preprocessing.rs:162-190`). Spawn edges are irrelevant to voucher proofs: a producer that wants to witness such an edge for cross-thread anchoring can always add it to `refs`. **Consequence for §5:** the DEX circuit's L7 walk only opens `refs[0..n]` (slots `1..n`), never slot 0.
+**Slot-0 (`parent_block_id`) is same-thread by construction.** The producer for thread `t` selects its parent via `select_thread_last_finalized_block(&thread_id)` and sets the child's block height as `parent_height.next(&thread_id)` (`node/src/block/producer/producer_service/block_producer.rs:534,576,992`). The parent is therefore always in thread `t` itself. The only exception is the *spawn edge* — the first block of a newly-spawned thread T′ has as its parent the split block on the parent thread (`is_spawning_block(...)` at the same file, and `preprocessing.rs:162-190`). Spawn edges are irrelevant to voucher proofs: a producer that wants to witness such an edge for cross-thread anchoring can always add it to `refs`. **Consequence for §5:** the DEX circuit's L7 walk only opens `refs[0..n]` (slots `1..n`), never slot 0.
 
 L7 is populated for **every** block and provides the outgoing edges the L7 walk (§5) follows.
 
@@ -284,7 +282,7 @@ with the gluing constraint `hop_i.next_block_id == hop_{i+1}.current_block_id` f
 
 **Production bound: `L_MAX = 300`** (specified by the node team as the cross-thread walk-length ceiling under the current threading design). The current design point of `L_MAX = 20` used in the phone-budget sizing of §7 is a **temporary** working target for early prototyping; the multi-proof composition of §7 scales `N_BUNDLE = ceil(L_MAX / H)` linearly with `L_MAX`, so raising it to 300 grows the bundle to `N_BUNDLE = 60` snarks (already stress-tested — see `test_bundle_stress_l300.rs`) without changing the per-snark K.
 
-Reference off-chain implementation: `helpers/proof_helper/src/gql_proof.rs` on `poseidon_dex`. In-circuit hop logic mirrors `verify_proof_block_ref_proof` (Poseidon inner) + `verify_block_merkle_leaf_proof` (SHA outer, updated to depth 4).
+Reference off-chain implementation: `helpers/proof_helper/src/gql_proof.rs`. In-circuit hop logic mirrors `verify_proof_block_ref_proof` (Poseidon inner) + `verify_block_merkle_leaf_proof` (SHA outer, updated to depth 4).
 
 ---
 
@@ -690,11 +688,11 @@ Must be answered with the team before circuit-side implementation begins.
 3. **Ext-out-messages leaf format.** Raw `event_hash` (32 B) vs tagged leaf (e.g. `Poseidon(tag ‖ event_hash)` analogous to L7). Impacts leaf-computation gadget in `DexFinalProof`.
 4. **L9..L15 padding value.** Assumed `[0u8; 32]`. If the producer's widened `block_merkle_leaves()` uses non-zero constants (e.g. `SHA-256(b"padding")` or a version-tagged constant), the circuit's hard-coded sibling constants (§2.1) must be updated to match.
 5. **Salted-endpoint direction.** `inst[5] = salted_X_start`, `inst[6] = salted_Y_end` (chain head → tail). Confirm the on-chain contract expects this order and not the reverse.
-6. **Real chain-length distribution on the poseidon_dex testnet.** Production ceiling `L_MAX = 300` is set by the node team; measured p50/p99 distributions on real deployment are still open — informs how conservatively to size `N_BUNDLE` vs. batch dispatch cadence.
+6. **Real chain-length distribution on the testnet.** Production ceiling `L_MAX = 300` is set by the node team; measured p50/p99 distributions on real deployment are still open — informs how conservatively to size `N_BUNDLE` vs. batch dispatch cadence.
 7. **L7 walk direction in practice.** Spec assumes hops walk **into the past** (parent + refs both point backward). Confirm this matches canonical L7-walk direction in the multi-thread design.
 8. **Single-thread bundle shape.** Spec mandates that single-thread (t = 0) claims still submit 5 snarks for anonymity uniformity — a ~5× per-claim gas increase over today's single-thread DEX. Confirm this trade-off is acceptable.
 9. **Salt derivation domain.** `salt = Poseidon(DOMAIN_TAG_FR, voucher_secret_seed)`. Confirm `voucher_secret_seed` is collision-resistant and not reused for any non-voucher purpose in existing wallet code.
-10. **Re-merge of history-proof code into mainline.** Circuit work depends on `poseidon_dex`-branch helpers (`compute_block_leaf_hash`, `compute_referenced_blocks_root`, `HistoryBlockData::calculate_root_hash`, `proof_block_refs_root`, `proof_block_ref_proof`, and the widened `block_merkle_leaves()` producing the depth-4 tree). Confirm timeline.
+10. **Re-merge of history-proof code into mainline.** Circuit work depends on helpers (`compute_block_leaf_hash`, `compute_referenced_blocks_root`, `HistoryBlockData::calculate_root_hash`, `proof_block_refs_root`, `proof_block_ref_proof`, and the widened `block_merkle_leaves()` producing the depth-4 tree). Confirm timeline.
 
 
 ---
