@@ -34,11 +34,15 @@ const K: u32 = 17;
 
 fn bundle_circuit_params() -> BaseCircuitParams {
     // Smartphone budget: K ≤ 17 per MULTITHREAD_CIRCUIT_SPEC §8.1.
+    // Column count grew (110 → 200 advice, 8 → 14 lookup-advice) to
+    // absorb the variable-depth L7 fold at MAX_PROOF_BLOCK_REFS_DEPTH = 8
+    // (spec §12.4 rework): every hop pays 8 SHA-256 levels — real ones
+    // plus identity-pair dummies — gated by `refs_tree_depth`.
     BaseCircuitParams {
         k: K as usize,
-        num_advice_per_phase: vec![110],
+        num_advice_per_phase: vec![200],
         num_fixed: 1,
-        num_lookup_advice_per_phase: vec![8],
+        num_lookup_advice_per_phase: vec![14],
         lookup_bits: Some(16),
         num_instance_columns: 1,
     }
@@ -80,6 +84,7 @@ fn hop_to_multi_hop(
         l7: h.block.block_merkle_tree_leaves[7],
         block_merkle_leaf_proof_l7: h.block_merkle_leaf_proof_l7,
         ref_index: h.ref_index,
+        refs_tree_depth: h.refs_tree_depth,
         proof_block_ref_inner_path: h.proof_block_ref_inner_path,
         salted_start_block_id: h.salted_start_block_id,
         salted_end_block_id: h.salted_end_block_id,

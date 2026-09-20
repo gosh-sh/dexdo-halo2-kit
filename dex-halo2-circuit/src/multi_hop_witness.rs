@@ -40,8 +40,10 @@
 //! - `HISTORY_PROOF_WINDOW_SIZE = 128` ← `history-proof/src/lib.rs`
 //! - `REFERENCED_PARENT_BLOCK_TAG` / `REFERENCED_REF_BLOCK_TAG`
 //!   ← `history-proof`
-//! - `MAX_PROOF_BLOCK_REFS = 16` — first-cut testing value;
-//!   production needs 256 (spec §10.1).
+//! - `MAX_PROOF_BLOCK_REFS = 256` — protocol cap (spec §10.1). The L7 tree
+//!   width is variable on the chain side (`leaves.len().next_power_of_two()`),
+//!   so the circuit opens **up to** `MAX_PROOF_BLOCK_REFS_DEPTH = 8` and gates
+//!   the fold with a per-hop `refs_tree_depth: u8` witness (spec §5.2, §12.4).
 
 use halo2_base::halo2_proofs::halo2curves::bn256::Fr;
 use sha2::{Digest, Sha256};
@@ -76,16 +78,17 @@ pub const H_HOPS_PER_PROOF: usize = 5;
 /// MultiHopProof snarks per bundle (spec §6.4 `N_BUNDLE`).
 pub const N_BUNDLE: usize = 4;
 
-/// Max leaves in the L7 inner Poseidon dense merkle tree.
+/// Protocol cap on L7 inner-Poseidon leaves (spec §10.1).
 ///
-/// **First-cut testing value.** Production protocol cap is 256 (spec §10.1);
-/// bumping this only enlarges the L7-inner-path padding.
-///
-/// TODO: bump to 256 for production once cell-budget tuning is done.
-pub const MAX_PROOF_BLOCK_REFS: usize = 16;
+/// The chain-side L7 tree width is variable
+/// (`leaves.len().next_power_of_two()`); this cap only bounds the fixed
+/// padding of the in-circuit inner-path witness. Bump to widen the ceiling
+/// — `MAX_PROOF_BLOCK_REFS_DEPTH` tracks it automatically.
+pub const MAX_PROOF_BLOCK_REFS: usize = 256;
 
 /// `ceil(log2(MAX_PROOF_BLOCK_REFS))` — tracks `MAX_PROOF_BLOCK_REFS`
-/// automatically so bumping the cap requires no second edit here.
+/// automatically. The in-circuit fold walks this many levels and gates each
+/// with `refs_tree_depth: u8` (spec §5.2).
 pub const MAX_PROOF_BLOCK_REFS_DEPTH: usize =
     MAX_PROOF_BLOCK_REFS.next_power_of_two().ilog2() as usize;
 
@@ -103,8 +106,7 @@ pub const REFERENCED_REF_BLOCK_TAG: &[u8] = b"acki-nacki:referenced-block:ref:v1
 ///
 /// Called by `test_helpers::synth_chain*` on every active hop so that
 /// mis-populated witnesses fail loudly *before* the circuit's stricter
-/// in-gate check fires (`ref_index != 0` in `hop_proof.rs` /
-/// `multi_hop_proof.rs`).
+/// in-gate check fires (`ref_index != 0` in `multi_hop_proof.rs`).
 pub fn assert_ref_index_is_cross_thread(ref_index: usize) {
     assert!(
         ref_index >= 1,
@@ -117,6 +119,22 @@ pub fn assert_ref_index_is_cross_thread(ref_index: usize) {
         ref_index,
         MAX_PROOF_BLOCK_REFS,
     );
+}
+
+/// Native: `refs_tree_depth` for a variable-width L7 tree. Matches the
+/// chain's `dense_merkle_tree` width convention
+/// (`width = leaves.len().next_power_of_two()`, `depth = log2(width)`).
+///
+/// - `refs.len() == 0` ⇒ 0 (edge case, empty root).
+/// - `refs.len() == 1` ⇒ 0 (leaf == root, no siblings).
+/// - `refs.len() == 2` ⇒ 1.
+/// - `refs.len() == 3..=4` ⇒ 2. Etc.
+///
+/// Result is always ≤ `MAX_PROOF_BLOCK_REFS_DEPTH` (guaranteed by the
+/// `refs.len() ≤ MAX_PROOF_BLOCK_REFS` invariant enforced by native builders).
+pub fn refs_tree_depth_native(refs: &[[u8; 32]]) -> u8 {
+    let n = refs.len().max(1);
+    n.next_power_of_two().ilog2() as u8
 }
 
 // ---------------------------------------------------------------------------
@@ -173,8 +191,18 @@ pub struct HopWitness {
     /// inner-ref Merkle tree is general.
     pub ref_index: usize,
 
+    /// Real depth of the L7 dense-merkle tree for this hop, matching the
+    /// chain's variable-width convention
+    /// (`proof_block_refs.len().next_power_of_two().ilog2()`). Range
+    /// `[0, MAX_PROOF_BLOCK_REFS_DEPTH]`. The circuit walks
+    /// `MAX_PROOF_BLOCK_REFS_DEPTH` levels but gates each with a live-flag
+    /// derived from this witness (spec §5.2).
+    pub refs_tree_depth: u8,
+
     /// Dense-merkle siblings for opening `proof_block_refs[ref_index]`
-    /// against L7. Always `MAX_PROOF_BLOCK_REFS_DEPTH` siblings.
+    /// against L7, padded to `MAX_PROOF_BLOCK_REFS_DEPTH`. Only the first
+    /// `refs_tree_depth` entries are real; the tail is zero-padding that the
+    /// in-circuit fold ignores via the live-flag gate.
     pub proof_block_ref_inner_path: [[u8; 32]; MAX_PROOF_BLOCK_REFS_DEPTH],
 
     /// The hop's start endpoint as the verifier sees it:
@@ -400,9 +428,14 @@ pub fn ref_inner_combine_native(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
 }
 
 /// Native: L7 root computation matching production
-/// `compute_referenced_blocks_root` byte-for-byte. Pads the input to
-/// `MAX_PROOF_BLOCK_REFS` with an inactive padding leaf
-/// (`fr_to_bytes(Fr::from(0))`).
+/// `compute_referenced_blocks_root` byte-for-byte. Uses the chain's
+/// variable-width convention (`width = leaves.len().next_power_of_two()`)
+/// padded with the inactive padding leaf `fr_to_bytes(Fr::from(0))`, so the
+/// result equals the chain's dense-merkle root exactly.
+///
+/// Edge cases:
+/// - `refs.len() == 0` ⇒ single zero leaf treated as the root.
+/// - `refs.len() == 1` ⇒ the single ref-leaf-hash IS the root (depth 0).
 pub fn proof_block_refs_root_native(proof_block_refs: &[[u8; 32]]) -> [u8; 32] {
     assert!(
         proof_block_refs.len() <= MAX_PROOF_BLOCK_REFS,
@@ -411,7 +444,8 @@ pub fn proof_block_refs_root_native(proof_block_refs: &[[u8; 32]]) -> [u8; 32] {
         MAX_PROOF_BLOCK_REFS
     );
 
-    let mut layer: Vec<[u8; 32]> = (0..MAX_PROOF_BLOCK_REFS)
+    let width = proof_block_refs.len().max(1).next_power_of_two();
+    let mut layer: Vec<[u8; 32]> = (0..width)
         .map(|i| {
             if i < proof_block_refs.len() {
                 ref_leaf_hash_native(i, &proof_block_refs[i])
@@ -431,12 +465,22 @@ pub fn proof_block_refs_root_native(proof_block_refs: &[[u8; 32]]) -> [u8; 32] {
     layer[0]
 }
 
-/// Native: opening of `proof_block_refs[ref_index]` against the L7 root.
-/// Returns `MAX_PROOF_BLOCK_REFS_DEPTH` siblings.
+/// Native: opening of `proof_block_refs[ref_index]` against the L7 root, with
+/// the sibling path padded to `MAX_PROOF_BLOCK_REFS_DEPTH`. Only the first
+/// `refs_tree_depth_native(proof_block_refs)` siblings are real; the tail is
+/// zero-padding that the in-circuit gated fold ignores.
+///
+/// Returns `(padded_siblings, real_depth)` so callers can populate both the
+/// `proof_block_ref_inner_path` and `refs_tree_depth` witness fields in one
+/// call.
 pub fn proof_block_ref_inner_path_native(
     proof_block_refs: &[[u8; 32]],
     ref_index: usize,
-) -> [[u8; 32]; MAX_PROOF_BLOCK_REFS_DEPTH] {
+) -> ([[u8; 32]; MAX_PROOF_BLOCK_REFS_DEPTH], u8) {
+    assert!(
+        !proof_block_refs.is_empty(),
+        "proof_block_refs must be non-empty"
+    );
     assert!(
         ref_index < proof_block_refs.len(),
         "ref_index {ref_index} ≥ proof_block_refs.len() {}",
@@ -449,7 +493,10 @@ pub fn proof_block_ref_inner_path_native(
         MAX_PROOF_BLOCK_REFS
     );
 
-    let mut layer: Vec<[u8; 32]> = (0..MAX_PROOF_BLOCK_REFS)
+    let depth = refs_tree_depth_native(proof_block_refs) as usize;
+    let width = 1usize << depth;
+
+    let mut layer: Vec<[u8; 32]> = (0..width)
         .map(|i| {
             if i < proof_block_refs.len() {
                 ref_leaf_hash_native(i, &proof_block_refs[i])
@@ -461,7 +508,7 @@ pub fn proof_block_ref_inner_path_native(
 
     let mut idx = ref_index;
     let mut siblings = [[0u8; 32]; MAX_PROOF_BLOCK_REFS_DEPTH];
-    for d in 0..MAX_PROOF_BLOCK_REFS_DEPTH {
+    for d in 0..depth {
         let sib_idx = idx ^ 1;
         siblings[d] = layer[sib_idx];
         let mut next = Vec::with_capacity(layer.len() / 2);
@@ -471,19 +518,27 @@ pub fn proof_block_ref_inner_path_native(
         layer = next;
         idx /= 2;
     }
-    siblings
+    // Levels `[depth, MAX_PROOF_BLOCK_REFS_DEPTH)` stay zeroed — ignored
+    // in-circuit via the live-flag gate.
+    (siblings, depth as u8)
 }
 
-/// Verify a `proof_block_ref_inner_path_native` opening.
+/// Verify a `proof_block_ref_inner_path_native` opening. `refs_tree_depth`
+/// is the real depth; padding levels beyond it are ignored.
 pub fn verify_proof_block_ref_inner_path(
     root: &[u8; 32],
     leaf: &[u8; 32],
     ref_index: usize,
     siblings: &[[u8; 32]; MAX_PROOF_BLOCK_REFS_DEPTH],
+    refs_tree_depth: u8,
 ) -> bool {
+    let depth = refs_tree_depth as usize;
+    if depth > MAX_PROOF_BLOCK_REFS_DEPTH {
+        return false;
+    }
     let mut cur = *leaf;
     let mut idx = ref_index;
-    for sib in siblings {
+    for sib in siblings.iter().take(depth) {
         cur = if idx % 2 == 0 {
             ref_inner_combine_native(&cur, sib)
         } else {
@@ -537,16 +592,49 @@ mod tests {
 
     #[test]
     fn proof_block_refs_root_and_inner_path_roundtrip() {
-        let refs: Vec<[u8; 32]> = (0..5).map(|i| [i as u8 + 100; 32]).collect();
-        let root = proof_block_refs_root_native(&refs);
-        for (i, r) in refs.iter().enumerate() {
-            let leaf = ref_leaf_hash_native(i, r);
-            let siblings = proof_block_ref_inner_path_native(&refs, i);
+        // Exercise widths across the spectrum:
+        //   n = 1 ⇒ depth 0 (leaf == root)
+        //   n = 2 ⇒ depth 1
+        //   n = 5 ⇒ width 8, depth 3 (padded)
+        //   n = 16 ⇒ width 16, depth 4
+        //   n = 200 ⇒ width 256, depth 8 (max)
+        for n in [1usize, 2, 5, 16, 200] {
+            let refs: Vec<[u8; 32]> = (0..n)
+                .map(|i| {
+                    let mut r = [0u8; 32];
+                    r[0..8].copy_from_slice(&(i as u64).to_le_bytes());
+                    r
+                })
+                .collect();
+            let root = proof_block_refs_root_native(&refs);
+            let depth = refs_tree_depth_native(&refs);
             assert!(
-                verify_proof_block_ref_inner_path(&root, &leaf, i, &siblings),
-                "ref {i} inner-path should verify"
+                (depth as usize) <= MAX_PROOF_BLOCK_REFS_DEPTH,
+                "depth {depth} must be ≤ {MAX_PROOF_BLOCK_REFS_DEPTH}"
             );
+            for (i, r) in refs.iter().enumerate() {
+                let leaf = ref_leaf_hash_native(i, r);
+                let (siblings, d) = proof_block_ref_inner_path_native(&refs, i);
+                assert_eq!(d, depth, "inner-path depth must match root depth");
+                assert!(
+                    verify_proof_block_ref_inner_path(&root, &leaf, i, &siblings, d),
+                    "ref {i} inner-path should verify (n = {n})"
+                );
+            }
         }
+    }
+
+    #[test]
+    fn refs_tree_depth_native_matches_next_power_of_two() {
+        assert_eq!(refs_tree_depth_native(&[]), 0);
+        assert_eq!(refs_tree_depth_native(&[[0u8; 32]; 1]), 0);
+        assert_eq!(refs_tree_depth_native(&[[0u8; 32]; 2]), 1);
+        assert_eq!(refs_tree_depth_native(&[[0u8; 32]; 3]), 2);
+        assert_eq!(refs_tree_depth_native(&[[0u8; 32]; 4]), 2);
+        assert_eq!(refs_tree_depth_native(&[[0u8; 32]; 5]), 3);
+        assert_eq!(refs_tree_depth_native(&[[0u8; 32]; 8]), 3);
+        assert_eq!(refs_tree_depth_native(&[[0u8; 32]; 9]), 4);
+        assert_eq!(refs_tree_depth_native(&[[0u8; 32]; 256]), 8);
     }
 
     #[test]

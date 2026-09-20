@@ -7,10 +7,6 @@
 //! hop's `salted_end_block_id`, and the bundle's `salt_commitment` as
 //! public instances.
 //!
-//! For a standalone single-hop example circuit (not used here, but with
-//! the same per-hop constraint shape), see
-//! [`crate::hop_proof::HopProofCircuit`].
-//!
 //! ## Public instance layout (3 Fr — `MULTI_HOP_PUBLIC_LEN`)
 //!
 //! | idx | name | derivation |
@@ -26,8 +22,8 @@
 //!   salted-endpoint equality enforcement and instead propagate the bundle's
 //!   terminal salted value.
 //! - `ref_block_id`, `block_id`, `l7`, `block_merkle_leaf_proof_l7`,
-//!   `ref_index`, `proof_block_ref_inner_path`: same shape as
-//!   [`crate::hop_proof::HopProofWitness`]. `ref_index` is a private
+//!   `ref_index`, `proof_block_ref_inner_path`: per-hop reference-tree
+//!   opening data. `ref_index` is a private
 //!   per-hop witness in `1..MAX_PROOF_BLOCK_REFS` selecting which slot of
 //!   the on-chain `proof_block_refs` list holds `ref_block_id`. Slot 0
 //!   (parent) is same-thread by producer construction (spec §2.3) and
@@ -48,12 +44,15 @@
 //! Per hop:
 //! - `is_active` is range-constrained to `{0, 1}` via `gate.assert_bit`.
 //! - **Ref-tree** — `ref_leaf = Poseidon([c0, c1, c2])` (byte-flat chunks of
-//!   `REFERENCED_REF_BLOCK_TAG (34 B) ‖ ref_block_id`, see
-//!   [`crate::hop_proof`]) is walked through
-//!   `dense_merkle_root_circuit` to produce `computed_l7_fr`. The internal
-//!   range checks and chunk-link constraints inside the walk are
-//!   unconditional decomposition constraints. Only the final equality
-//!   `computed_l7_fr == l7_fr` is gated:
+//!   `REFERENCED_REF_BLOCK_TAG (34 B) ‖ ref_block_id`) is walked through
+//!   `dense_merkle_root_circuit_padded` to produce `computed_l7_fr`. The walk
+//!   is always `MAX_PROOF_BLOCK_REFS_DEPTH` levels wide; per-hop
+//!   `refs_tree_depth: u8` (spec §5.2 & §12.4) gates each level with
+//!   `gate.select`, so the effective fold covers the chain's variable-width
+//!   L7 tree (`width = proof_block_refs.len().next_power_of_two()`) without
+//!   requiring a fixed-shape protocol change. The internal range checks and
+//!   chunk-link constraints inside the walk are unconditional decomposition
+//!   constraints. Only the final equality `computed_l7_fr == l7_fr` is gated:
 //!   `(computed_l7_fr - l7_fr) * is_active == 0`.
 //! - **SHA-256** — three `Sha256Chip::digest_bytes` calls open L7 to the
 //!   target `block_id` at leaf index 7. Byte equality is gated:
@@ -75,24 +74,26 @@
 //!
 //! ## Open scope items
 //!
-//! - **`MAX_PROOF_BLOCK_REFS = 16`** — first-cut testing value; production
-//!   needs 256 (spec §10.1). Bumping only enlarges the L7-inner-path padding.
+//! - **`MAX_PROOF_BLOCK_REFS = 256`** matches the protocol cap (spec §10.1);
+//!   real chain widths are typically 1..16, so the gated fold spends most of
+//!   its 8 levels on inactive padding. Further tightening is a K-budget
+//!   tradeoff, not a soundness question.
 
 use gosh_dense_balanced_tree::{
-    bytes_to_fr, dense_merkle_root_circuit, fr_to_bytes, preprocess_dense_proof_padded, R_F, R_P,
-    RATE, T,
+    bytes_to_fr, dense_merkle_root_circuit_padded, fr_to_bytes, preprocess_dense_proof_padded,
+    R_F, R_P, RATE, T,
 };
 use gosh_sha256_chip::Sha256Chip;
 use halo2_base::gates::circuit::builder::BaseCircuitBuilder;
 use halo2_base::gates::circuit::{BaseCircuitParams, BaseConfig};
 use halo2_base::gates::flex_gate::MultiPhaseThreadBreakPoints;
-use halo2_base::gates::{GateInstructions, RangeInstructions};
+use halo2_base::gates::{GateInstructions, RangeChip, RangeInstructions};
 use halo2_base::halo2_proofs::circuit::{Layouter, SimpleFloorPlanner};
 use halo2_base::halo2_proofs::halo2curves::bn256::Fr;
 use halo2_base::halo2_proofs::halo2curves::ff::Field as _;
 use halo2_base::halo2_proofs::plonk::{Circuit, ConstraintSystem, Error};
 use halo2_base::poseidon::hasher::{spec::OptimizedPoseidonSpec, PoseidonHasher};
-use halo2_base::{AssignedValue, QuantumCell};
+use halo2_base::{AssignedValue, Context, QuantumCell};
 use std::cell::RefCell;
 
 use crate::boc_helper::SHA256_HASH_LEN;
@@ -125,6 +126,12 @@ pub struct MultiHopWitness {
     /// `ref_index == 0` is rejected in-circuit. Drives the orientation bits
     /// inside `dense_merkle_root_circuit`.
     pub ref_index: usize,
+    /// Real depth of this hop's L7 dense-merkle tree, matching the chain's
+    /// variable-width convention (`proof_block_refs.len().next_power_of_two()
+    /// .ilog2()`). Range `[0, MAX_PROOF_BLOCK_REFS_DEPTH]`. Drives the
+    /// per-level `gate.select` inside `dense_merkle_root_circuit_padded`
+    /// (spec §5.2).
+    pub refs_tree_depth: u8,
     pub proof_block_ref_inner_path: [[u8; 32]; MAX_PROOF_BLOCK_REFS_DEPTH],
     pub salted_start_block_id: Fr,
     pub salted_end_block_id: Fr,
@@ -178,6 +185,334 @@ impl MultiHopProofCircuit {
     }
 }
 
+// ============================================================================
+// Per-hop gadgets
+// ----------------------------------------------------------------------------
+// The three functions below (`prove_hop_ref_tree_opening`,
+// `prove_hop_block_merkle_sha256`, `prove_hop_salted_endpoints`) split the
+// per-hop constraint body into named, spec-anchored units. They are pure
+// gadgets (no columns of their own) — they take the shared
+// `BaseCircuitBuilder` context and layer constraints onto it, exactly as
+// the original inline body did. The outer `synthesize` loop is then a
+// straightforward composition:
+//
+//     for hop in &self.hops {
+//         let is_active   = load_is_active(ctx, gate, hop);
+//         let not_active  = one - is_active;
+//         let (l7_bytes, ref_block_id_bytes) =
+//             prove_hop_ref_tree_opening(...);
+//         let block_id_bytes = load_block_id_bytes(ctx, hop);
+//         prove_hop_block_merkle_sha256(..., l7_bytes, &block_id_bytes, ...);
+//         let (start_w, end_w) = prove_hop_salted_endpoints(...);
+//         hop_endpoints.push((start_w, end_w));
+//     }
+//
+// Constraints are byte-for-byte equivalent to the pre-refactor inline
+// body; no gate widths, poseidon domains, or gating polynomials changed.
+// ============================================================================
+
+/// Prove one hop's variable-depth L7 ref-tree opening.
+///
+/// Layers the following constraints onto `ctx`:
+/// * `ref_index ∈ (0, 2^MAX_PROOF_BLOCK_REFS_DEPTH)` — unconditional.
+///   Slot 0 (same-thread parent, spec §2.3/§5.1) is excluded.
+/// * `refs_tree_depth ∈ [0, 16)` — unconditional 4-bit range check (values
+///   in `[8, 16)` collapse to "all levels active" via the library's
+///   internal `is_less_than`, so no cheating window).
+/// * `ref_leaf_fr = Poseidon([c0, c1, c2])` derived from the byte-flat
+///   `REFERENCED_REF_BLOCK_TAG (34 B) ‖ ref_block_id` layout
+///   (chunks 31+31+4).
+/// * `computed_l7_fr = dense_merkle_root_circuit_padded(...)` — 8-level
+///   walk, gated per-level by `refs_tree_depth` (spec §5.2, §12.4).
+/// * `(computed_l7_fr - l7_fr) · is_active == 0` — gated equality.
+///
+/// Returns the byte-cell views the caller needs downstream:
+/// * `l7_bytes` — 32 witness cells (consumed by the block-merkle
+///   SHA-256 walk).
+/// * `ref_block_id_bytes` — 32 range-checked (8-bit) cells (consumed by
+///   the salted-endpoint gadget).
+fn prove_hop_ref_tree_opening(
+    ctx: &mut Context<Fr>,
+    range: &RangeChip<Fr>,
+    hasher: &PoseidonHasher<Fr, T, RATE>,
+    hop: &MultiHopWitness,
+    is_active: AssignedValue<Fr>,
+    ref_leaf_c0_const: AssignedValue<Fr>,
+    ref_leaf_c1_tag_const: AssignedValue<Fr>,
+    pow_256_3: AssignedValue<Fr>,
+    powers_le_32: &[QuantumCell<Fr>],
+) -> (Vec<AssignedValue<Fr>>, Vec<AssignedValue<Fr>>) {
+    let gate = range.gate();
+
+    // ref_index witness (1..MAX_PROOF_BLOCK_REFS).
+    let ref_index_assigned = ctx.load_witness(Fr::from(hop.ref_index as u64));
+    range.range_check(ctx, ref_index_assigned, MAX_PROOF_BLOCK_REFS_DEPTH);
+    {
+        let is_zero_ref_index = gate.is_zero(ctx, ref_index_assigned);
+        gate.assert_is_const(ctx, &is_zero_ref_index, &Fr::zero());
+    }
+
+    // L7 bytes + LE Fr packing.
+    let l7_bytes: Vec<AssignedValue<Fr>> = hop
+        .l7
+        .iter()
+        .map(|&b| ctx.load_witness(Fr::from(b as u64)))
+        .collect();
+    let l7_fr = {
+        let cells: Vec<QuantumCell<Fr>> = l7_bytes
+            .iter()
+            .map(|c| QuantumCell::Existing(*c))
+            .collect();
+        gate.inner_product(ctx, cells, powers_le_32[..32].iter().cloned())
+    };
+
+    // ref_block_id as 32 byte cells (range-checked 8 bits each).
+    let ref_block_id_bytes: Vec<AssignedValue<Fr>> = hop
+        .ref_block_id
+        .iter()
+        .map(|&b| ctx.load_witness(Fr::from(b as u64)))
+        .collect();
+    for cell in &ref_block_id_bytes {
+        range.range_check(ctx, *cell, 8);
+    }
+
+    // Byte-flat ref-leaf chunks — ref-tag layout only (34 B tag): 31+31+4.
+    //   c0 = tag_r_hi (31 B)               ← ref_leaf_c0_const
+    //   c1 = tag_r_lo (3 B) + ref_block_id_lo28 · 256^3
+    //   c2 = LE(ref_block_id[28..32])
+    let ref_block_id_lo28 = {
+        let cells: Vec<QuantumCell<Fr>> = ref_block_id_bytes[0..28]
+            .iter()
+            .map(|c| QuantumCell::Existing(*c))
+            .collect();
+        gate.inner_product(ctx, cells, powers_le_32[..28].iter().cloned())
+    };
+    let ref_block_id_lo28_shifted = gate.mul(
+        ctx,
+        QuantumCell::Existing(ref_block_id_lo28),
+        QuantumCell::Existing(pow_256_3),
+    );
+    let ref_leaf_c1 = gate.add(
+        ctx,
+        QuantumCell::Existing(ref_leaf_c1_tag_const),
+        QuantumCell::Existing(ref_block_id_lo28_shifted),
+    );
+    let ref_leaf_c2 = {
+        let cells: Vec<QuantumCell<Fr>> = ref_block_id_bytes[28..32]
+            .iter()
+            .map(|c| QuantumCell::Existing(*c))
+            .collect();
+        gate.inner_product(ctx, cells, powers_le_32[..4].iter().cloned())
+    };
+    let ref_leaf_fr = hasher.hash_fix_len_array(
+        ctx,
+        gate,
+        &[ref_leaf_c0_const, ref_leaf_c1, ref_leaf_c2],
+    );
+
+    // Byte-flat ref-tree walk — gated variable-depth fold.
+    //
+    // The chain's L7 tree width is `proof_block_refs.len().next_power_of_two()`
+    // (spec §2.3, §5.2). We pass only the first `refs_tree_depth` real
+    // siblings to the preprocessor; `preprocess_dense_proof_padded` synthesizes
+    // identity-pair dummies for the remaining `MAX_PROOF_BLOCK_REFS_DEPTH -
+    // refs_tree_depth` levels. In-circuit `dense_merkle_root_circuit_padded`
+    // masks inactive levels via `gate.select` keyed on
+    // `num_active_levels = refs_tree_depth`, so the returned `computed_l7_fr`
+    // equals the chain's variable-width root.
+    //
+    // Internal range checks + chunk-link constraints inside the walk stay
+    // unconditional decomposition constraints (they hold on both real and
+    // dummy levels). Only the final equality against `l7_fr` is gated by
+    // `is_active`.
+    let depth = hop.refs_tree_depth as usize;
+    debug_assert!(
+        depth <= MAX_PROOF_BLOCK_REFS_DEPTH,
+        "refs_tree_depth {} > MAX_PROOF_BLOCK_REFS_DEPTH {}",
+        depth,
+        MAX_PROOF_BLOCK_REFS_DEPTH,
+    );
+    let ref_leaf_native_bytes = ref_leaf_hash_native(hop.ref_index, &hop.ref_block_id);
+    let ref_proof = preprocess_dense_proof_padded(
+        ref_leaf_native_bytes,
+        &hop.proof_block_ref_inner_path[..depth],
+        hop.ref_index,
+        MAX_PROOF_BLOCK_REFS_DEPTH,
+    );
+    let refs_tree_depth_assigned = ctx.load_witness(Fr::from(hop.refs_tree_depth as u64));
+    range.range_check(ctx, refs_tree_depth_assigned, 4);
+    let computed_l7_fr = dense_merkle_root_circuit_padded(
+        ctx,
+        range,
+        hasher,
+        &ref_proof,
+        ref_leaf_fr,
+        refs_tree_depth_assigned,
+    );
+    // Gated ref-tree root equality: (computed_l7_fr - l7_fr) * is_active == 0.
+    {
+        let diff = gate.sub(
+            ctx,
+            QuantumCell::Existing(computed_l7_fr),
+            QuantumCell::Existing(l7_fr),
+        );
+        let gated = gate.mul(
+            ctx,
+            QuantumCell::Existing(diff),
+            QuantumCell::Existing(is_active),
+        );
+        gate.assert_is_const(ctx, &gated, &Fr::zero());
+    }
+
+    (l7_bytes, ref_block_id_bytes)
+}
+
+/// Prove one hop's L7 → block_id SHA-256 walk (spec §5.3).
+///
+/// Runs `BLOCK_MERKLE_DEPTH` levels of SHA-256 starting at leaf index 7.
+/// For leaf 7 in a 16-leaf depth-4 tree the successive node indices are
+/// 7, 3, 1, 0 — so the sibling sits on the LEFT for the first
+/// `BLOCK_MERKLE_DEPTH - 1` levels and on the RIGHT for the top level.
+/// Since the leaf index is fixed, orientation is compile-time constant
+/// per level.
+///
+/// Enforces `(cur_bytes[i] - block_id_bytes[i]) · is_active == 0` for
+/// all 32 output bytes. Sibling bytes are unconstrained witnesses in the
+/// tail levels; SHA-256's internal range checks + the final gated equality
+/// against the caller-provided `block_id_bytes` (transitively 8-bit via the
+/// SHA-256 output chain) close the constraint.
+fn prove_hop_block_merkle_sha256(
+    ctx: &mut Context<Fr>,
+    sha256_chip: &Sha256Chip<Fr>,
+    gate: &impl GateInstructions<Fr>,
+    l7_bytes: Vec<AssignedValue<Fr>>,
+    block_id_bytes: &[AssignedValue<Fr>],
+    block_merkle_leaf_proof_l7: &[[u8; 32]; BLOCK_MERKLE_DEPTH],
+    is_active: AssignedValue<Fr>,
+) {
+    let mut cur_bytes = l7_bytes;
+    for (level, sib_bytes) in block_merkle_leaf_proof_l7.iter().enumerate() {
+        let sib_cells: Vec<AssignedValue<Fr>> = sib_bytes
+            .iter()
+            .map(|&b| ctx.load_witness(Fr::from(b as u64)))
+            .collect();
+        let mut concat: Vec<AssignedValue<Fr>> = Vec::with_capacity(64);
+        // node_index at this level for leaf 7: 7 >> level.
+        // Even → cur on left (cur ‖ sib); odd → cur on right (sib ‖ cur).
+        let cur_on_right = ((7usize >> level) & 1) == 1;
+        if cur_on_right {
+            concat.extend_from_slice(&sib_cells);
+            concat.extend_from_slice(&cur_bytes);
+        } else {
+            concat.extend_from_slice(&cur_bytes);
+            concat.extend_from_slice(&sib_cells);
+        }
+        let next = sha256_chip.digest_bytes(ctx, &concat);
+        assert_eq!(next.len(), SHA256_HASH_LEN);
+        cur_bytes = next;
+    }
+    for i in 0..SHA256_HASH_LEN {
+        let diff = gate.sub(
+            ctx,
+            QuantumCell::Existing(cur_bytes[i]),
+            QuantumCell::Existing(block_id_bytes[i]),
+        );
+        let gated = gate.mul(
+            ctx,
+            QuantumCell::Existing(diff),
+            QuantumCell::Existing(is_active),
+        );
+        gate.assert_is_const(ctx, &gated, &Fr::zero());
+    }
+}
+
+/// Prove one hop's salted-endpoint bindings.
+///
+/// Layers three gated constraints:
+/// * `(salted_start_w - start_computed) · is_active == 0`
+/// * `(salted_end_w   - end_computed)   · is_active == 0`
+/// * `(salted_start_w - salted_end_w)   · not_active == 0`
+///   (padding propagation — inactive hops carry a terminal value through).
+///
+/// `start_computed` / `end_computed` are derived via
+/// [`salted_block_id_poseidon_circuit`] over `ref_block_id_bytes` /
+/// `block_id_bytes` respectively, using the caller's prior
+/// `salt_chunk0 + salt_hi · 2^248` decomposition of `salt`.
+///
+/// Returns the assigned `(salted_start_w, salted_end_w)` witnesses so the
+/// caller can wire them into intra-snark continuity across hops.
+fn prove_hop_salted_endpoints(
+    ctx: &mut Context<Fr>,
+    gate: &impl GateInstructions<Fr>,
+    hasher: &PoseidonHasher<Fr, T, RATE>,
+    powers_le_32: &[QuantumCell<Fr>],
+    salt_chunk0: AssignedValue<Fr>,
+    salt_hi: AssignedValue<Fr>,
+    ref_block_id_bytes: &[AssignedValue<Fr>],
+    block_id_bytes: &[AssignedValue<Fr>],
+    salted_start_hint: Fr,
+    salted_end_hint: Fr,
+    is_active: AssignedValue<Fr>,
+    not_active: AssignedValue<Fr>,
+) -> (AssignedValue<Fr>, AssignedValue<Fr>) {
+    let start_computed = salted_block_id_poseidon_circuit(
+        ctx, gate, hasher, powers_le_32, salt_chunk0, salt_hi, ref_block_id_bytes,
+    );
+    let end_computed = salted_block_id_poseidon_circuit(
+        ctx, gate, hasher, powers_le_32, salt_chunk0, salt_hi, block_id_bytes,
+    );
+
+    // Authoritative endpoint witnesses (both active and inactive hops).
+    let salted_start_block_id_w = ctx.load_witness(salted_start_hint);
+    let salted_end_block_id_w = ctx.load_witness(salted_end_hint);
+
+    // Active-gated: salted_start_block_id == start_computed.
+    {
+        let diff = gate.sub(
+            ctx,
+            QuantumCell::Existing(salted_start_block_id_w),
+            QuantumCell::Existing(start_computed),
+        );
+        let gated = gate.mul(
+            ctx,
+            QuantumCell::Existing(diff),
+            QuantumCell::Existing(is_active),
+        );
+        gate.assert_is_const(ctx, &gated, &Fr::zero());
+    }
+    // Active-gated: salted_end_block_id == end_computed.
+    {
+        let diff = gate.sub(
+            ctx,
+            QuantumCell::Existing(salted_end_block_id_w),
+            QuantumCell::Existing(end_computed),
+        );
+        let gated = gate.mul(
+            ctx,
+            QuantumCell::Existing(diff),
+            QuantumCell::Existing(is_active),
+        );
+        gate.assert_is_const(ctx, &gated, &Fr::zero());
+    }
+    // Inactive-gated: salted_start_block_id == salted_end_block_id
+    // (propagate terminal value through padding hops).
+    {
+        let diff = gate.sub(
+            ctx,
+            QuantumCell::Existing(salted_start_block_id_w),
+            QuantumCell::Existing(salted_end_block_id_w),
+        );
+        let gated = gate.mul(
+            ctx,
+            QuantumCell::Existing(diff),
+            QuantumCell::Existing(not_active),
+        );
+        gate.assert_is_const(ctx, &gated, &Fr::zero());
+    }
+
+    (salted_start_block_id_w, salted_end_block_id_w)
+}
+
 impl Circuit<Fr> for MultiHopProofCircuit {
     type Config = MultiHopProofCircuitConfig;
     type FloorPlanner = SimpleFloorPlanner;
@@ -198,6 +533,10 @@ impl Circuit<Fr> for MultiHopProofCircuit {
             // Even for inactive padding, ref_index must be ≥ 1 since the
             // range/nonzero constraint on ref_index is unconditional.
             ref_index: 1,
+            // Matches synth_chain inactive-padding convention: depth=1 covers
+            // ref_index=1 without triggering an out-of-range live-flag; the
+            // gated fold's output is discarded by `is_active` anyway.
+            refs_tree_depth: 1,
             proof_block_ref_inner_path: [[0u8; 32]; MAX_PROOF_BLOCK_REFS_DEPTH],
             salted_start_block_id: Fr::zero(),
             salted_end_block_id: Fr::zero(),
@@ -311,6 +650,7 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                     Vec::with_capacity(H_HOPS_PER_PROOF);
 
                 for hop in &self.hops {
+                    // is_active + not_active flags for the whole hop.
                     let is_active = ctx.load_witness(if hop.is_active {
                         Fr::one()
                     } else {
@@ -324,226 +664,56 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                         QuantumCell::Existing(is_active),
                     );
 
-                    // === ref_index witness (1..MAX_PROOF_BLOCK_REFS) ===
-                    // Slot 0 (parent) is same-thread by producer construction
-                    // (spec §2.3) and never opened as a hop edge (spec §5.1).
-                    // For inactive padding hops the witness carries
-                    // `ref_index = 1` (see MultiHopWitness::without_witnesses
-                    // and test helpers) to satisfy the same constraint.
-                    let ref_index_assigned =
-                        ctx.load_witness(Fr::from(hop.ref_index as u64));
-                    range.range_check(
-                        ctx,
-                        ref_index_assigned,
-                        MAX_PROOF_BLOCK_REFS_DEPTH,
-                    );
-                    {
-                        let is_zero_ref_index = gate.is_zero(ctx, ref_index_assigned);
-                        gate.assert_is_const(ctx, &is_zero_ref_index, &Fr::zero());
-                    }
-
-                    // L7 bytes + LE Fr packing.
-                    let l7_bytes: Vec<AssignedValue<Fr>> = hop
-                        .l7
-                        .iter()
-                        .map(|&b| ctx.load_witness(Fr::from(b as u64)))
-                        .collect();
-                    let l7_fr = {
-                        let cells: Vec<QuantumCell<Fr>> = l7_bytes
-                            .iter()
-                            .map(|c| QuantumCell::Existing(*c))
-                            .collect();
-                        gate.inner_product(ctx, cells, powers_le_32[..32].iter().cloned())
-                    };
-
-                    // ref_block_id as 32 byte cells (range-checked 8 bits each).
-                    let ref_block_id_bytes: Vec<AssignedValue<Fr>> = hop
-                        .ref_block_id
-                        .iter()
-                        .map(|&b| ctx.load_witness(Fr::from(b as u64)))
-                        .collect();
-                    for cell in &ref_block_id_bytes {
-                        range.range_check(ctx, *cell, 8);
-                    }
-
-                    // Byte-flat ref-leaf chunks — ref-tag layout only (34 B tag):
-                    // chunks 31+31+4
-                    //   c0 = tag_r_hi (31 B)
-                    //   c1 = tag_r_lo (3 B) + ref_block_id_lo28 · 256^3
-                    //   c2 = LE(ref_block_id[28..32])
-                    let ref_block_id_lo28 = {
-                        let cells: Vec<QuantumCell<Fr>> = ref_block_id_bytes[0..28]
-                            .iter()
-                            .map(|c| QuantumCell::Existing(*c))
-                            .collect();
-                        gate.inner_product(ctx, cells, powers_le_32[..28].iter().cloned())
-                    };
-                    let ref_block_id_lo28_shifted = gate.mul(
-                        ctx,
-                        QuantumCell::Existing(ref_block_id_lo28),
-                        QuantumCell::Existing(pow_256_3),
-                    );
-                    let ref_leaf_c1 = gate.add(
-                        ctx,
-                        QuantumCell::Existing(ref_leaf_c1_tag_const),
-                        QuantumCell::Existing(ref_block_id_lo28_shifted),
-                    );
-                    let ref_leaf_c2 = {
-                        let cells: Vec<QuantumCell<Fr>> = ref_block_id_bytes[28..32]
-                            .iter()
-                            .map(|c| QuantumCell::Existing(*c))
-                            .collect();
-                        gate.inner_product(ctx, cells, powers_le_32[..4].iter().cloned())
-                    };
-                    let ref_leaf_fr = hasher.hash_fix_len_array(
-                        ctx,
-                        gate,
-                        &[ref_leaf_c0_const, ref_leaf_c1, ref_leaf_c2],
-                    );
-
-                    // Byte-flat ref-tree walk. The internal range checks and
-                    // chunk-link constraints inside `dense_merkle_root_circuit`
-                    // are unconditional decomposition constraints — they hold
-                    // for any leaf/sibling input (active or padded). Only the
-                    // final equality against `l7_fr` is gated by `is_active`.
-                    let ref_leaf_native_bytes =
-                        ref_leaf_hash_native(hop.ref_index, &hop.ref_block_id);
-                    let ref_proof = preprocess_dense_proof_padded(
-                        ref_leaf_native_bytes,
-                        &hop.proof_block_ref_inner_path,
-                        hop.ref_index,
-                        MAX_PROOF_BLOCK_REFS_DEPTH,
-                    );
-                    let computed_l7_fr = dense_merkle_root_circuit(
+                    // Gadget 1: L7 ref-tree opening (byte-flat Poseidon +
+                    // variable-depth dense fold, spec §5.2).
+                    let (l7_bytes, ref_block_id_bytes) = prove_hop_ref_tree_opening(
                         ctx,
                         &range,
                         &hasher,
-                        &ref_proof,
-                        ref_leaf_fr,
+                        hop,
+                        is_active,
+                        ref_leaf_c0_const,
+                        ref_leaf_c1_tag_const,
+                        pow_256_3,
+                        &powers_le_32,
                     );
-                    // Gated ref-tree root equality: (computed_l7_fr - l7_fr) * is_active == 0
-                    {
-                        let diff = gate.sub(
-                            ctx,
-                            QuantumCell::Existing(computed_l7_fr),
-                            QuantumCell::Existing(l7_fr),
-                        );
-                        let gated = gate.mul(
-                            ctx,
-                            QuantumCell::Existing(diff),
-                            QuantumCell::Existing(is_active),
-                        );
-                        gate.assert_is_const(ctx, &gated, &Fr::zero());
-                    }
 
+                    // block_id byte witnesses (used by gadgets 2 and 3).
                     let block_id_bytes: Vec<AssignedValue<Fr>> = hop
                         .block_id
                         .iter()
                         .map(|&b| ctx.load_witness(Fr::from(b as u64)))
                         .collect();
 
-                    // SHA-256 walk: BLOCK_MERKLE_DEPTH levels, leaf_index = 7.
-                    // For index 7 in a 16-leaf depth-4 tree the successive
-                    // node indices are 7, 3, 1, 0 — so the sibling sits on the
-                    // LEFT for the first (BLOCK_MERKLE_DEPTH - 1) levels and
-                    // on the RIGHT for the top level. Since leaf_index is
-                    // fixed, orientation is compile-time constant per level.
-                    let mut cur_bytes = l7_bytes;
-                    for (level, sib_bytes) in hop.block_merkle_leaf_proof_l7.iter().enumerate() {
-                        let sib_cells: Vec<AssignedValue<Fr>> = sib_bytes
-                            .iter()
-                            .map(|&b| ctx.load_witness(Fr::from(b as u64)))
-                            .collect();
-                        let mut concat: Vec<AssignedValue<Fr>> = Vec::with_capacity(64);
-                        // node_index at this level for leaf 7: 7 >> level.
-                        // Even → cur on left ( cur || sib ); odd → cur on right ( sib || cur ).
-                        let cur_on_right = ((7usize >> level) & 1) == 1;
-                        if cur_on_right {
-                            concat.extend_from_slice(&sib_cells);
-                            concat.extend_from_slice(&cur_bytes);
-                        } else {
-                            concat.extend_from_slice(&cur_bytes);
-                            concat.extend_from_slice(&sib_cells);
-                        }
-                        let next = sha256_chip.digest_bytes(ctx, &concat);
-                        assert_eq!(next.len(), SHA256_HASH_LEN);
-                        cur_bytes = next;
-                    }
-                    // Gated SHA-256 byte equality.
-                    for i in 0..SHA256_HASH_LEN {
-                        let diff = gate.sub(
-                            ctx,
-                            QuantumCell::Existing(cur_bytes[i]),
-                            QuantumCell::Existing(block_id_bytes[i]),
-                        );
-                        let gated = gate.mul(
-                            ctx,
-                            QuantumCell::Existing(diff),
-                            QuantumCell::Existing(is_active),
-                        );
-                        gate.assert_is_const(ctx, &gated, &Fr::zero());
-                    }
-
-                    // Byte-flat salted endpoints (data = salt || endpoint_id_bytes, 31+31+2).
-                    // Computed unconditionally — only the equality vs the
-                    // witnessed salted_*_block_id is gated.
-                    let start_computed = salted_block_id_poseidon_circuit(
-                        ctx, gate, &hasher, &powers_le_32,
-                        salt_chunk0, salt_hi, &ref_block_id_bytes,
-                    );
-                    let end_computed = salted_block_id_poseidon_circuit(
-                        ctx, gate, &hasher, &powers_le_32,
-                        salt_chunk0, salt_hi, &block_id_bytes,
+                    // Gadget 2: L7 → block_id SHA-256 walk (spec §5.3).
+                    prove_hop_block_merkle_sha256(
+                        ctx,
+                        &sha256_chip,
+                        gate,
+                        l7_bytes,
+                        &block_id_bytes,
+                        &hop.block_merkle_leaf_proof_l7,
+                        is_active,
                     );
 
-                    // Witness the salted endpoints (authoritative for both
-                    // active and inactive hops).
-                    let salted_start_block_id_w = ctx.load_witness(hop.salted_start_block_id);
-                    let salted_end_block_id_w = ctx.load_witness(hop.salted_end_block_id);
-
-                    // Active-gated: salted_start_block_id == start_computed.
-                    {
-                        let diff = gate.sub(
+                    // Gadget 3: salted endpoints (spec §5.4) — active/inactive
+                    // gated Poseidon(salt‖endpoint_id) equality + inactive
+                    // padding propagation.
+                    let (salted_start_block_id_w, salted_end_block_id_w) =
+                        prove_hop_salted_endpoints(
                             ctx,
-                            QuantumCell::Existing(salted_start_block_id_w),
-                            QuantumCell::Existing(start_computed),
+                            gate,
+                            &hasher,
+                            &powers_le_32,
+                            salt_chunk0,
+                            salt_hi,
+                            &ref_block_id_bytes,
+                            &block_id_bytes,
+                            hop.salted_start_block_id,
+                            hop.salted_end_block_id,
+                            is_active,
+                            not_active,
                         );
-                        let gated = gate.mul(
-                            ctx,
-                            QuantumCell::Existing(diff),
-                            QuantumCell::Existing(is_active),
-                        );
-                        gate.assert_is_const(ctx, &gated, &Fr::zero());
-                    }
-                    // Active-gated: salted_end_block_id == end_computed.
-                    {
-                        let diff = gate.sub(
-                            ctx,
-                            QuantumCell::Existing(salted_end_block_id_w),
-                            QuantumCell::Existing(end_computed),
-                        );
-                        let gated = gate.mul(
-                            ctx,
-                            QuantumCell::Existing(diff),
-                            QuantumCell::Existing(is_active),
-                        );
-                        gate.assert_is_const(ctx, &gated, &Fr::zero());
-                    }
-                    // Inactive-gated: salted_start_block_id == salted_end_block_id (propagate
-                    // terminal value through padding hops).
-                    {
-                        let diff = gate.sub(
-                            ctx,
-                            QuantumCell::Existing(salted_start_block_id_w),
-                            QuantumCell::Existing(salted_end_block_id_w),
-                        );
-                        let gated = gate.mul(
-                            ctx,
-                            QuantumCell::Existing(diff),
-                            QuantumCell::Existing(not_active),
-                        );
-                        gate.assert_is_const(ctx, &gated, &Fr::zero());
-                    }
 
                     hop_endpoints.push((salted_start_block_id_w, salted_end_block_id_w));
                 }
@@ -593,6 +763,7 @@ mod tests {
             l7: h.block.block_merkle_tree_leaves[7],
             block_merkle_leaf_proof_l7: h.block_merkle_leaf_proof_l7,
             ref_index: h.ref_index,
+            refs_tree_depth: h.refs_tree_depth,
             proof_block_ref_inner_path: h.proof_block_ref_inner_path,
             salted_start_block_id: h.salted_start_block_id,
             salted_end_block_id: h.salted_end_block_id,
@@ -633,9 +804,9 @@ mod tests {
         const K: u32 = 17;
         let params = BaseCircuitParams {
             k: K as usize,
-            num_advice_per_phase: vec![110],
+            num_advice_per_phase: vec![200],
             num_fixed: 1,
-            num_lookup_advice_per_phase: vec![8],
+            num_lookup_advice_per_phase: vec![14],
             lookup_bits: Some(16),
             num_instance_columns: 1,
         };
@@ -670,9 +841,9 @@ mod tests {
         const K: u32 = 17;
         let params = BaseCircuitParams {
             k: K as usize,
-            num_advice_per_phase: vec![110],
+            num_advice_per_phase: vec![200],
             num_fixed: 1,
-            num_lookup_advice_per_phase: vec![8],
+            num_lookup_advice_per_phase: vec![14],
             lookup_bits: Some(16),
             num_instance_columns: 1,
         };

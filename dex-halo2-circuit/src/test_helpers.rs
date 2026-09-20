@@ -403,7 +403,7 @@ pub fn synth_chain(seed: u64, k_hops: usize) -> SynthChain {
         let block_merkle_leaf_proof_l7 = block_merkle_leaf_proof(&leaves, 7);
         let ref_index = 1usize;
         assert_ref_index_is_cross_thread(ref_index);
-        let proof_block_ref_inner_path =
+        let (proof_block_ref_inner_path, refs_tree_depth) =
             proof_block_ref_inner_path_native(&proof_block_refs, ref_index);
 
         let salted_start_block_id = if i == 0 {
@@ -427,6 +427,7 @@ pub fn synth_chain(seed: u64, k_hops: usize) -> SynthChain {
             },
             block_merkle_leaf_proof_l7,
             ref_index,
+            refs_tree_depth,
             proof_block_ref_inner_path,
             salted_start_block_id,
             salted_end_block_id,
@@ -448,6 +449,9 @@ pub fn synth_chain(seed: u64, k_hops: usize) -> SynthChain {
         // continuity check passes.
         // `ref_index = 1` is required even for padding because the in-circuit
         // range check + `ref_index != 0` assertion are unconditional (spec §5.1).
+        // `refs_tree_depth = 1` gives the ref_index=1 a valid live-flag slot
+        // (unary decomposition covers indices 0..2) while still being ≤ MAX
+        // — the fold output is discarded by the `is_active` gate anyway.
         let zero_leaves = [[0u8; 32]; BLOCK_MERKLE_LEAF_COUNT];
         let zero_l7_proof = [[0u8; 32]; BLOCK_MERKLE_DEPTH];
         let zero_inner_path = [[0u8; 32]; MAX_PROOF_BLOCK_REFS_DEPTH];
@@ -460,6 +464,7 @@ pub fn synth_chain(seed: u64, k_hops: usize) -> SynthChain {
             },
             block_merkle_leaf_proof_l7: zero_l7_proof,
             ref_index: 1,
+            refs_tree_depth: 1,
             proof_block_ref_inner_path: zero_inner_path,
             salted_start_block_id: final_terminal_salted,
             salted_end_block_id: final_terminal_salted,
@@ -556,7 +561,7 @@ pub fn synth_chain_n(seed: u64, k_hops: usize, n_bundle: usize) -> SynthChain {
         let block_merkle_leaf_proof_l7 = block_merkle_leaf_proof(&leaves, 7);
         let ref_index = 1usize;
         assert_ref_index_is_cross_thread(ref_index);
-        let proof_block_ref_inner_path =
+        let (proof_block_ref_inner_path, refs_tree_depth) =
             proof_block_ref_inner_path_native(&proof_block_refs, ref_index);
 
         let salted_start_block_id = if i == 0 {
@@ -574,6 +579,7 @@ pub fn synth_chain_n(seed: u64, k_hops: usize, n_bundle: usize) -> SynthChain {
             },
             block_merkle_leaf_proof_l7,
             ref_index,
+            refs_tree_depth,
             proof_block_ref_inner_path,
             salted_start_block_id,
             salted_end_block_id,
@@ -600,6 +606,7 @@ pub fn synth_chain_n(seed: u64, k_hops: usize, n_bundle: usize) -> SynthChain {
             block_merkle_leaf_proof_l7: zero_l7_proof,
             // Padding still needs `ref_index != 0` (unconditional constraint).
             ref_index: 1,
+            refs_tree_depth: 1,
             proof_block_ref_inner_path: zero_inner_path,
             salted_start_block_id: final_terminal_salted,
             salted_end_block_id: final_terminal_salted,
@@ -735,6 +742,7 @@ mod synth_chain_tests {
                     &leaf,
                     h.ref_index,
                     &h.proof_block_ref_inner_path,
+                    h.refs_tree_depth,
                 ),
                 "hop {i} ref-tree opening should verify"
             );
