@@ -44,15 +44,24 @@ fn bundle_circuit_params() -> BaseCircuitParams {
     }
 }
 
-fn synthetic_dex_final(salt_commitment: Fr, bundle_head_salted: Fr) -> BundleProof {
+fn synthetic_dex_final(
+    salt_commitment: Fr,
+    bundle_head_salted: Fr,
+    bundle_tail_salted: Fr,
+) -> BundleProof {
     let mut instances = vec![Fr::zero(); DEX_FINAL_LEN];
     instances[0] = Fr::from(0xD0u64);
     instances[1] = Fr::from(0xD1u64);
     instances[2] = Fr::from(0xD2u64);
     instances[3] = Fr::from(0xD3u64);
     instances[4] = Fr::from(0xD4u64);
-    instances[5] = salt_commitment;
-    instances[6] = bundle_head_salted;
+    instances[5] = bundle_head_salted;   // salted_x_start
+    instances[6] = bundle_tail_salted;   // salted_y_end
+    instances[7] = salt_commitment;
+    instances[8] = Fr::from(0xD8u64);
+    instances[9] = Fr::from(0xD9u64);
+    instances[10] = Fr::from(0xDAu64);
+    instances[11] = Fr::from(0xDBu64);
     BundleProof::new_dex_final(instances)
 }
 
@@ -180,7 +189,12 @@ fn bundle_stress_k20_full_capacity() {
     println!("\n4-snark prove+verify wall: {:?}", overall.elapsed());
 
     // -- 4. Build synthetic DexFinal -------------------------------------
-    let dex_final = synthetic_dex_final(chain.salt_commitment, chain.bundle_head_salted);
+    let bundle_tail_salted = chain.hops.last().unwrap().salted_end_block_id;
+    let dex_final = synthetic_dex_final(
+        chain.salt_commitment,
+        chain.bundle_head_salted,
+        bundle_tail_salted,
+    );
 
     // -- 5. Assemble bundle and run bundle_verifier ----------------------
     let mut bundle: Vec<BundleProof> = Vec::with_capacity(1 + N_BUNDLE);

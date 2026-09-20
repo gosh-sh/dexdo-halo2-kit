@@ -9,9 +9,12 @@
 //!      (the salt-binder check — prevents splicing proofs from different
 //!      bundles together);
 //!   3. the **head** of the hop chain is linked to the DexFinalProof:
-//!      `DexFinal.salted_C_start == MultiHop[0].salted_start_block_id`;
+//!      `DexFinal.salted_X_start == MultiHop[0].salted_start_block_id`;
 //!   4. consecutive MultiHopProofs satisfy **chain continuity**:
-//!      `MultiHop[i].salted_end_block_id == MultiHop[i+1].salted_start_block_id`.
+//!      `MultiHop[i].salted_end_block_id == MultiHop[i+1].salted_start_block_id`;
+//!   5. the **tail** of the hop chain is linked to the DexFinalProof:
+//!      `MultiHop[last].salted_end_block_id == DexFinal.salted_Y_end`
+//!      (spec §7.4 `ERR_Y_TAIL_MISMATCH`).
 //!
 //! This module reproduces that logic in pure Rust against the proofs' public
 //! instance vectors. There is no on-chain or `tvm-sdk` dependency — the goal
@@ -28,7 +31,7 @@
 //!   [3]  token_type
 //!   [4]  ephemeral_pubkey
 //!   [5]  salted_x_start             ← used by check (3) as the "bundle head"
-//!   [6]  salted_y_end                (anchor-side; tail-link check TBD)
+//!   [6]  salted_y_end               ← used by check (5) as the "bundle tail"
 //!   [7]  salt_commitment            ← used by check (2)
 //!   [8]  x_account_dapp_id_lo        (LE bytes[0..16] of the DEX contract dApp ID)
 //!   [9]  x_account_dapp_id_hi        (LE bytes[16..32])
@@ -115,6 +118,10 @@ pub enum BundleError {
         salted_end_block_id: Fr,
         salted_start_block_id: Fr,
     },
+    /// `bundle[last].salted_end_block_id != DexFinal.salted_Y_end`. Check (5).
+    /// Only fires when there is at least one MultiHop in the bundle
+    /// (single-DexFinal bundles are vacuously tail-linked).
+    TailLinkBreak { last_hop_end: Fr, dex_final_tail: Fr },
 }
 
 // ---------------------------------------------------------------------------
@@ -138,14 +145,13 @@ mod multihop_offset {
 
 /// DexFinal offsets — `DarkDexCircuit`'s 12-instance layout.
 ///
-/// The chain "head" is `salted_x_start` (event-side): the MultiHop chain
-/// links event block → anchor block, so the DexFinalProof's head is the
-/// X-side salted block id. `salted_y_end` is the anchor-side endpoint;
-/// the corresponding tail-link check (`MultiHop[last].salted_end_block_id
-/// == DexFinal.salted_y_end`) is not yet implemented here.
+/// The chain "head" is `salted_x_start` (event-side, instance [5]) and the
+/// "tail" is `salted_y_end` (anchor-side, instance [6]): the MultiHop chain
+/// links event block → anchor block, so `bundle[1].salted_start_block_id`
+/// must equal the head and `bundle[last].salted_end_block_id` must equal
+/// the tail. See spec §7.4 (`ERR_X_HEAD_MISMATCH`, `ERR_Y_TAIL_MISMATCH`).
 mod dexfinal_offset {
     pub const SALTED_X_START: usize = 5;
-    #[allow(dead_code)]
     pub const SALTED_Y_END: usize = 6;
     pub const SALT_COMMITMENT: usize = 7;
     #[allow(dead_code)]
@@ -207,6 +213,21 @@ pub fn dex_final_head(p: &BundleProof, proof_index: usize) -> Result<Fr, BundleE
         });
     }
     Ok(p.instances[dexfinal_offset::SALTED_X_START])
+}
+
+/// Extract the "bundle tail" — the salted block_id that the last
+/// MultiHopProof's `salted_end_block_id` must equal. This is
+/// `salted_y_end` (anchor-side) at instance [6].
+pub fn dex_final_tail(p: &BundleProof, proof_index: usize) -> Result<Fr, BundleError> {
+    if p.kind != ProofKind::DexFinal || p.instances.len() != DEX_FINAL_LEN {
+        return Err(BundleError::BadInstanceLen {
+            proof_index,
+            kind: p.kind,
+            got: p.instances.len(),
+            expected_one_of: DEX_FINAL_LENGTHS,
+        });
+    }
+    Ok(p.instances[dexfinal_offset::SALTED_Y_END])
 }
 
 pub fn multihop_salted_start_block_id(p: &BundleProof, proof_index: usize) -> Result<Fr, BundleError> {
@@ -303,6 +324,17 @@ pub fn verify_bundle(bundle: &[BundleProof]) -> Result<(), BundleError> {
         }
     }
 
+    // ---- check (5): tail linkage ----
+    let last_idx = bundle.len() - 1;
+    let last_hop_end = multihop_salted_end_block_id(&bundle[last_idx], last_idx)?;
+    let tail = dex_final_tail(&bundle[0], 0)?;
+    if last_hop_end != tail {
+        return Err(BundleError::TailLinkBreak {
+            last_hop_end,
+            dex_final_tail: tail,
+        });
+    }
+
     Ok(())
 }
 
@@ -316,10 +348,15 @@ mod tests {
 
     // -- helpers ------------------------------------------------------------
 
-    /// Build a DexFinal instance vector with the given `salt_commitment` and
-    /// `head_block_id` (= `salted_x_start`). Other slots are filled with
-    /// distinguishable sentinels so tests can spot accidental cross-talk.
-    fn make_dex_final(salt_commitment: Fr, head_block_id: Fr) -> BundleProof {
+    /// Build a DexFinal instance vector with the given `salt_commitment`,
+    /// `head_block_id` (= `salted_x_start`), and `tail_block_id`
+    /// (= `salted_y_end`). Other slots are filled with distinguishable
+    /// sentinels so tests can spot accidental cross-talk.
+    ///
+    /// For single-DexFinal bundles the tail is unchecked (spec §7.4 falls
+    /// through). For bundles with MultiHops, `tail_block_id` must equal
+    /// the last hop's `salted_end_block_id` or check (5) fires.
+    fn make_dex_final(salt_commitment: Fr, head_block_id: Fr, tail_block_id: Fr) -> BundleProof {
         BundleProof::new_dex_final(vec![
             Fr::from(101u64), // [0]  poseidon_commitment
             Fr::from(102u64), // [1]  final_root
@@ -327,7 +364,7 @@ mod tests {
             Fr::from(104u64), // [3]  token_type
             Fr::from(105u64), // [4]  ephemeral_pubkey
             head_block_id,    // [5]  salted_x_start (bundle head)
-            Fr::from(106u64), // [6]  salted_y_end
+            tail_block_id,    // [6]  salted_y_end   (bundle tail)
             salt_commitment,  // [7]  salt_commitment
             Fr::from(107u64), // [8]  x_account_dapp_id_lo
             Fr::from(108u64), // [9]  x_account_dapp_id_hi
@@ -346,7 +383,11 @@ mod tests {
     fn single_dex_final_phase3_ok() {
         let sc = Fr::from(0xC0FFEEu64);
         let head = Fr::from(0xBEEFu64);
-        let b = vec![make_dex_final(sc, head)];
+        // Single-DexFinal bundle: head-link and tail-link checks are vacuous
+        // (no MultiHops), so `tail` is irrelevant — an arbitrary sentinel
+        // still yields Ok.
+        let tail = Fr::from(0xF00Du64);
+        let b = vec![make_dex_final(sc, head, tail)];
         assert_eq!(verify_bundle(&b), Ok(()));
     }
 
@@ -365,8 +406,9 @@ mod tests {
         let p3 = Fr::from(1003u64);
         let p4 = Fr::from(1004u64);
 
+        // Tail = last hop's salted_end_block_id (p4). Spec §7.4 check (5).
         let b = vec![
-            make_dex_final(sc, p0),
+            make_dex_final(sc, p0, p4),
             multi_hop(p0, p1, sc),
             multi_hop(p1, p2, sc),
             multi_hop(p2, p3, sc),
@@ -379,11 +421,12 @@ mod tests {
     fn inactive_hops_with_salted_start_block_id_eq_salted_end_block_id_ok() {
         // §6.4: when a MultiHopProof is `is_active = 0` everywhere, the
         // circuit constrains `salted_start_block_id == salted_end_block_id`. Bundle continuity
-        // then degenerates to all-equal salted endpoints.
+        // then degenerates to all-equal salted endpoints — head and tail both
+        // equal `p`.
         let sc = Fr::from(7u64);
         let p = Fr::from(42u64); // the shared "no progress" endpoint
         let b = vec![
-            make_dex_final(sc, p),
+            make_dex_final(sc, p, p),
             multi_hop(p, p, sc),
             multi_hop(p, p, sc),
             multi_hop(p, p, sc),
@@ -411,8 +454,8 @@ mod tests {
     fn two_dex_finals_rejected() {
         let sc = Fr::from(9u64);
         let b = vec![
-            make_dex_final(sc, Fr::from(1u64)),
-            make_dex_final(sc, Fr::from(1u64)),
+            make_dex_final(sc, Fr::from(1u64), Fr::from(2u64)),
+            make_dex_final(sc, Fr::from(1u64), Fr::from(2u64)),
         ];
         assert_eq!(verify_bundle(&b), Err(BundleError::DuplicateDexFinal { count: 2 }));
     }
@@ -422,7 +465,7 @@ mod tests {
         let sc = Fr::from(9u64);
         let b = vec![
             multi_hop(Fr::from(1u64), Fr::from(2u64), sc),
-            make_dex_final(sc, Fr::from(1u64)),
+            make_dex_final(sc, Fr::from(1u64), Fr::from(2u64)),
         ];
         assert_eq!(verify_bundle(&b), Err(BundleError::DexFinalNotFirst { found_at: 1 }));
     }
@@ -435,8 +478,10 @@ mod tests {
         let evil = Fr::from(12u64);
         let p0 = Fr::from(100u64);
         let p1 = Fr::from(101u64);
+        // salt-commitment mismatch fires before the tail-link check, so any
+        // `tail` value is fine here.
         let b = vec![
-            make_dex_final(sc, p0),
+            make_dex_final(sc, p0, p1),
             multi_hop(p0, p1, evil),
         ];
         match verify_bundle(&b) {
@@ -457,8 +502,9 @@ mod tests {
         let p1 = Fr::from(101u64);
         let p2 = Fr::from(102u64);
         let p3 = Fr::from(103u64);
+        // salt-commitment mismatch on hop 3 fires before the tail-link check.
         let b = vec![
-            make_dex_final(sc, p0),
+            make_dex_final(sc, p0, p3),
             multi_hop(p0, p1, sc),
             multi_hop(p1, p2, sc),
             multi_hop(p2, p3, evil), // spliced from a different bundle
@@ -478,8 +524,9 @@ mod tests {
         let sc = Fr::from(11u64);
         let head = Fr::from(100u64);
         let wrong_start = Fr::from(999u64);
+        // head-link break fires before the tail-link check.
         let b = vec![
-            make_dex_final(sc, head),
+            make_dex_final(sc, head, Fr::from(101u64)),
             multi_hop(wrong_start, Fr::from(101u64), sc),
         ];
         match verify_bundle(&b) {
@@ -500,8 +547,9 @@ mod tests {
         let p1 = Fr::from(101u64);
         let wrong = Fr::from(999u64);
         let p2 = Fr::from(102u64);
+        // continuity break at hops 1→2 fires before the tail-link check.
         let b = vec![
-            make_dex_final(sc, p0),
+            make_dex_final(sc, p0, p2),
             multi_hop(p0, p1, sc),
             multi_hop(wrong, p2, sc), // start ≠ previous end
         ];
@@ -512,6 +560,53 @@ mod tests {
                 assert_eq!(salted_start_block_id, wrong);
             }
             other => panic!("expected ContinuityBreak, got {:?}", other),
+        }
+    }
+
+    // -- check (5): tail linkage --------------------------------------------
+
+    #[test]
+    fn tail_link_break_rejected() {
+        // Bundle chain is internally consistent (head links, continuity holds),
+        // but the DexFinal's declared `salted_Y_end` disagrees with the last
+        // hop's `salted_end_block_id`. Spec §7.4 `ERR_Y_TAIL_MISMATCH`.
+        let sc = Fr::from(11u64);
+        let p0 = Fr::from(100u64);
+        let p1 = Fr::from(101u64);
+        let p2 = Fr::from(102u64);
+        let wrong_tail = Fr::from(999u64);
+        let b = vec![
+            make_dex_final(sc, p0, wrong_tail),
+            multi_hop(p0, p1, sc),
+            multi_hop(p1, p2, sc),
+        ];
+        match verify_bundle(&b) {
+            Err(BundleError::TailLinkBreak { last_hop_end, dex_final_tail }) => {
+                assert_eq!(last_hop_end, p2);
+                assert_eq!(dex_final_tail, wrong_tail);
+            }
+            other => panic!("expected TailLinkBreak, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn tail_link_break_on_single_hop_rejected() {
+        // Minimal 2-proof bundle: continuity loop is empty, so the tail-link
+        // check is the only continuity check that fires.
+        let sc = Fr::from(11u64);
+        let head = Fr::from(100u64);
+        let hop_end = Fr::from(200u64);
+        let wrong_tail = Fr::from(300u64);
+        let b = vec![
+            make_dex_final(sc, head, wrong_tail),
+            multi_hop(head, hop_end, sc),
+        ];
+        match verify_bundle(&b) {
+            Err(BundleError::TailLinkBreak { last_hop_end, dex_final_tail }) => {
+                assert_eq!(last_hop_end, hop_end);
+                assert_eq!(dex_final_tail, wrong_tail);
+            }
+            other => panic!("expected TailLinkBreak, got {:?}", other),
         }
     }
 
@@ -535,7 +630,10 @@ mod tests {
     fn multihop_with_wrong_instance_count_rejected() {
         let sc = Fr::from(7u64);
         let bad = BundleProof::new_multi_hop(vec![Fr::from(1u64); 2]); // not 3
-        let b = vec![make_dex_final(sc, Fr::from(1u64)), bad];
+        let b = vec![
+            make_dex_final(sc, Fr::from(1u64), Fr::from(2u64)),
+            bad,
+        ];
         match verify_bundle(&b) {
             Err(BundleError::BadInstanceLen { proof_index, kind, got, .. }) => {
                 assert_eq!(proof_index, 1);

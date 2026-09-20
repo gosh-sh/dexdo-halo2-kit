@@ -47,18 +47,27 @@ fn bundle_circuit_params() -> BaseCircuitParams {
     }
 }
 
-/// Build a `DexFinalProof`-shaped `BundleProof` from the synth chain's
-/// bundle-wide values. Slots that the bundle verifier doesn't read are
-/// filled with distinguishable sentinels.
-fn synthetic_dex_final(salt_commitment: Fr, bundle_head_salted: Fr) -> BundleProof {
+/// Build a `DexFinalProof`-shaped `BundleProof` (12 instances per spec §7.3)
+/// from the synth chain's bundle-wide values. Slots that the bundle verifier
+/// doesn't read are filled with distinguishable sentinels.
+fn synthetic_dex_final(
+    salt_commitment: Fr,
+    bundle_head_salted: Fr,
+    bundle_tail_salted: Fr,
+) -> BundleProof {
     let mut instances = vec![Fr::zero(); DEX_FINAL_LEN];
-    instances[0] = Fr::from(0xD0u64); // [0] poseidon_commitment
-    instances[1] = Fr::from(0xD1u64); // [1] final_root
-    instances[2] = Fr::from(0xD2u64); // [2] voucher_nominal
-    instances[3] = Fr::from(0xD3u64); // [3] token_type
-    instances[4] = Fr::from(0xD4u64); // [4] ephemeral_pubkey
-    instances[5] = salt_commitment;   // [5] salt_commitment
-    instances[6] = bundle_head_salted; // [6] event_salted_block_id (head)
+    instances[0] = Fr::from(0xD0u64);     // [0] poseidon_commitment
+    instances[1] = Fr::from(0xD1u64);     // [1] final_root
+    instances[2] = Fr::from(0xD2u64);     // [2] voucher_nominal
+    instances[3] = Fr::from(0xD3u64);     // [3] token_type
+    instances[4] = Fr::from(0xD4u64);     // [4] ephemeral_pubkey
+    instances[5] = bundle_head_salted;    // [5] salted_x_start (head)
+    instances[6] = bundle_tail_salted;    // [6] salted_y_end   (tail)
+    instances[7] = salt_commitment;       // [7] salt_commitment
+    instances[8] = Fr::from(0xD8u64);     // [8] x_account_dapp_id_lo
+    instances[9] = Fr::from(0xD9u64);     // [9] x_account_dapp_id_hi
+    instances[10] = Fr::from(0xDAu64);    // [10] x_account_id_lo
+    instances[11] = Fr::from(0xDBu64);    // [11] x_account_id_hi
     BundleProof::new_dex_final(instances)
 }
 
@@ -179,7 +188,12 @@ fn bundle_e2e_k5_happy_path() {
     }
 
     // -- 4. Build synthetic DexFinal -------------------------------------
-    let dex_final = synthetic_dex_final(chain.salt_commitment, chain.bundle_head_salted);
+    let bundle_tail_salted = chain.hops.last().unwrap().salted_end_block_id;
+    let dex_final = synthetic_dex_final(
+        chain.salt_commitment,
+        chain.bundle_head_salted,
+        bundle_tail_salted,
+    );
 
     // -- 5. Assemble bundle and run bundle_verifier ----------------------
     let mut bundle: Vec<BundleProof> = Vec::with_capacity(1 + N_BUNDLE);

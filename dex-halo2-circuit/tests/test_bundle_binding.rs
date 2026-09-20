@@ -24,18 +24,28 @@ use halo2_base::halo2_proofs::halo2curves::bn256::Fr;
 /// Number of MultiHopProofs per spec §6.4 (`N_BUNDLE`).
 const N_BUNDLE: usize = 4;
 
-/// Build a DexFinal instance vector with the given `salt_commitment`
-/// and bundle-head `salted_block_id`. Slots [0..=4] are filled with
-/// distinguishable sentinels — the verifier only reads [5] and [6].
-fn make_dex_final_instances(salt_commitment: Fr, head_salted_block_id: Fr) -> Vec<Fr> {
+/// Build a DexFinal instance vector (12 slots per spec §7.3) with the given
+/// `salt_commitment`, bundle-head `salted_block_id`, and bundle-tail
+/// `salted_block_id`. Slots [0..=4] and [8..=11] are filled with
+/// distinguishable sentinels — the verifier only reads [5], [6], [7].
+fn make_dex_final_instances(
+    salt_commitment: Fr,
+    head_salted_block_id: Fr,
+    tail_salted_block_id: Fr,
+) -> Vec<Fr> {
     vec![
-        Fr::from(0xD0u64),   // [0] poseidon_commitment (depositIdentifierHash)
-        Fr::from(0xD1u64),   // [1] final_root
-        Fr::from(0xD2u64),   // [2] voucher_nominal
-        Fr::from(0xD3u64),   // [3] token_type
-        Fr::from(0xD4u64),   // [4] ephemeral_pubkey
-        salt_commitment,     // [5]
-        head_salted_block_id, // [6] event_salted_block_id
+        Fr::from(0xD0u64),     // [0] poseidon_commitment (depositIdentifierHash)
+        Fr::from(0xD1u64),     // [1] final_root
+        Fr::from(0xD2u64),     // [2] voucher_nominal
+        Fr::from(0xD3u64),     // [3] token_type
+        Fr::from(0xD4u64),     // [4] ephemeral_pubkey
+        head_salted_block_id,  // [5] salted_x_start (bundle head)
+        tail_salted_block_id,  // [6] salted_y_end   (bundle tail)
+        salt_commitment,       // [7] salt_commitment
+        Fr::from(0xD8u64),     // [8] x_account_dapp_id_lo
+        Fr::from(0xD9u64),     // [9] x_account_dapp_id_hi
+        Fr::from(0xDAu64),     // [10] x_account_id_lo
+        Fr::from(0xDBu64),     // [11] x_account_id_hi
     ]
 }
 
@@ -63,7 +73,8 @@ fn synthesize_bundle_instances(sk_u: Fr, block_ids: &[[u8; 32]; 5]) -> (Vec<Fr>,
 
     // DexFinal's bundle-head = `salted[0]` (i.e. salted_id of the
     // event-block-id we just claimed — same as what hop[0] starts from).
-    let dex_final = make_dex_final_instances(sc, salted[0]);
+    // Bundle-tail = `salted[N_BUNDLE]` (last hop's `salted_end_block_id`).
+    let dex_final = make_dex_final_instances(sc, salted[0], salted[N_BUNDLE]);
     let hops = [
         multihop_instances(salted[0], salted[1], sc),
         multihop_instances(salted[1], salted[2], sc),
@@ -109,8 +120,8 @@ fn synthetic_bundle_happy_path() {
     for h in &hops {
         assert_eq!(h.len(), MULTI_HOP_LEN);
     }
-    // Sanity: all salt_commitment slots agree.
-    let canonical_sc = dex_final[5];
+    // Sanity: all salt_commitment slots agree (dex_final[7] == hop[i][2]).
+    let canonical_sc = dex_final[7];
     for h in &hops {
         assert_eq!(h[2], canonical_sc);
     }
@@ -183,7 +194,7 @@ fn tampered_continuity_break_rejected() {
     }
 }
 
-/// Tamper with the DexFinal's head (`event_salted_block_id`, instance [6])
+/// Tamper with the DexFinal's head (`salted_x_start`, instance [5])
 /// so it no longer equals hop[0]'s `salted_start_block_id` — must reject with
 /// `HeadLinkBreak`.
 #[test]
@@ -192,7 +203,7 @@ fn tampered_dex_final_head_rejected() {
     let block_ids: [[u8; 32]; 5] = [[30u8; 32], [31u8; 32], [32u8; 32], [33u8; 32], [34u8; 32]];
 
     let (mut dex_final, hops) = synthesize_bundle_instances(sk_u, &block_ids);
-    dex_final[6] = Fr::from(0xF00u64); // bad head
+    dex_final[5] = Fr::from(0xF00u64); // bad head
 
     let bundle = build_bundle(dex_final, hops);
     matches!(verify_bundle(&bundle), Err(BundleError::HeadLinkBreak { .. }));
@@ -220,7 +231,7 @@ fn all_inactive_hops_t_eq_0_accepted() {
     let sc = compute_salt_commitment_native(salt);
     let p = compute_salted_block_id_native(salt, &single_block);
 
-    let dex_final = make_dex_final_instances(sc, p);
+    let dex_final = make_dex_final_instances(sc, p, p);
     let hops = [
         multihop_instances(p, p, sc),
         multihop_instances(p, p, sc),

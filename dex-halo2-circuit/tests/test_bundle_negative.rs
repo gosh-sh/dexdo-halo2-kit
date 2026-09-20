@@ -56,15 +56,24 @@ fn bundle_circuit_params() -> BaseCircuitParams {
     }
 }
 
-fn synthetic_dex_final(salt_commitment: Fr, bundle_head_salted: Fr) -> BundleProof {
+fn synthetic_dex_final(
+    salt_commitment: Fr,
+    bundle_head_salted: Fr,
+    bundle_tail_salted: Fr,
+) -> BundleProof {
     let mut instances = vec![Fr::zero(); DEX_FINAL_LEN];
     instances[0] = Fr::from(0xD0u64);
     instances[1] = Fr::from(0xD1u64);
     instances[2] = Fr::from(0xD2u64);
     instances[3] = Fr::from(0xD3u64);
     instances[4] = Fr::from(0xD4u64);
-    instances[5] = salt_commitment;
-    instances[6] = bundle_head_salted;
+    instances[5] = bundle_head_salted;
+    instances[6] = bundle_tail_salted;
+    instances[7] = salt_commitment;
+    instances[8] = Fr::from(0xD8u64);
+    instances[9] = Fr::from(0xD9u64);
+    instances[10] = Fr::from(0xDAu64);
+    instances[11] = Fr::from(0xDBu64);
     BundleProof::new_dex_final(instances)
 }
 
@@ -166,7 +175,14 @@ fn bundle_e2e_negatives() {
     let a_snark0 = prove_snark(chain_a.sk_u, &snarks_a[0].hops, "A.snark[0]");
     let b_snark0 = prove_snark(chain_b.sk_u, &snarks_b[0].hops, "B.snark[0]");
 
-    let dex_a = synthetic_dex_final(chain_a.salt_commitment, chain_a.bundle_head_salted);
+    // For the control bundle (dex_a + multihop_a), tail must equal
+    // multihop_a's `salted_end_block_id` (= last real hop's salted_end).
+    let a_snark0_tail = snarks_a[0].hops[H_HOPS_PER_PROOF - 1].salted_end_block_id;
+    let dex_a = synthetic_dex_final(
+        chain_a.salt_commitment,
+        chain_a.bundle_head_salted,
+        a_snark0_tail,
+    );
     let multihop_a = BundleProof::new_multi_hop(a_snark0.clone());
     let multihop_b = BundleProof::new_multi_hop(b_snark0.clone());
 
@@ -194,7 +210,14 @@ fn bundle_e2e_negatives() {
 
     // -- 7. NEGATIVE: HeadLinkBreak --------------------------------------
     {
-        let dex_a_wrong = synthetic_dex_final(chain_a.salt_commitment, Fr::from(0xDEADBEEFu64));
+        // HeadLinkBreak fires before TailLinkBreak in the check order, so any
+        // tail value is fine here — we set it to the correct tail to keep the
+        // test focused on the head-break signal.
+        let dex_a_wrong = synthetic_dex_final(
+            chain_a.salt_commitment,
+            Fr::from(0xDEADBEEFu64),
+            a_snark0_tail,
+        );
         let bundle = vec![dex_a_wrong, multihop_a.clone()];
         match verify_bundle(&bundle) {
             Err(BundleError::HeadLinkBreak { dex_final_head, first_hop_start }) => {
