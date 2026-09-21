@@ -155,15 +155,11 @@ L7 is populated for **every** block and provides the outgoing edges the L7 walk 
 
 `L8 = tracked_ext_out_messages_root` is the **Poseidon** dense-Merkle root of the block's tracked outgoing external messages. The `VoucherGenerated` event is emitted as one such message, and its Poseidon-tagged leaf is included in this tree.
 
-Tree parameters (source: `node/libs/history-proof/src/lib.rs:162–193` — `compute_ext_out_messages_root`, `compute_ext_message_leaf_hash`):
+**Shape:** identical to L7 — chain-side variable depth via `leaves.len().next_power_of_two()`, `[0u8; 32]` padding, no chain-enforced ceiling. Same `dense_merkle_root` routine as L7 and the layer-N batch trees (source: `node/libs/history-proof/src/lib.rs:162–193` — `compute_ext_out_messages_root`, `compute_ext_message_leaf_hash`). Empty case yields `[0u8; 32]`.
 
-- Combine rule: `Poseidon(left_32B ‖ right_32B)` via the shared `dense_merkle_root` routine (byte-flat sponge, same convention as L7 inner and the layer-N batch trees).
-- Padding: literal `[0u8; 32]` leaves to next power of 2.
-- Depth cap: no on-chain enforced ceiling; the DEX circuit imposes `EXT_OUT_DEPTH_MAX = 8` (256 messages / block max) as a witness-side bound.
-- Leaf format: `Poseidon(account_dapp_id ‖ account_id ‖ ext_message_hash)` — a **96-byte** preimage, no tag prefix. This is the exact same shape as `DarkDexCircuit`'s `ext_msg_leaf` (§7.7 constraint 4).
-- Empty case: returns `[0u8; 32]` when the block has no tracked ext-out messages.
+**Leaf format:** `Poseidon(account_dapp_id ‖ account_id ‖ ext_message_hash)` — a **96-byte** preimage, no tag prefix. Exactly the same shape as `DarkDexCircuit`'s `ext_msg_leaf` (§7.7 constraint 4).
 
-The DEX circuit opens one Poseidon Merkle path `ext_msg_leaf → L8`.
+**Circuit handling:** the DEX circuit uses the same variable-depth gated fold as L7 (§2.3): pass real siblings to `preprocess_dense_proof_padded`, walk a fixed `MAX_EVENTS_TREE_DEPTH = 8` levels in-circuit (`dark_dex_circuit.rs:43`), and gate each level with a range-checked `num_events_levels` witness (`dark_dex_circuit.rs:576-585`). The 8-level cap bounds L8 to 256 messages per block on the prover side; the chain itself does not enforce this.
 
 ### 2.5 L0..L6 and L9..L15 in this design
 
