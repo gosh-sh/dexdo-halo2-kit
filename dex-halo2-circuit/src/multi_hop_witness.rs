@@ -227,7 +227,7 @@ pub struct MultiHopProofWitness {
 
     /// Position of this snark within the bundle (`0..N_BUNDLE`). Drives the
     /// bundle-global position tag mixed into each hop's salted-endpoint
-    /// Poseidon (BC-005 anonymity fix). Kept as a private witness — the
+    /// Poseidon (anonymity fix). Kept as a private witness — the
     /// public-instance equality chain (DexFinal head/tail-link + adjacent
     /// snark continuity) uniquely constrains it via Poseidon collision
     /// resistance, so exposing it publicly would only leak information

@@ -367,7 +367,7 @@ fn prove_hop_ref_tree_opening(
     );
     let refs_tree_depth_assigned = ctx.load_witness(Fr::from(hop.refs_tree_depth as u64));
     range.range_check(ctx, refs_tree_depth_assigned, 4);
-    // BC-004 fix: force `ref_index < 2^refs_tree_depth`. For each bit j,
+    // force `ref_index < 2^refs_tree_depth`. For each bit j,
     // `pos_bits[j] * (1 - active_j) == 0` where `active_j = j < refs_tree_depth`.
     // Combined with the num_to_bits binding, this forces high bits of
     // `ref_index_assigned` to be zero on all inactive (padded) levels — which
@@ -784,7 +784,7 @@ impl Circuit<Fr> for MultiHopProofCircuit {
 
                     // Gadget 3: salted endpoints (spec §5.4) — position-tagged
                     // Poseidon bound unconditionally + inactive byte-equality
-                    // padding rule (BC-005 fix).
+                    // padding rule.
                     let (salted_start_block_id_w, salted_end_block_id_w) =
                         prove_hop_salted_endpoints(
                             ctx,
