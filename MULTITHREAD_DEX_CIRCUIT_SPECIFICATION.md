@@ -2,7 +2,7 @@
 
 Target embodiment: `dexdo-halo2-kit/dex-halo2-circuit` (DEX voucher circuit).
 
-This document describes the cryptographic mechanism for proving, in zero knowledge, that a voucher-generation event in **any thread t** of Acki Nacki can be anchored, via cross-thread chaining when `t ≠ 0`, against a layer-N batch hash retained in thread 0's window of `GlobalHistoricalData`, and how the DEX circuit embodies that mechanism.
+This document describes the cryptographic mechanism for proving, in zero knowledge, that a `VoucherGenerated` event in **any thread t** of Acki Nacki can be anchored, via cross-thread chaining when `t ≠ 0`, against a layer-N batch hash retained in thread 0's window of `GlobalHistoricalData`, and how the DEX circuit embodies that mechanism.
 
 ## 0. Terminology
 
@@ -11,7 +11,7 @@ This document describes the cryptographic mechanism for proving, in zero knowled
 | **BWS** | Batch Window Size = **128**. (`HISTORY_PROOF_WINDOW_SIZE` in `node/libs/history-proof/src/lib.rs`.) |
 | **Batch M** (within thread 0) | The contiguous range of blocks at heights `[M·BWS, (M+1)·BWS − 1]` within thread 0. |
 | **`#L<N>(M)`** | Layer-N batch hash for batch M of thread 0. Layer-1 is built over the blocks of batch M; layer-(N+1) is built over `BWS` consecutive layer-N hashes. |
-| **X** | The **event block** — the block, in some thread t (t may or may not be 0), in which the voucher-generation event was emitted. Hidden witness. |
+| **X** | The **event block** — the block, in some thread t (t may or may not be 0), in which the `VoucherGenerated` event was emitted. Hidden witness. |
 | **Y** | The **anchor block** — a block **in thread 0** that lies at the tail of a chain of cross-thread reference edges emanating from X. When t = 0, Y = X (uniformity case). Hidden witness. |
 | **X-side / Y-side** | The portions of the DEX proof concerned with block X (event binding, in thread t) and block Y (thread-0 anchor) respectively. When t ≠ 0 they are separate; when t = 0 they collapse onto the same block. |
 | **`event_hash`** | 32-byte hash of the voucher event message. Included as a leaf of X's `tracked_ext_out_messages` Merkle tree. |
@@ -32,7 +32,7 @@ This document describes the cryptographic mechanism for proving, in zero knowled
 
 ### 1.1 Where events happen vs. where they anchor
 
-The voucher-generation event may be emitted in **any** thread of Acki Nacki. The event's block X is therefore of arbitrary thread `t`.
+The `VoucherGenerated` event — declared in `RootPN.sol` as `event VoucherGenerated(uint256 skUCommit, uint voucherNominal, uint32 tokenType)` — may be emitted in **any** thread of Acki Nacki. The event's block X is therefore of arbitrary thread `t`.
 
 The **anchor**, in contrast, must land in **thread 0**. Under this protocol only thread 0 produces layer trees: `history_proofs` are populated exclusively on thread-0 key blocks, and `GlobalHistoricalData[thread 0]` is the sole populated per-thread window. No other thread has a layer-N batch tree the contract can query. It follows that the anchor block Y must itself be a thread-0 block.
 
@@ -150,7 +150,7 @@ L7 is populated for **every** block and provides the outgoing edges the L7 walk 
 
 ### 2.4 L8 — tracked ext-out messages Merkle tree (the DEX-visible slot)
 
-`L8 = tracked_ext_out_messages_root` is the **Poseidon** dense-Merkle root of the block's tracked outgoing external messages. The voucher-generation event is emitted as one such message, and its Poseidon-tagged leaf is included in this tree.
+`L8 = tracked_ext_out_messages_root` is the **Poseidon** dense-Merkle root of the block's tracked outgoing external messages. The `VoucherGenerated` event is emitted as one such message, and its Poseidon-tagged leaf is included in this tree.
 
 Tree parameters (source: `node/libs/history-proof/src/lib.rs:162–193` — `compute_ext_out_messages_root`, `compute_ext_message_leaf_hash`):
 
