@@ -1234,7 +1234,7 @@ mod tests {
     #[test]
     fn test_dark_dex_circuit_real_proof_for_fixed_k() { //now k = 19
         use halo2_base::halo2_proofs::plonk::{keygen_pk, keygen_vk};
-        use halo2_base::utils::fs::gen_srs;
+        use crate::kzg_source::load_srs;
         use halo2_base::utils::testing::{check_proof_with_instances, gen_proof_with_instances};
         use rand::rngs::StdRng;
         use rand::SeedableRng;
@@ -1250,7 +1250,7 @@ mod tests {
         let params = base_circuit_params();
 
         // Generate SRS params once.
-        let srs = gen_srs(K);
+        let srs = load_srs(K);
 
         // Keygen once with T=1 (circuit shape is the same for all chain lengths
         // since verify_chain_of_dense_proofs always processes MAX_CHAIN_LEN links).
@@ -1360,7 +1360,7 @@ mod tests {
         use halo2_base::halo2_proofs::halo2curves::ff::PrimeField;
         use halo2_base::halo2_proofs::plonk::{keygen_pk, keygen_vk};
         use halo2_base::halo2_proofs::SerdeFormat;
-        use halo2_base::utils::fs::gen_srs;
+        use crate::kzg_source::load_srs;
         use halo2_base::utils::testing::{check_proof_with_instances, gen_proof_with_instances};
         use rand::rngs::StdRng;
         use rand::SeedableRng;
@@ -1392,7 +1392,7 @@ mod tests {
 
         println!("PARAMS_DIR = {:?}", std::env::var("PARAMS_DIR"));
         println!("Loading SRS (K={})...", K);
-        let srs = gen_srs(K);
+        let srs = load_srs(K);
 
         // Keygen against a 1-step chain circuit; circuit shape is the same for all chain
         // lengths since verify_chain_of_dense_proofs always processes MAX_CHAIN_LEN links.
@@ -1488,7 +1488,7 @@ mod tests {
     #[test]
     fn test_k_sweep_benchmark() {
         use halo2_base::halo2_proofs::plonk::{keygen_pk, keygen_vk};
-        use halo2_base::utils::fs::gen_srs;
+        use crate::kzg_source::load_srs;
         use halo2_base::utils::testing::{check_proof_with_instances, gen_proof_with_instances};
         use rand::rngs::StdRng;
         use rand::SeedableRng;
@@ -1519,7 +1519,7 @@ mod tests {
                 1,
                 params,
             );
-            let srs_measure = gen_srs(K);
+            let srs_measure = load_srs(K);
             let _ = keygen_vk(&srs_measure, &measure_circuit).expect("keygen_vk for measurement failed");
 
             let stats = measure_circuit.base_circuit_builder.borrow().statistics();
@@ -1581,7 +1581,7 @@ mod tests {
             };
 
             let start = Instant::now();
-            let srs = gen_srs(k_val);
+            let srs = load_srs(k_val);
             println!("  SRS gen:   {}ms", start.elapsed().as_millis());
 
             // Keygen

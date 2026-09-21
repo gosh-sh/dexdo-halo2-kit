@@ -37,7 +37,7 @@ use dex_halo2_circuit::test_helpers::{split_into_bundle_snarks, synth_chain};
 use halo2_base::gates::circuit::BaseCircuitParams;
 use halo2_base::halo2_proofs::halo2curves::bn256::Fr;
 use halo2_base::halo2_proofs::plonk::{keygen_pk, keygen_vk};
-use halo2_base::utils::fs::gen_srs;
+use dex_halo2_circuit::kzg_source::load_srs;
 use halo2_base::utils::testing::{check_proof_with_instances, gen_proof_with_instances};
 use std::time::Instant;
 
@@ -121,7 +121,7 @@ fn bundle_e2e_negatives() {
 
     // -- 2. SRS + shared keygen (uses chain A's active snark[0]) --------
     println!("Generating SRS K={}...", K);
-    let srs = gen_srs(K);
+    let srs = load_srs(K);
 
     let keygen_hops: [MultiHopWitness; H_HOPS_PER_PROOF] =
         std::array::from_fn(|i| hop_to_multi_hop(&snarks_a[0].hops[i]));

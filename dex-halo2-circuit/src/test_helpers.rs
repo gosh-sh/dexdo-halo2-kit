@@ -7,16 +7,15 @@ use crate::multi_hop_witness::{
 use crate::salt::{
     compute_salt_commitment_native, compute_salt_native, compute_salted_block_id_native,
 };
-// `dense_balanced_tree` is a dev-dependency; only the `build_dense_chain`
-// and `build_dex_final_witness_*` helpers (all `#[cfg(test)]`-gated below)
-// consume it.
-#[cfg(test)]
+// `dense_balanced_tree` was previously a dev-dependency; it is now a main
+// dependency so the `bin/gen_hermez_kzg_and_dark_dex_keys` binary can call
+// `build_dense_chain` / `build_dex_final_witness` at build-time (outside of
+// `#[cfg(test)]`). The synth_chain_tests inline module below remains
+// `#[cfg(test)]`-gated.
 use dense_balanced_tree::{
     dense_merkle_proof, dense_merkle_root, PoseidonHasher as DensePoseidonHasher,
 };
-use gosh_dense_balanced_tree::bytes_to_fr;
-#[cfg(test)]
-use gosh_dense_balanced_tree::{fr_to_bytes, DenseChainLink, MAX_CHAIN_LEN};
+use gosh_dense_balanced_tree::{bytes_to_fr, fr_to_bytes, DenseChainLink, MAX_CHAIN_LEN};
 use halo2_base::gates::circuit::BaseCircuitParams;
 use halo2_base::halo2_proofs::halo2curves::bn256::Fr;
 use rand::Rng;
@@ -55,7 +54,6 @@ pub fn ceil_log2(n: usize) -> usize {
 }
 
 /// Build a chain of `chain_len` dense balanced trees (0 <= chain_len <= MAX_CHAIN_LEN).
-#[cfg(test)]
 pub fn build_dense_chain(
     initial_leaf_bytes: [u8; 32],
     chain_len: usize,
@@ -172,7 +170,6 @@ pub struct DexFinalWitness {
 ///
 /// Selects how the Y-side block_id / envelope_hash / tracked_ext_out_root are
 /// derived. The X-side construction is identical in both modes.
-#[cfg(test)]
 #[derive(Copy, Clone, Debug)]
 pub enum DexFinalMode {
     /// **Uniform t=0 (X == Y).** `y_block_id == x_block_id` and
@@ -192,7 +189,6 @@ pub enum DexFinalMode {
 /// identical in both modes. The `mode` argument only controls how the Y-side
 /// `block_id`, `envelope_hash` and `tracked_ext_out_root` are sampled — see
 /// [`DexFinalMode`].
-#[cfg(test)]
 pub fn build_dex_final_witness(
     mode: DexFinalMode,
     repr_hash: &[u8; 32],

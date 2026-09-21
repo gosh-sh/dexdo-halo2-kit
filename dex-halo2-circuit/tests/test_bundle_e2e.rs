@@ -28,7 +28,7 @@ use dex_halo2_circuit::test_helpers::{split_into_bundle_snarks, synth_chain};
 use halo2_base::gates::circuit::BaseCircuitParams;
 use halo2_base::halo2_proofs::halo2curves::bn256::Fr;
 use halo2_base::halo2_proofs::plonk::{keygen_pk, keygen_vk};
-use halo2_base::utils::fs::gen_srs;
+use dex_halo2_circuit::kzg_source::load_srs;
 use halo2_base::utils::testing::{check_proof_with_instances, gen_proof_with_instances};
 use std::time::Instant;
 
@@ -128,8 +128,8 @@ fn bundle_e2e_k5_happy_path() {
     // -- 2. Keygen (single VK/PK shared across all 4 snarks) -------------
     println!("Generating SRS K={}...", K);
     let t0 = Instant::now();
-    let srs = gen_srs(K);
-    println!("  gen_srs: {:?}", t0.elapsed());
+    let srs = load_srs(K);
+    println!("  load_srs: {:?}", t0.elapsed());
 
     // Use snark 0 (fully active) for keygen — same gate topology as
     // inactive snarks, since the loop body is unconditional.
