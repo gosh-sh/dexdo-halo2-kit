@@ -149,9 +149,11 @@ pub struct BlockWitness {
     /// SHA-256 of the block: `block_merkle_root(block_merkle_tree_leaves)`.
     pub block_id: [u8; 32],
 
-    /// The 8 SHA-256 leaves L0..L7 (`gql_proof.rs`'s
-    /// `block_merkle_tree_leaves`). Leaf L7 (`block_merkle_tree_leaves[7]`)
-    /// equals `proof_block_refs_root(proof_block_refs)`.
+    /// The `BLOCK_MERKLE_LEAF_COUNT = 16` SHA-256 leaves L0..L15
+    /// (`gql_proof.rs`'s `block_merkle_tree_leaves`). Leaf L7
+    /// (`block_merkle_tree_leaves[7]`) equals
+    /// `proof_block_refs_root(proof_block_refs)`; L8..L15 are opaque siblings
+    /// (zero-padded on chain per §2.1 of the spec).
     pub block_merkle_tree_leaves: [[u8; 32]; BLOCK_MERKLE_LEAF_COUNT],
 
     /// The referenced-block-id list whose Poseidon dense-merkle root is L7.

@@ -355,6 +355,8 @@ The full scheme of §5 cannot fit in a single Halo2 circuit at smartphone-feasib
 | `MultiHopProof` | A chain segment of up to `H = 5` hops, `is_active` per hop, exposes salted endpoints. Per-hop constraints (§4.2) are inlined as three gadget functions on the shared `BaseCircuitBuilder` context. | **17** | `N = ceil(L / H)`, padded to `N_BUNDLE` |
 | `DexFinalProof` | Voucher binding + X-side event binding + Y-side thread-0 anchor. Exposes 5 existing voucher fields + 3 new (salted X, salted Y, salt commitment) + 4 DEX-contract-identity pins (X account dApp ID + account ID, each split into two 128-bit LE halves). | **16** | 1 |
 
+**Shared helper — `dense_merkle_bound.rs`.** A Merkle-path walker needs a left/right direction bit at each level. The upstream walker in `gosh-dense-balanced-tree` lets the prover pick those bits freely (only `assert_bit`); that is unsound the moment the leaf's *position* is also exposed or range-checked, because the prover can declare one position and walk to another. `dex-halo2-circuit/src/dense_merkle_bound.rs` is a one-line-changed copy of the upstream walker: the direction bit at level `j` **is** bit `j` of the caller-supplied position decomposition, so declared position and walked path are the same object by construction. Used by `DarkDexCircuit` (L8 event slot → `inst[12]`) and `MultiHopProof` (L7 `ref_index` per hop).
+
 ### 6.3 Salted endpoints — on-chain continuity
 
 Every snark of a bundle exposes salted endpoints so the contract can chain them without seeing real block_ids. Each endpoint absorbs the voucher-scoped `salt` (private witness), the target `block_id`, and a **bundle-global position tag**:
