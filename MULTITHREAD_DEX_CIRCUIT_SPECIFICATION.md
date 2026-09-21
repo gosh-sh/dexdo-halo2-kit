@@ -235,7 +235,7 @@ Slot 0 of L7 (`parent_block_id`) is **not** used as a hop edge: per §2.3 it is 
 
 ### 4.2 What one hop constrains
 
-The hop is a **building block, not a standalone snark** — it has no public inputs of its own. Block IDs and L7 material must stay hidden for DEX anonymity (§9.1); they only leave the circuit boundary through the salted endpoints of the enclosing `MultiHopProof` (see §6.3 — the outer snark exposes `salted_start_block_id` and `salted_end_block_id`, computed as position-tagged `salted_id(block_id, bundle_index·H + h)`).
+The hop is a **building block, not a standalone snark** — it has no public inputs of its own. Block IDs and L7 material must stay hidden for DEX anonymity (§9.1); they only leave the circuit boundary through the salted endpoints of the enclosing `MultiHopProof` (see §6.3 — the outer snark exposes `salted_start_block_id` and `salted_end_block_id`, computed as position-tagged `salted_id(salt, block_id, bundle_index·H + h)`).
 
 **Shape-witnessing preamble.** The L7 tree on the chain side is variable-depth (§2.3). Since Halo2 constraints are a fixed circuit, we size the inner path array to the worst case (`MAX_PROOF_BLOCK_REFS_DEPTH = 8`) and carry a per-hop witness `refs_tree_depth ∈ [0, 8]` that tells the circuit how many combine steps of the pre-allocated 8-step fold are *live* for this hop. The remaining steps are gated off. This mirrors the pattern already used in `DarkDexCircuit` for the variable-depth ext-out-messages tree opening (`num_ext_out_levels`).
 
@@ -406,21 +406,21 @@ DOMAIN_TAG_FR    = bytes_to_fr( DOMAIN_TAG_BYTES  zero-padded to 32 LE bytes )
 #### Per-`MultiHopProof` public inputs (3)
 
 ```
-inst[0] = salted_start_block_id  =  salted_id( B_0.block_id , bundle_index·H       )
-inst[1] = salted_end_block_id    =  salted_id( B_H.block_id , bundle_index·H + H   )
+inst[0] = salted_start_block_id  =  salted_id( salt , B_0.block_id , bundle_index·H       )
+inst[1] = salted_end_block_id    =  salted_id( salt , B_H.block_id , bundle_index·H + H   )
 inst[2] = salt_commitment        =  Poseidon( [ salt ] )
 ```
 
 #### Per-`DexFinalProof` public inputs (13)
 
 ```
-inst[0]  = depositIdentifierHash                                      // voucher nullifier
+inst[0]  = depositIdentifierHash                                      // voucher nullifier (see below)
 inst[1]  = finalLayerHistoricalHashRoot                               // checked by gosh.check_layer_hash
 inst[2]  = voucherNominalFr
 inst[3]  = tokenTypeFr
 inst[4]  = ephemeralPubkey
-inst[5]  = salted_X_start  =  salted_id( X.block_id , 0 )             // chain head (event block, thread t)
-inst[6]  = salted_Y_end    =  salted_id( Y.block_id , N_BUNDLE·H )    // chain tail (anchor, thread 0)
+inst[5]  = salted_X_start  =  salted_id( salt , X.block_id , 0 )             // chain head (event block, thread t)
+inst[6]  = salted_Y_end    =  salted_id( salt , Y.block_id , N_BUNDLE·H )    // chain tail (anchor, thread 0)
 inst[7]  = salt_commitment                                            // bundle binder
 inst[8]  = x_account_dapp_id_lo   =  LE( x_account_dapp_id[ 0..16] )  // DEX contract dApp ID, lo 128 bits
 inst[9]  = x_account_dapp_id_hi   =  LE( x_account_dapp_id[16..32] )  // DEX contract dApp ID, hi 128 bits
@@ -428,6 +428,21 @@ inst[10] = x_account_id_lo        =  LE( x_account_id     [ 0..16] )  // DEX con
 inst[11] = x_account_id_hi        =  LE( x_account_id     [16..32] )  // DEX contract account ID, hi 128 bits
 inst[12] = x_ext_out_merkle_proof_position                            // replay-protection uniquifier
 ```
+
+Rationale for `inst[0] = depositIdentifierHash`: a Poseidon hash over the
+voucher's identifying fields, computed inside `DarkDexCircuit` at
+`dex-halo2-circuit/src/dark_dex_circuit.rs:517-518` as
+
+```
+depositIdentifierHash = Poseidon( [ voucher_nominal , token_type , sk_u , sk_u_commit ] )
+```
+
+where `sk_u` is the private user secret and `sk_u_commit = Poseidon([sk_u, 0])`
+(also private-derived). It plays the role of the on-chain **nullifier** — the
+contract keys spent-set membership on the full instance vector `inst[0..12]`,
+so `depositIdentifierHash` is the deterministic, unlinkable fingerprint of the
+voucher itself (independent of which X/Y blocks were chosen to anchor this
+particular proof).
 
 Rationale for the four contract-identity pins (inst[8..12]): on TVM every DEX
 event, by design, originates from a single fixed `RootPN` contract, so its
@@ -563,12 +578,12 @@ constraints:
   2. salted_endpoint_check (position-tagged; see §6.3):
         position_base := bundle_index * H
         salted_start_block_id_pub ==
-            salted_id(hop_current_block_id[0],   position_base)
+            salted_id(salt, hop_current_block_id[0],   position_base)
         salted_end_block_id_pub   ==
-            salted_id(hop_next_block_id[H-1],    position_base + H)
+            salted_id(salt, hop_next_block_id[H-1],    position_base + H)
         Additionally, for each h in 0..H the per-hop salted endpoints
-        salted_id(hop_current_block_id[h], position_base + h) and
-        salted_id(hop_next_block_id[h],    position_base + h + 1)
+        salted_id(salt, hop_current_block_id[h], position_base + h) and
+        salted_id(salt, hop_next_block_id[h],    position_base + h + 1)
         are computed unconditionally (used for internal-glue check 4).
   3. for each hop h in 0..H:
         when is_active[h]: full hop constraints of §4.2 (depth-4 outer opening)
@@ -665,8 +680,8 @@ constraints:
   6. Salt + salted endpoints (position-tagged; see §6.3):
         salt                   == Poseidon([DOMAIN_TAG_FR, voucher_secret_seed])
         salt_commitment_pub    == Poseidon([salt])                                // instance [7]
-        salted_X_start_pub     == salted_id(X.block_id, 0)                        // instance [5]
-        salted_Y_end_pub       == salted_id(Y.block_id, N_BUNDLE * H)             // instance [6]
+        salted_X_start_pub     == salted_id(salt, X.block_id, 0)                  // instance [5]
+        salted_Y_end_pub       == salted_id(salt, Y.block_id, N_BUNDLE * H)       // instance [6]
 
   7. Public voucher fields at instances [0..4] (unchanged from single-thread DEX).
 
@@ -748,7 +763,7 @@ We estimate the practical phone ceiling at **K ≤ 17** (≈ 250 MB SRS, 1–3 G
 
 - **`X.block_id`, `X.height`, X's thread `t`** — fully hidden behind the voucher binding and the position-tagged salted endpoints (§6.3). Without the position tag, `t = 0` would be publicly distinguishable via `salted_X_start == salted_Y_end`.
 - **All intermediate block_ids `B_1 .. B_{L-1}`** — private witnesses inside `MultiHopProof`s.
-- **`Y.block_id`** — only `salted_Y_end = salted_id(Y.block_id, N_BUNDLE·H)` is exposed. Pseudo-random without `salt`.
+- **`Y.block_id`** — only `salted_Y_end = salted_id(salt, Y.block_id, N_BUNDLE·H)` is exposed. Pseudo-random without `salt`.
 - **`bundle_index`** — the private per-snark witness `b ∈ [0, N_BUNDLE)` that drives the position tag. Observers see only the salted endpoints, which are pseudo-random.
 - **`Y.envelope_hash`, `Y.tracked_ext_out_messages_root`** — unconstrained witnesses inside `DexFinalProof`.
 - **True chain length L** — hidden by fixed `N_BUNDLE = 4`.
@@ -763,7 +778,7 @@ We estimate the practical phone ceiling at **K ≤ 17** (≈ 250 MB SRS, 1–3 G
 
 ### 9.3 What is *not* a leak
 
-- **Cross-voucher linkability** — each voucher has its own `voucher_secret_seed`, hence its own `salt` and its own `salted_id(·, ·)` outputs. Two vouchers from the same physical user are not linkable via salted endpoints under the Poseidon random-oracle model.
+- **Cross-voucher linkability** — each voucher has its own `voucher_secret_seed`, hence its own `salt` and its own `salted_id(·, ·, ·)` outputs. Two vouchers from the same physical user are not linkable via salted endpoints under the Poseidon random-oracle model.
 - **`salted_X_start == salted_Y_end`** — under position tags (§6.3), `salted_X_start` sits at position 0 and `salted_Y_end` at position `N_BUNDLE·H`, so the two are distinct Poseidon outputs even when `X.block_id == Y.block_id`. On-chain observers cannot read same-thread membership off the DexFinal publics.
 - **Inactive hops** — every hop, active or padded, produces a `salted_start != salted_end` pair (different positions). Whether a specific `MultiHopProof` is active or padded is not distinguishable from public inputs without knowing `salt`.
 
@@ -807,18 +822,8 @@ We estimate the practical phone ceiling at **K ≤ 17** (≈ 250 MB SRS, 1–3 G
 
 ### 10.2 Open questions
 
-Must be answered with the team before circuit-side implementation begins.
-
-1. ~~**Ext-out-messages tree combine rule.**~~ **Resolved:** chain uses **Poseidon** dense-Merkle (`node/libs/history-proof/src/lib.rs:174–193`, `compute_ext_out_messages_root`). `DarkDexCircuit`'s ext-out walk already matches. See §2.4.
-2. ~~**Ext-out-messages tree depth bound.**~~ **Resolved:** chain-side unbounded (`BTreeMap`), circuit imposes `EXT_OUT_DEPTH_MAX = 8`. See §2.4.
-3. ~~**Ext-out-messages leaf format.**~~ **Resolved:** `Poseidon(account_dapp_id ‖ account_id ‖ ext_message_hash)`, 96-byte preimage, no tag (`node/libs/history-proof/src/lib.rs:162–172`). See §2.4.
-4. ~~**L9..L15 padding value.**~~ **Resolved:** chain uses literal `[0u8; 32]` (`node/src/types/ackinacki_block/mod.rs:556`). Circuit constants in §2.1 are correct.
-5. **Salted-endpoint direction.** `inst[5] = salted_X_start`, `inst[6] = salted_Y_end` (chain head → tail). Confirm the on-chain contract expects this order and not the reverse.
-6. **Real chain-length distribution on the testnet.** Production ceiling `L_MAX = 300` is set by the node team; measured p50/p99 distributions on real deployment are still open — informs how conservatively to size `N_BUNDLE` vs. batch dispatch cadence.
-7. **L7 walk direction in practice.** Spec assumes hops walk **into the past** (parent + refs both point backward). Confirm this matches canonical L7-walk direction in the multi-thread design.
-8. **Single-thread bundle shape.** Spec mandates that single-thread (t = 0) claims still submit 5 snarks for anonymity uniformity — a ~5× per-claim gas increase over today's single-thread DEX. Confirm this trade-off is acceptable.
-9. **Salt derivation domain.** `salt = Poseidon(DOMAIN_TAG_FR, voucher_secret_seed)`. Confirm `voucher_secret_seed` is collision-resistant and not reused for any non-voucher purpose in existing wallet code.
-10. **Re-merge of history-proof code into mainline.** Circuit work depends on helpers (`compute_block_leaf_hash`, `compute_referenced_blocks_root`, `HistoryBlockData::calculate_root_hash`, `proof_block_refs_root`, `proof_block_ref_proof`, and the widened `block_merkle_leaves()` producing the depth-4 tree). Confirm timeline.
+1. **Real chain-length distribution on the testnet.** Production ceiling `L_MAX = 300` is set by the node team; measured p50/p99 distributions on real deployment are still open — informs how conservatively to size `N_BUNDLE` vs. batch dispatch cadence.
+2. **Salt derivation domain — wallet-side audit.** `salt = Poseidon(DOMAIN_TAG_HOP_SALT_FR, voucher_secret_seed)`. Confirm `voucher_secret_seed` is collision-resistant and not reused for any non-voucher purpose in existing wallet code. Not a circuit blocker.
 
 
 ---
