@@ -348,12 +348,11 @@ The full scheme of §5 cannot fit in a single Halo2 circuit at smartphone-feasib
 - **(A) In-circuit aggregation** (`AggregationCircuit` from snark-verifier-sdk): rejected — see §8 for a detailed comparison.
 - **(B) Multi-proof composition with on-chain orchestration** (this design): produce several independent snarks, each covering a small fixed-size batch of hops, submitted together to `RootPN.sol` which checks their continuity on-chain via salted block-id endpoints exposed as public inputs.
 
-### 6.2 Three circuit definitions
+### 6.2 Circuit definitions
 
 | Circuit | Role | K | Snarks per voucher claim |
 |---|---|---|---|
-| `HopCircuit` | (helper, not submitted directly) — single hop primitive of §4.2. Used as a building block inside `MultiHopProof`. | n/a | 0 |
-| `MultiHopProof` | A chain segment of up to `H = 5` hops, `is_active` per hop, exposes salted endpoints. | **17** | `N = ceil(L / H)`, padded to `N_BUNDLE` |
+| `MultiHopProof` | A chain segment of up to `H = 5` hops, `is_active` per hop, exposes salted endpoints. Per-hop constraints (§4.2) are inlined as three gadget functions on the shared `BaseCircuitBuilder` context. | **17** | `N = ceil(L / H)`, padded to `N_BUNDLE` |
 | `DexFinalProof` | Voucher binding + X-side event binding + Y-side thread-0 anchor. Exposes 5 existing voucher fields + 3 new (salted X, salted Y, salt commitment) + 4 DEX-contract-identity pins (X account dApp ID + account ID, each split into two 128-bit LE halves). | **16** | 1 |
 
 ### 6.3 Salted endpoints — on-chain continuity
