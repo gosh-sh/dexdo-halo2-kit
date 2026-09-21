@@ -812,3 +812,7 @@ Open Question §11.2.1 (SHA-vs-Poseidon for the ext-out-messages tree) landed as
 
 - **`RootPN.sol` orchestration.** Register `VK_DexFinal`, `VK_MultiHop`; implement §7.4 phase order (public-input consistency → KZG verification → settle). Solidity test harness against native-Rust bundle fixtures.
 - **Phone-side prover integration.** WASM / native build of all snarks; parallel proving where possible. Given `L_MAX = 300` in production and `N_BUNDLE = 60`, quantify phone-side worst-case wall time before locking the prod dispatch policy (§11.2.6).
+
+### 12.3 Known P2 items — **DEFERRED**
+
+- **BC-010 — upstream 4-bit hardcode in `gosh-dense-balanced-tree::dense_merkle_root_circuit_padded`.** The `is_less_than(j_const, num_active_levels, 4)` call inside the padded walker hard-codes a 4-bit range for the depth witness. Values in `[8, 16)` collapse to "all levels active" via that comparison, so there is no cheating window at the current `MAX_PROOF_BLOCK_REFS_DEPTH = 8`, but the hardcode couples the upstream helper to an assumption of the consumer. A cross-repo fix in `gosh-halo2-crypto-lib` should either parameterise the bit-width or accept it as an argument. **Not landed in this session.** Track separately when the upstream is next touched. All other P2 items in the bug batch (BC-002/003/005/006/008/004/009) are fixed on `feature/multithreading`; BC-007 (L9..L15 padding value) is verified against the acki-nacki source (see §11.2.4).
