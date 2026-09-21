@@ -357,7 +357,7 @@ The full scheme of §5 cannot fit in a single Halo2 circuit at smartphone-feasib
 
 ### 6.3 Salted endpoints — on-chain continuity
 
-Every snark of a bundle exposes salted endpoints so the contract can chain them without seeing real block_ids. Each endpoint absorbs the voucher-scoped `salt` (private witness), the target `block_id`, and a **bundle-global position tag** (BC-005 fix, 2026-09-20):
+Every snark of a bundle exposes salted endpoints so the contract can chain them without seeing real block_ids. Each endpoint absorbs the voucher-scoped `salt` (private witness), the target `block_id`, and a **bundle-global position tag**:
 
 ```
 salted_id( salt , block_id , position )
@@ -386,7 +386,7 @@ Salt therefore contributes its full 32 bytes across `chunk0` (bytes 0..31) and t
 
 Cross-snark continuity is automatic: snark `b`'s tail (`(b+1)·H`) equals snark `b+1`'s head (`(b+1)·H`) whenever the underlying block_ids agree, exactly as before position tags were introduced.
 
-**Rationale for the position tag (BC-005).** Without it, `salted_X_start = Poseidon(salt, X.block_id)` and `salted_Y_end = Poseidon(salt, Y.block_id)` collapse to equal values whenever `X.block_id == Y.block_id` (uniform single-thread `t = 0` case). Since both are public, an on-chain observer of `inst[5] == inst[6]` could learn same-thread membership without knowing `salt` — a leak of the anonymity set contradicting §9.1. Position tags force distinct outputs at every bundle-global position, closing this leak.
+**Rationale for the position tag.** Without it, `salted_X_start = Poseidon(salt, X.block_id)` and `salted_Y_end = Poseidon(salt, Y.block_id)` collapse to equal values whenever `X.block_id == Y.block_id` (uniform single-thread `t = 0` case). Since both are public, an on-chain observer of `inst[5] == inst[6]` could learn same-thread membership without knowing `salt` — a leak of the anonymity set contradicting §9.1. Position tags force distinct outputs at every bundle-global position, closing this leak.
 
 **Why `bundle_index` is private.** The snark's bundle-slot index `b ∈ [0, N_BUNDLE)` is a **private witness** inside `MultiHopProofCircuit` (range-checked, unconditional). Making it public would let observers correlate a snark with its position, negating the purpose. The on-chain continuity check in `RootPN.sol` still enforces the correct sequence: a snark whose `bundle_index` disagrees with its bundle-slot produces salted endpoints at wrong positions that fail to chain to `DexFinal` — caught by `salted_start` / `salted_end` continuity.
 
@@ -426,7 +426,7 @@ inst[8]  = x_account_dapp_id_lo   =  LE( x_account_dapp_id[ 0..16] )  // DEX con
 inst[9]  = x_account_dapp_id_hi   =  LE( x_account_dapp_id[16..32] )  // DEX contract dApp ID, hi 128 bits
 inst[10] = x_account_id_lo        =  LE( x_account_id     [ 0..16] )  // DEX contract account ID, lo 128 bits
 inst[11] = x_account_id_hi        =  LE( x_account_id     [16..32] )  // DEX contract account ID, hi 128 bits
-inst[12] = x_ext_out_merkle_proof_position                            // BC-011 replay-protection uniquifier
+inst[12] = x_ext_out_merkle_proof_position                            // replay-protection uniquifier
 ```
 
 Rationale for the four contract-identity pins (inst[8..12]): on TVM every DEX
@@ -438,7 +438,7 @@ emitted by a different account. Each 32-byte address is split into two
 128-bit LE halves (lo = bytes `[0..16]`, hi = bytes `[16..32]`); each half is
 strictly `< 2^128 < p` so no `V < p` canonicality gadget is required.
 
-Rationale for `inst[12] = x_ext_out_merkle_proof_position` (BC-011): the L8
+Rationale for `inst[12] = x_ext_out_merkle_proof_position`: the L8
 `tracked_ext_out_messages` tree slot index of the withdrawal event within the
 X block. Two legitimately-distinct events in the same block (same `sk_u`,
 same `voucher_nominal`, same `token_type`, hence identical `inst[0..12)`)
@@ -456,8 +456,8 @@ witnesses. `DarkDexCircuit` therefore bit-decomposes the position via
 `gate.num_to_bits(MAX_EVENTS_TREE_DEPTH)`, forces `pos_bits[j] == 0` for
 `j >= num_active_levels`, and feeds the bound bits into the local
 `dense_merkle_root_padded_bound` walker (see
-`dex-halo2-circuit/src/dense_merkle_bound.rs`; same fix pattern as BC-004 at
-L7 in `multi_hop_proof.rs`).
+`dex-halo2-circuit/src/dense_merkle_bound.rs`; same pattern as the L7
+direction-bit binding in `multi_hop_proof.rs`).
 
 Source of truth: `dex-halo2-circuit/src/dark_dex_circuit.rs` (`DarkDexCircuit`
 type-level doc) and `dex-halo2-circuit/src/bundle_verifier.rs`
@@ -560,7 +560,7 @@ constraints:
   1. salt_commitment_check:
         salt_commitment_pub == Poseidon([salt])
         salt                == Poseidon([DOMAIN_TAG_FR, voucher_secret_seed])
-  2. salted_endpoint_check (position-tagged, BC-005; see §6.3):
+  2. salted_endpoint_check (position-tagged; see §6.3):
         position_base := bundle_index * H
         salted_start_block_id_pub ==
             salted_id(hop_current_block_id[0],   position_base)
@@ -576,10 +576,10 @@ constraints:
             ref_block_id_bytes[h] == block_id_bytes[h]
             (i.e. the reference at slot `ref_index[h]` equals the hop's
             current block_id — under position tags, salted_start !=
-            salted_end even for inactive hops, so the pre-BC-005
-            propagation rule `hop_next_block_id[h] == hop_current_block_id[h]`
-            no longer suffices; byte-equality on the ref combined with the
-            padding convention `pad_bid = block_ids[k_hops]` still forces
+            salted_end even for inactive hops, so a simple
+            `hop_next_block_id[h] == hop_current_block_id[h]` propagation
+            rule does not suffice; byte-equality on the ref combined with
+            the padding convention `pad_bid = block_ids[k_hops]` forces
             the inactive tail to propagate a single block_id).
   4. for each h in 0..H-1:
         hop_current_block_id[h+1] == hop_next_block_id[h]        (internal chain glue)
@@ -662,7 +662,7 @@ constraints:
         block_leaf(Y) -- depth-8 Poseidon dense-Merkle path --> #L1(M_Y)
         #L1(M_Y)      -- dense chain (≤ 11 links)          --> finalLayerHistoricalHashRoot
 
-  6. Salt + salted endpoints (position-tagged, BC-005; see §6.3):
+  6. Salt + salted endpoints (position-tagged; see §6.3):
         salt                   == Poseidon([DOMAIN_TAG_FR, voucher_secret_seed])
         salt_commitment_pub    == Poseidon([salt])                                // instance [7]
         salted_X_start_pub     == salted_id(X.block_id, 0)                        // instance [5]
@@ -746,7 +746,7 @@ We estimate the practical phone ceiling at **K ≤ 17** (≈ 250 MB SRS, 1–3 G
 
 ### 9.1 What is hidden
 
-- **`X.block_id`, `X.height`, X's thread `t`** — fully hidden behind the voucher binding and the salted endpoints. (Requires the BC-005 position-tag fix of §6.3; without it, `t = 0` would be publicly distinguishable via `salted_X_start == salted_Y_end`.)
+- **`X.block_id`, `X.height`, X's thread `t`** — fully hidden behind the voucher binding and the position-tagged salted endpoints (§6.3). Without the position tag, `t = 0` would be publicly distinguishable via `salted_X_start == salted_Y_end`.
 - **All intermediate block_ids `B_1 .. B_{L-1}`** — private witnesses inside `MultiHopProof`s.
 - **`Y.block_id`** — only `salted_Y_end = salted_id(Y.block_id, N_BUNDLE·H)` is exposed. Pseudo-random without `salt`.
 - **`bundle_index`** — the private per-snark witness `b ∈ [0, N_BUNDLE)` that drives the position tag. Observers see only the salted endpoints, which are pseudo-random.
@@ -764,7 +764,7 @@ We estimate the practical phone ceiling at **K ≤ 17** (≈ 250 MB SRS, 1–3 G
 ### 9.3 What is *not* a leak
 
 - **Cross-voucher linkability** — each voucher has its own `voucher_secret_seed`, hence its own `salt` and its own `salted_id(·, ·)` outputs. Two vouchers from the same physical user are not linkable via salted endpoints under the Poseidon random-oracle model.
-- **`salted_X_start == salted_Y_end`** (the pre-BC-005 t=0 tell). Under position tags (§6.3), `salted_X_start` sits at position 0 and `salted_Y_end` at position `N_BUNDLE·H`, so the two are distinct Poseidon outputs even when `X.block_id == Y.block_id`. On-chain observers can no longer read same-thread membership off the DexFinal publics.
+- **`salted_X_start == salted_Y_end`** — under position tags (§6.3), `salted_X_start` sits at position 0 and `salted_Y_end` at position `N_BUNDLE·H`, so the two are distinct Poseidon outputs even when `X.block_id == Y.block_id`. On-chain observers cannot read same-thread membership off the DexFinal publics.
 - **Inactive hops** — every hop, active or padded, produces a `salted_start != salted_end` pair (different positions). Whether a specific `MultiHopProof` is active or padded is not distinguishable from public inputs without knowing `salt`.
 
 ### 9.4 Threats
@@ -844,4 +844,4 @@ Open Question §10.2.1 (SHA-vs-Poseidon for the ext-out-messages tree) landed as
 
 ### 11.3 Known P2 items — **DEFERRED**
 
-- **BC-010 — upstream 4-bit hardcode in `gosh-dense-balanced-tree::dense_merkle_root_circuit_padded`.** The `is_less_than(j_const, num_active_levels, 4)` call inside the padded walker hard-codes a 4-bit range for the depth witness. Values in `[8, 16)` collapse to "all levels active" via that comparison, so there is no cheating window at the current `MAX_PROOF_BLOCK_REFS_DEPTH = 8`, but the hardcode couples the upstream helper to an assumption of the consumer. A cross-repo fix in `gosh-halo2-crypto-lib` should either parameterise the bit-width or accept it as an argument. **Not landed in this session.** Track separately when the upstream is next touched. All other P2 items in the bug batch (BC-002/003/005/006/008/004/009) are fixed on `feature/multithreading`; BC-007 (L9..L15 padding value) is verified against the acki-nacki source (see §10.2.4).
+- **Upstream 4-bit hardcode in `gosh-dense-balanced-tree::dense_merkle_root_circuit_padded`.** The `is_less_than(j_const, num_active_levels, 4)` call inside the padded walker hard-codes a 4-bit range for the depth witness. Values in `[8, 16)` collapse to "all levels active" via that comparison, so there is no cheating window at the current `MAX_PROOF_BLOCK_REFS_DEPTH = 8`, but the hardcode couples the upstream helper to an assumption of the consumer. A cross-repo fix in `gosh-halo2-crypto-lib` should either parameterise the bit-width or accept it as an argument. Track separately when the upstream is next touched.
