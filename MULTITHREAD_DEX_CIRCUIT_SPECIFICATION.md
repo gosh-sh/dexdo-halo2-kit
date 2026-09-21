@@ -357,14 +357,23 @@ The full scheme of §5 cannot fit in a single Halo2 circuit at smartphone-feasib
 
 ### 6.3 Salted endpoints — on-chain continuity
 
-Every snark of a bundle exposes salted endpoints to allow the contract to chain them without seeing real block_ids. Each endpoint absorbs a **bundle-global position tag** in addition to the salt and block_id (BC-005 fix, 2026-09-20):
+Every snark of a bundle exposes salted endpoints so the contract can chain them without seeing real block_ids. Each endpoint absorbs the voucher-scoped `salt` (private witness), the target `block_id`, and a **bundle-global position tag** (BC-005 fix, 2026-09-20):
 
 ```
-salted_id( block_id , position )
-    :=  Poseidon( [ salt_chunk0 , salt_chunk1 , salt_chunk2 , position ] )
+salted_id( salt , block_id , position )
+    :=  Poseidon( [ chunk0 , chunk1 , chunk2 , position_fr ] )
 ```
 
-Where `salt_chunk{0,1,2}` are the three 31-byte chunks of the byte-flat serialization `fr_to_bytes(salt) ‖ block_id_LE` (32 + 32 = 64 bytes ⇒ chunks `[0..31]`, `[31..62]`, `[62..64]` zero-padded to 31 bytes each — the canonical byte-flat Poseidon convention of memory `dex_phase4_byteflat_migration`). `position` is a `u64` embedded directly as an `Fr` field element.
+where the four Poseidon inputs pack `salt` and `block_id` byte-flat (LE) as:
+
+```
+chunk0      =  LE( salt_bytes[ 0..31] )                                  // 31 low bytes of salt
+chunk1      =     salt_bytes[31]  +  256 · LE( block_id[ 0..30] )        // top byte of salt ‖ 30 low bytes of block_id
+chunk2      =                          LE( block_id[30..32] )            // 2 high bytes of block_id
+position_fr =  Fr::from( position: u64 )                                 // bundle-global slot index
+```
+
+Salt therefore contributes its full 32 bytes across `chunk0` (bytes 0..31) and the low term of `chunk1` (byte 31); the 32 block_id bytes fill the rest of `chunk1` (30 bytes) and all of `chunk2` (2 bytes). Every Poseidon input stays `< p` unambiguously (each byte-flat chunk is ≤ 248 bits). Source of truth: `compute_salted_block_id_native` / `salted_block_id_poseidon_circuit` in `dex-halo2-circuit/src/salt.rs`.
 
 **Position enumeration** (bundle-global). With `H = H_HOPS_PER_PROOF = 5`:
 
@@ -765,7 +774,7 @@ We estimate the practical phone ceiling at **K ≤ 17** (≈ 250 MB SRS, 1–3 G
 
 ### 9.5 Hash strength
 
-`salted_id(block_id, position) = Poseidon([salt_chunk0, salt_chunk1, salt_chunk2, position])` (see §6.3) — 4-input Poseidon over BN254 scalar field with ~127-bit collision security and pseudo-randomness under the random-oracle model. Sufficient for salting; the added position input does not weaken the primitive.
+`salted_id(salt, block_id, position)` is a 4-input Poseidon over BN254 (packing defined in §6.3) with ~127-bit collision security and pseudo-randomness under the random-oracle model. Sufficient for salting; the added position input does not weaken the primitive.
 
 ---
 
