@@ -496,13 +496,6 @@ impl Circuit<Fr> for DarkDexCircuit {
                 }
 
                 // === Poseidon commitment ===
-                // BC-009 fix: the second Poseidon input is a domain-separation
-                // pad and must be a compile-time constant, not a free witness.
-                // Previously both `sk_u` and the `0` pad were loaded via
-                // `assign_witnesses`, leaving the pad unpinned (a prover could
-                // substitute any value; benign because `sk_u_commit` is
-                // private, but a real code smell — the salt gadget below
-                // already uses `load_constant` for its analogous domain tag).
                 let sk_u_assigned = ctx.load_witness(self.sk_u);
                 let sk_u_commit_pad = ctx.load_constant(Fr::zero());
                 let inputs = [sk_u_assigned, sk_u_commit_pad];
@@ -584,7 +577,7 @@ impl Circuit<Fr> for DarkDexCircuit {
                 let ev_diff = gate.sub(ctx, max_ev_const, x_num_events_levels);
                 range.range_check(ctx, ev_diff, 4);
 
-                // BC-011: bind the L8 walker's per-level direction bits to a
+                // bind the L8 walker's per-level direction bits to a
                 // range-checked position witness that will be exposed as a
                 // public input below. Without this binding, the upstream
                 // padded walker would use free direction-bit witnesses — so
@@ -964,7 +957,7 @@ impl Circuit<Fr> for DarkDexCircuit {
             builder.assigned_instances[0].push(x_account_dapp_id_hi);
             builder.assigned_instances[0].push(x_account_id_lo);
             builder.assigned_instances[0].push(x_account_id_hi);
-            // BC-011: expose the L8 ext-out Merkle slot index so two
+            // expose the L8 ext-out Merkle slot index so two
             // legitimately-distinct events in the same block (identical
             // sk_u / voucher_nominal / token_type / x_block_id, hence
             // identical [0..11] publics) map to distinct DexFinal instance

@@ -29,8 +29,7 @@
 //! # Ptau cache
 //!
 //! The K=20 ptau (~2.3 GB) is cached at
-//! `$HOME/.cache/halo2-kzg-srs/powersOfTau28_hez_final_20.ptau`, matching the
-//! `bridge/scripts/bootstrap_hermez_srs.sh` convention. Override with the
+//! `$HOME/.cache/halo2-kzg-srs/powersOfTau28_hez_final_20.ptau`. Override with the
 //! `HERMEZ_PTAU_CACHE` env var. If the file is missing or has wrong size, it
 //! is downloaded from the Polygon zkEVM GCS mirror.
 //!
@@ -101,9 +100,7 @@ pub fn default_ptau_cache() -> PathBuf {
 
 /// Ensure the Hermez ptau exists at `path` with the expected size, downloading
 /// it from the Polygon zkEVM GCS mirror if missing or corrupt.
-///
-/// This is the same fetch strategy `bootstrap_hermez_srs.sh` uses. The
-/// downloaded file is size-checked but *not* SHA-256-checked here — the
+/// The downloaded file is size-checked but *not* SHA-256-checked here — the
 /// SHA-256 is verified against `HERMEZ_K20_RAW_SRS_SHA256` on the derived
 /// raw SRS inside [`load_hermez_srs`], not on the ptau blob itself.
 pub fn ensure_ptau_present(path: &Path) -> std::io::Result<()> {
