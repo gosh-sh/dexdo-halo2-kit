@@ -17,7 +17,7 @@ This document describes the cryptographic mechanism for proving, in zero knowled
 | **`event_hash`** | 32-byte hash of the voucher event message. Included as a leaf of X's `tracked_ext_out_messages` Merkle tree. |
 | **Block leaf** (thread 0, layer-1) | `block_leaf = Poseidon96(block_id ‖ envelope_hash ‖ tracked_ext_out_messages_root)`. Feeds the per-batch layer-1 Poseidon dense-Merkle tree in thread 0. |
 | **GlobalHistoricalData** | Node-side per-thread map (`HashMap<ThreadIdentifier, HistoryLayerData>`) of layer-N window hashes queried by the contract via `gosh.check_layer_hash(root, N)`. Under this protocol only thread 0's entry is populated. |
-| **`finalLayerHistoricalHashRoot`** | Instance 1 of the DEX proof; the layer-N batch hash the prover anchors against. Must belong to thread 0's window. |
+| **`finalLayerHistoricalHashRoot`** | The layer-N batch hash the prover anchors against — exposed as public input `inst[1]` of the DEX proof (see §10 for the full 13-slot layout). Must belong to thread 0's window. |
 | **`layerNumber`** | Contract argument naming the layer N that `finalLayerHistoricalHashRoot` belongs to. |
 | **L** | True chain length in hops from X to Y. `L = 0` when t = 0 (X = Y); `L > 0` in the multi-thread case. |
 | **`L_MAX`** | Circuit-side upper bound on L. **Production target = 300** (specified by the node team as the cross-thread walk-length ceiling under the current threading design). Current prototyping point is **20**; `N_BUNDLE = ceil(L_MAX / H)` scales linearly — moving to prod raises `N_BUNDLE` to 60, no change to per-snark K. |
@@ -42,7 +42,7 @@ When `t ≠ 0`, the proof must chain the event's block X, via cross-thread L7 re
 
 ### 1.2 The contract-side check
 
-`RootPN.sol` (`acki-nacki/contracts/dex/RootPN.sol`) consumes the proof together with `(finalLayerHistoricalHashRoot, layerNumber)` and gates verification by:
+`RootPN.sol` (`acki-nacki/contracts/dex/RootPN.sol`) consumes the DEX proof together with `(finalLayerHistoricalHashRoot, layerNumber)` — the anchor the prover claims to hit — and asks the node whether that anchor exists in the layer-N window of `GlobalHistoricalData`:
 
 ```solidity
 require(
@@ -51,7 +51,10 @@ require(
 );
 ```
 
-`finalLayerHistoricalHashRoot` is exposed as instance 1 of the DEX proof's public-input vector. The callback must resolve the query against thread 0's window regardless of which thread RootPN itself executes in — the layer-tree data lives only there. (Concretely: the node's `check_history_proof_hash` callback looks up `GlobalHistoricalData[thread_id]`; only thread 0's entry is populated, so verification succeeds only when the anchored root belongs to thread 0.)
+Two facts pin the anchor down:
+
+1. **It's a public input of the proof.** `finalLayerHistoricalHashRoot` is exposed as `inst[1]` (see §10 for the full 13-slot layout), so the circuit binds every private witness to *this specific* root.
+2. **It must live in thread 0.** `gosh.check_layer_hash` resolves against `GlobalHistoricalData[thread_id]`, and only thread 0's entry is ever populated (§1.1). The check therefore succeeds only when `finalLayerHistoricalHashRoot` is a genuine thread-0 layer-N batch hash — regardless of which thread RootPN itself runs in.
 
 ### 1.3 Anchoring simple strategy
 
