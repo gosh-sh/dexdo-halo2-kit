@@ -1069,6 +1069,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "dex-halo2-circuit",
+ "gosh-dense-balanced-tree",
  "halo2-base 0.4.1",
  "hex",
  "pse-poseidon",
@@ -1805,6 +1807,8 @@ dependencies = [
 name = "halo2-proover"
 version = "0.3.0"
 dependencies = [
+ "clap",
+ "dark_dex_halo2_private_witness_export_lib",
  "dex-halo2-circuit",
  "failure",
  "gosh-dense-balanced-tree",
@@ -4138,7 +4142,7 @@ dependencies = [
 [[package]]
 name = "tvm_block"
 version = "3.0.2"
-source = "git+https://github.com/tvmlabs/tvm-sdk#3b6a038067fa162c5ab11ef28851d2cc9655a705"
+source = "git+https://github.com/tvmlabs/tvm-sdk.git#3b6a038067fa162c5ab11ef28851d2cc9655a705"
 dependencies = [
  "anyhow",
  "base64",
@@ -4188,7 +4192,7 @@ dependencies = [
 [[package]]
 name = "tvm_types"
 version = "3.0.2"
-source = "git+https://github.com/tvmlabs/tvm-sdk#3b6a038067fa162c5ab11ef28851d2cc9655a705"
+source = "git+https://github.com/tvmlabs/tvm-sdk.git#3b6a038067fa162c5ab11ef28851d2cc9655a705"
 dependencies = [
  "aes",
  "anyhow",

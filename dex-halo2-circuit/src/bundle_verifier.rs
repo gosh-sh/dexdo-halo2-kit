@@ -139,7 +139,7 @@ const DEX_FINAL_LENGTHS: &[usize] = &[DEX_FINAL_LEN];
 const MULTI_HOP_LENGTHS: &[usize] = &[MULTI_HOP_LEN];
 
 /// MultiHop offsets per spec §6.9.
-mod multihop_offset {
+pub mod multihop_offset {
     pub const SALTED_START_BLOCK_ID: usize = 0;
     pub const SALTED_END_BLOCK_ID: usize = 1;
     pub const SALT_COMMITMENT: usize = 2;
@@ -152,20 +152,15 @@ mod multihop_offset {
 /// links event block → anchor block, so `bundle[1].salted_start_block_id`
 /// must equal the head and `bundle[last].salted_end_block_id` must equal
 /// the tail. See spec §7.4 (`ERR_X_HEAD_MISMATCH`, `ERR_Y_TAIL_MISMATCH`).
-mod dexfinal_offset {
+pub mod dexfinal_offset {
     pub const SALTED_X_START: usize = 5;
     pub const SALTED_Y_END: usize = 6;
     pub const SALT_COMMITMENT: usize = 7;
-    #[allow(dead_code)]
     pub const X_ACCOUNT_DAPP_ID_LO: usize = 8;
-    #[allow(dead_code)]
     pub const X_ACCOUNT_DAPP_ID_HI: usize = 9;
-    #[allow(dead_code)]
     pub const X_ACCOUNT_ID_LO: usize = 10;
-    #[allow(dead_code)]
     pub const X_ACCOUNT_ID_HI: usize = 11;
     /// BC-011 replay-protection uniquifier: L8 ext-out Merkle slot index.
-    #[allow(dead_code)]
     pub const X_EXT_OUT_POSITION: usize = 12;
 }
 

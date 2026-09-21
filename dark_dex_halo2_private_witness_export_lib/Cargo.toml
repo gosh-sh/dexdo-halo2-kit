@@ -13,10 +13,17 @@ path = "src/main.rs"
 
 [dependencies]
 # Poseidon-bn254 hashing (same crates the node uses → byte-identical roots).
-# All other history-proof / node-types code is vendored locally (see
-# src/poseidon.rs, src/types.rs) so we don't pull the acki-nacki monorepo.
+# History-proof code (Poseidon dense-tree helpers, layer-N walk) is
+# vendored locally in src/poseidon.rs; the depth-4 SHA block-id tree
+# and L7 Poseidon refs-root helpers live in the sibling circuit crate
+# and are consumed directly — no acki-nacki dep and no duplicate vendor.
 pse-poseidon = { git = "https://github.com/axiom-crypto/pse-poseidon.git" }
 halo2-base = { git = "https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381", branch = "bump-halo2-lib-v0.4.1", default-features = false, features = ["halo2-axiom"] }
+dex-halo2-circuit = { path = "../dex-halo2-circuit" }
+# Byte↔Fr canonical converters used by the bundle-witness chain walker.
+# Kept via the same source as dex-halo2-circuit so byte-flat Poseidon
+# inputs stay bit-identical to what the in-circuit gadget consumes.
+gosh-dense-balanced-tree = { git = "https://github.com/gosh-sh/gosh-halo2-crypto-lib", branch = "bump-halo2-lib-v0.4.1" }
 
 anyhow = "1.0.97"
 clap = { version = "4.5.2", features = ["derive"] }

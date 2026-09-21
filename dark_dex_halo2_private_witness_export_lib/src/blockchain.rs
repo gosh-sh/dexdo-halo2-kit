@@ -24,8 +24,20 @@ fragment ProofBlockFields on Block {
   tracked_ext_out_messages_root
   tracked_ext_out_message_hashes { routing message_hashes }
   history_proofs { layer root_hash }
+  block_merkle_tree_leaves
+  proof_block_refs
 }
 "#;
+
+/// Number of leaves in the depth-4 SHA-256 block-id Merkle tree
+/// (spec §12.4). Chain-side canonical layout since 2026-07-23.
+pub const BLOCK_MERKLE_LEAF_COUNT: usize = 16;
+
+/// L7 leaf index: Poseidon Merkle root of `proof_block_refs`.
+pub const PROOF_BLOCK_REFS_LEAF_INDEX: usize = 7;
+
+/// L8 leaf index: `tracked_ext_out_messages_root`.
+pub const TRACKED_EXT_OUT_MESSAGES_ROOT_LEAF_INDEX: usize = 8;
 
 #[derive(Clone, Debug)]
 pub struct GqlProofBlock {
@@ -36,6 +48,17 @@ pub struct GqlProofBlock {
     pub tracked_ext_out_messages_root: [u8; 32],
     pub tracked_ext_out_messages: BTreeMap<AccountRouting, Vec<[u8; 32]>>,
     pub history_proofs: BTreeMap<LayerNumber, [u8; 32]>,
+    /// The 16 leaves of the depth-4 SHA-256 block-id Merkle tree
+    /// (spec §12.4). Leaf 7 = Poseidon root of `proof_block_refs`;
+    /// leaf 8 = `tracked_ext_out_messages_root`; leaves 9..=15 are
+    /// zero-padding per BC-007. Populated from GQL — required by the
+    /// v2 multi-hop witness builder.
+    pub block_merkle_tree_leaves: [[u8; 32]; BLOCK_MERKLE_LEAF_COUNT],
+    /// Parent + cross-thread proof-block references (variable width,
+    /// bounded by `MAX_PROOF_BLOCK_REFS`). Element 0 is the parent
+    /// (previous block on the same thread) — used by the chain walker
+    /// to synthesize the hop chain backwards from the anchor block.
+    pub proof_block_refs: Vec<[u8; 32]>,
 }
 
 impl GqlProofBlock {
@@ -226,7 +249,65 @@ fn parse_proof_block(value: &Value) -> anyhow::Result<GqlProofBlock> {
         .context("tracked_ext_out_messages_root")?,
         tracked_ext_out_messages: parse_tracked_ext_out_messages(value)?,
         history_proofs: parse_history_proofs(value)?,
+        block_merkle_tree_leaves: parse_block_merkle_tree_leaves(value)?,
+        proof_block_refs: parse_proof_block_refs(value)?,
     })
+}
+
+fn parse_block_merkle_tree_leaves(
+    value: &Value,
+) -> anyhow::Result<[[u8; 32]; BLOCK_MERKLE_LEAF_COUNT]> {
+    // Required post-2026-07-23 chain — fail loudly if the GQL server
+    // hasn't been upgraded (rather than silently degrading the fixture).
+    let raw = value
+        .get("block_merkle_tree_leaves")
+        .ok_or_else(|| anyhow::format_err!("missing block.block_merkle_tree_leaves"))?;
+    ensure!(
+        !raw.is_null(),
+        "block_merkle_tree_leaves is null — GQL server must expose the depth-4 SHA leaf list"
+    );
+    let entries = raw
+        .as_array()
+        .ok_or_else(|| anyhow::format_err!("block_merkle_tree_leaves is not an array"))?;
+    ensure!(
+        entries.len() == BLOCK_MERKLE_LEAF_COUNT,
+        "block_merkle_tree_leaves length {} != expected {}",
+        entries.len(),
+        BLOCK_MERKLE_LEAF_COUNT
+    );
+    let mut out = [[0u8; 32]; BLOCK_MERKLE_LEAF_COUNT];
+    for (i, entry) in entries.iter().enumerate() {
+        let s = entry
+            .as_str()
+            .ok_or_else(|| anyhow::format_err!("block_merkle_tree_leaves[{i}] is not a string"))?;
+        out[i] = decode_hash_hex(s)
+            .with_context(|| format!("block_merkle_tree_leaves[{i}]"))?;
+    }
+    Ok(out)
+}
+
+fn parse_proof_block_refs(value: &Value) -> anyhow::Result<Vec<[u8; 32]>> {
+    // `proof_block_refs` is required (variable-length, possibly empty)
+    // for post-2026-07-23 chains. Missing => GQL upgrade needed.
+    let raw = value
+        .get("proof_block_refs")
+        .ok_or_else(|| anyhow::format_err!("missing block.proof_block_refs"))?;
+    if raw.is_null() {
+        return Ok(Vec::new());
+    }
+    let entries = raw
+        .as_array()
+        .ok_or_else(|| anyhow::format_err!("proof_block_refs is not an array"))?;
+    let mut out = Vec::with_capacity(entries.len());
+    for (i, entry) in entries.iter().enumerate() {
+        let s = entry
+            .as_str()
+            .ok_or_else(|| anyhow::format_err!("proof_block_refs[{i}] is not a string"))?;
+        out.push(
+            decode_hash_hex(s).with_context(|| format!("proof_block_refs[{i}]"))?,
+        );
+    }
+    Ok(out)
 }
 
 fn parse_tracked_ext_out_messages(

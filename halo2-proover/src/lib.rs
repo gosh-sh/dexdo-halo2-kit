@@ -1,5 +1,6 @@
 use gosh_dark_dex_halo2_new_circuit::block_id_tree::compute_block_id_from_l8_native;
 use gosh_dark_dex_halo2_new_circuit::boc_helper::{serialize_cells_tree_root_first, BocFlattenData};
+use gosh_dark_dex_halo2_new_circuit::bundle_verifier::DEX_FINAL_LEN;
 use gosh_dark_dex_halo2_new_circuit::dark_dex_circuit::DarkDexCircuit;
 use gosh_dark_dex_halo2_new_circuit::multi_hop_witness::{H_HOPS_PER_PROOF, N_BUNDLE};
 use gosh_dark_dex_halo2_new_circuit::salt::{
@@ -16,7 +17,7 @@ use halo2_base::halo2_proofs::halo2curves::bn256::{Fr, G1Affine};
 use halo2_base::halo2_proofs::halo2curves::ff::PrimeField;
 use halo2_base::halo2_proofs::plonk::{keygen_pk, keygen_vk, ProvingKey};
 use halo2_base::halo2_proofs::SerdeFormat;
-use halo2_base::utils::fs::gen_srs;
+use gosh_dark_dex_halo2_new_circuit::kzg_source::load_srs;
 use halo2_base::utils::testing::gen_proof_with_instances;
 
 use serde::{Deserialize, Serialize};
@@ -25,6 +26,9 @@ use tvm_block::{Deserializable, Message, Serializable};
 use std::fs;
 use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
+
+pub mod bundle;
+pub mod multi_hop;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -81,6 +85,16 @@ pub struct ProofOutput {
     pub salted_y_end: String,
     /// See `InstanceValues::salt_commitment`.
     pub salt_commitment: String,
+    /// See `InstanceValues::x_account_dapp_id_lo`.
+    pub x_account_dapp_id_lo: String,
+    /// See `InstanceValues::x_account_dapp_id_hi`.
+    pub x_account_dapp_id_hi: String,
+    /// See `InstanceValues::x_account_id_lo`.
+    pub x_account_id_lo: String,
+    /// See `InstanceValues::x_account_id_hi`.
+    pub x_account_id_hi: String,
+    /// See `InstanceValues::x_ext_out_position`.
+    pub x_ext_out_position: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,6 +116,19 @@ pub struct InstanceValues {
     /// `Poseidon([Poseidon([DOMAIN_TAG_HOP_SALT_FR, sk_u])])`.
     /// Must equal `salt_commitment` of every MultiHopProof in the same bundle.
     pub salt_commitment: String,
+    /// Low 16 bytes of `x_account_dapp_id` packed into an Fr scalar
+    /// (LE-padded to 32B before `Fr::from_repr`). BC-011 replay-protection
+    /// public: on-chain verifier ties the proof to the withdrawing account.
+    pub x_account_dapp_id_lo: String,
+    /// High 16 bytes of `x_account_dapp_id` packed into an Fr scalar.
+    pub x_account_dapp_id_hi: String,
+    /// Low 16 bytes of `x_account_id` packed into an Fr scalar.
+    pub x_account_id_lo: String,
+    /// High 16 bytes of `x_account_id` packed into an Fr scalar.
+    pub x_account_id_hi: String,
+    /// `Fr::from(x_ext_out_position)` — the tracked-ext-out-messages Merkle
+    /// leaf position, bound as a public to prevent replay across siblings.
+    pub x_ext_out_position: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -228,16 +255,43 @@ fn poseidon_hash_96_native(a: &[u8; 32], b: &[u8; 32], c: &[u8; 32]) -> [u8; 32]
 }
 
 fn instances_to_values(instances: &[Fr]) -> InstanceValues {
+    use gosh_dark_dex_halo2_new_circuit::bundle_verifier::dexfinal_offset;
     InstanceValues {
         deposit_identifier_hash: hex::encode(instances[0].to_repr()),
         final_layer_historical_hash_root: hex::encode(instances[1].to_repr()),
         voucher_nominal: hex::encode(instances[2].to_repr()),
         token_type: hex::encode(instances[3].to_repr()),
         ephemeral_pubkey: hex::encode(instances[4].to_repr()),
-        salted_x_start: hex::encode(instances[5].to_repr()),
-        salted_y_end: hex::encode(instances[6].to_repr()),
-        salt_commitment: hex::encode(instances[7].to_repr()),
+        salted_x_start: hex::encode(instances[dexfinal_offset::SALTED_X_START].to_repr()),
+        salted_y_end: hex::encode(instances[dexfinal_offset::SALTED_Y_END].to_repr()),
+        salt_commitment: hex::encode(instances[dexfinal_offset::SALT_COMMITMENT].to_repr()),
+        x_account_dapp_id_lo: hex::encode(
+            instances[dexfinal_offset::X_ACCOUNT_DAPP_ID_LO].to_repr(),
+        ),
+        x_account_dapp_id_hi: hex::encode(
+            instances[dexfinal_offset::X_ACCOUNT_DAPP_ID_HI].to_repr(),
+        ),
+        x_account_id_lo: hex::encode(instances[dexfinal_offset::X_ACCOUNT_ID_LO].to_repr()),
+        x_account_id_hi: hex::encode(instances[dexfinal_offset::X_ACCOUNT_ID_HI].to_repr()),
+        x_ext_out_position: hex::encode(instances[dexfinal_offset::X_EXT_OUT_POSITION].to_repr()),
     }
+}
+
+/// LE 128-bit lo/hi packing of a 32-byte value.
+///
+/// Mirrors `DarkDexCircuit::synthesize`'s in-circuit `pack_lo_hi` gadget
+/// (inner-product with `powers_le_32[0..16]`) exactly:
+///   * `lo = sum_{i=0..16} bytes[i]     · 256^i`
+///   * `hi = sum_{i=0..16} bytes[16+i] · 256^i`
+/// Both halves are strictly < 2^128 < p so no `V < p` canonicality gadget
+/// is needed. The on-chain verifier reconstructs the same two Fr scalars
+/// from the RootPN contract address bytes.
+fn pack_lo_hi_le(bytes: &[u8; 32]) -> (Fr, Fr) {
+    let mut lo_buf = [0u8; 32];
+    lo_buf[..16].copy_from_slice(&bytes[..16]);
+    let mut hi_buf = [0u8; 32];
+    hi_buf[..16].copy_from_slice(&bytes[16..32]);
+    (bytes_to_fr(&lo_buf), bytes_to_fr(&hi_buf))
 }
 
 // ---------------------------------------------------------------------------
@@ -442,7 +496,11 @@ fn compute_instances(parsed: &ParsedFixture) -> Vec<Fr> {
         (N_BUNDLE * H_HOPS_PER_PROOF) as u64,
     );
 
-    vec![
+    let (x_account_dapp_id_lo, x_account_dapp_id_hi) = pack_lo_hi_le(&parsed.account_dapp_id);
+    let (x_account_id_lo, x_account_id_hi) = pack_lo_hi_le(&parsed.account_id);
+    let x_ext_out_position_fr = Fr::from(parsed.events_proof_position as u64);
+
+    let instances = vec![
         poseidon_commitment,
         final_root,
         voucher_nominal_val,
@@ -451,7 +509,14 @@ fn compute_instances(parsed: &ParsedFixture) -> Vec<Fr> {
         salted_x_start,
         salted_y_end,
         salt_commitment,
-    ]
+        x_account_dapp_id_lo,
+        x_account_dapp_id_hi,
+        x_account_id_lo,
+        x_account_id_hi,
+        x_ext_out_position_fr,
+    ];
+    debug_assert_eq!(instances.len(), DEX_FINAL_LEN);
+    instances
 }
 
 // ---------------------------------------------------------------------------
@@ -504,14 +569,14 @@ pub struct Prover {
 }
 
 impl Prover {
-    /// Create a new prover, loading SRS via `gen_srs(19)`.
+    /// Create a new prover, loading the Hermez KZG SRS via `load_srs(K)`.
     ///
     /// If `cache_dir` is provided and contains cached PK/break_points files,
     /// they are loaded immediately. Otherwise PK is generated on the first
     /// call to `generate_proof`.
     pub fn new(cache_dir: Option<&Path>) -> Result<Self, ProverError> {
-        eprintln!("Loading SRS (K={K})...");
-        let srs = gen_srs(K);
+        eprintln!("Loading Hermez SRS (K={K})...");
+        let srs = load_srs(K);
 
         let cache_dir = cache_dir.map(PathBuf::from);
         let (pk, break_points) = match &cache_dir {
@@ -659,9 +724,11 @@ impl Prover {
         eprintln!("  Proof: {} bytes", proof_bytes.len());
 
         // Build output
-        // 8 public instance Fr elements concatenated as LE bytes (8×32=256B)
-        // for direct use by the TVM ZKHALO2VERIFY on-chain verifier.
-        let mut pub_inputs_bytes = Vec::with_capacity(256);
+        // DEX_FINAL_LEN (=13) public instance Fr elements concatenated as
+        // LE bytes (13×32=416B) for direct use by the TVM ZKHALO2VERIFY
+        // on-chain verifier. Layout matches `dexfinal_offset` from the
+        // circuit crate's `bundle_verifier` module.
+        let mut pub_inputs_bytes = Vec::with_capacity(DEX_FINAL_LEN * 32);
         for inst in &instances {
             pub_inputs_bytes.extend_from_slice(&inst.to_repr());
         }
@@ -678,6 +745,11 @@ impl Prover {
             salted_x_start: values.salted_x_start,
             salted_y_end: values.salted_y_end,
             salt_commitment: values.salt_commitment,
+            x_account_dapp_id_lo: values.x_account_dapp_id_lo,
+            x_account_dapp_id_hi: values.x_account_dapp_id_hi,
+            x_account_id_lo: values.x_account_id_lo,
+            x_account_id_hi: values.x_account_id_hi,
+            x_ext_out_position: values.x_ext_out_position,
         })
     }
 }
@@ -686,13 +758,17 @@ impl Prover {
 // Stateless public API
 // ---------------------------------------------------------------------------
 
-/// Compute the 8 public instance values without generating a proof.
+/// Compute the DEX_FINAL_LEN (=13) public instance values without
+/// generating a proof.
 ///
 /// Fast (milliseconds). No SRS or PK needed.
 ///
-/// Includes `salt_commitment`, `salted_x_start`, and `salted_y_end` derived
-/// from the voucher secret `sk_u` and the event/anchor block ids. In the
-/// uniform t=0 (single-thread) case `salted_x_start == salted_y_end`.
+/// Includes `salt_commitment`, `salted_x_start`, `salted_y_end`,
+/// LE lo/hi packings of `x_account_dapp_id` / `x_account_id`, and the
+/// tracked-ext-out-messages `x_ext_out_position`. Layout matches the
+/// circuit crate's `bundle_verifier::dexfinal_offset` module. In the
+/// uniform t=0 (single-thread) case `salted_x_start != salted_y_end`
+/// still holds — BC-005 position tagging distinguishes head vs tail.
 pub fn compute_instances_from_json(fixture_json: &str) -> Result<InstanceValues, ProverError> {
     let json: DexFixtureJson = serde_json::from_str(fixture_json)
         .map_err(|e| ProverError::Fixture(format!("JSON parse: {e}")))?;
