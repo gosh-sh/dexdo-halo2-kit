@@ -489,9 +489,16 @@ impl Circuit<Fr> for DarkDexCircuit {
                 }
 
                 // === Poseidon commitment ===
-                let values = [self.sk_u, Fr::zero()];
-                let inputs = ctx.assign_witnesses(values.clone());
-                let sk_u_assigned = inputs[0].clone();
+                // BC-009 fix: the second Poseidon input is a domain-separation
+                // pad and must be a compile-time constant, not a free witness.
+                // Previously both `sk_u` and the `0` pad were loaded via
+                // `assign_witnesses`, leaving the pad unpinned (a prover could
+                // substitute any value; benign because `sk_u_commit` is
+                // private, but a real code smell — the salt gadget below
+                // already uses `load_constant` for its analogous domain tag).
+                let sk_u_assigned = ctx.load_witness(self.sk_u);
+                let sk_u_commit_pad = ctx.load_constant(Fr::zero());
+                let inputs = [sk_u_assigned, sk_u_commit_pad];
 
                 let spec = OptimizedPoseidonSpec::<Fr, T, RATE>::new::<R_F, R_P, 0>();
                 let mut hasher = PoseidonHasher::<Fr, T, RATE>::new(spec);
