@@ -204,7 +204,18 @@ Same shape as §3.2, over `BWS` consecutive layer-(N−1) roots of thread 0, wit
 
 ### 3.4 What the DEX circuit opens
 
-The DEX circuit's Y-side path opens `block_leaf(Y) → #L1(M_Y) → #L2(...) → ... → #L<N>(...)` via one depth-8 Poseidon dense-Merkle path plus a chained `N`-step dense-chain gadget. Terminal root: `finalLayerHistoricalHashRoot`, exposed as instance [1].
+Given a thread-0 anchor block Y, the DEX circuit's Y-side reconstructs the chain
+
+```
+block_leaf(Y) → #L1(M_Y) → #L2(...) → ... → #L<N>(...) = finalLayerHistoricalHashRoot
+```
+
+in two stages:
+
+1. **Batch-tree opening** — one Poseidon dense-Merkle path lifts `block_leaf(Y)` to the layer-1 batch root `#L1(M_Y)`. The batch tree is 128 leaves wide (§3.1 `BWS`) plus 2 back-link leaves, padded to 256 → **8-level path**.
+2. **Layer ladder** — a variable-length chain of dense-Merkle steps stacks `#L<k>` into `#L<k+1>` for `k = 1..N−1`, one step per layer (§3.3). The chain runs up to `MAX_CHAIN_LEN = 11` links; the prover activates only the first `layerNumber − 1` of them.
+
+The final root is `finalLayerHistoricalHashRoot`, exposed as `inst[1]` of the DEX proof. Full per-step constraints in §4.
 
 ---
 
