@@ -23,7 +23,7 @@
 //!
 //! # Layouts
 //!
-//! `DexFinalProof` is 12 instances, as produced by `DarkDexCircuit`:
+//! `DexFinalProof` is 13 instances, as produced by `DarkDexCircuit`:
 //! ```text
 //!   [0]  poseidon_commitment        (= depositIdentifierHash)
 //!   [1]  final_root                 (= finalLayerHistoricalHashRoot)
@@ -37,6 +37,8 @@
 //!   [9]  x_account_dapp_id_hi        (LE bytes[16..32])
 //!   [10] x_account_id_lo             (LE bytes[0..16] of the DEX contract account ID)
 //!   [11] x_account_id_hi             (LE bytes[16..32])
+//!   [12] x_ext_out_merkle_proof_position  (BC-011 replay-protection uniquifier —
+//!        L8 ext-out slot index; distinguishes same-block same-content events)
 //! ```
 //!
 //! `MultiHopProof` is 3 instances (`MULTITHREAD_CIRCUIT_SPEC.md` §6.9):
@@ -54,7 +56,7 @@ use halo2_base::halo2_proofs::halo2curves::bn256::Fr;
 /// reading the proof's public instance vector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProofKind {
-    /// `DexFinalProof`. 12 instances.
+    /// `DexFinalProof`. 13 instances.
     DexFinal,
     /// `MultiHopProof`. Always 3 instances.
     MultiHop,
@@ -98,7 +100,7 @@ pub enum BundleError {
     DexFinalNotFirst { found_at: usize },
     /// A proof's instance-vector length doesn't match its declared `kind`.
     /// `expected_one_of` enumerates every accepted length for that kind
-    /// (DexFinal: 12; MultiHop: 3).
+    /// (DexFinal: 13; MultiHop: 3).
     BadInstanceLen {
         proof_index: usize,
         kind: ProofKind,
@@ -129,7 +131,7 @@ pub enum BundleError {
 // ---------------------------------------------------------------------------
 
 /// `DarkDexCircuit` `DexFinalProof` instance count.
-pub const DEX_FINAL_LEN: usize = 12;
+pub const DEX_FINAL_LEN: usize = 13;
 /// `MultiHopProof` instance count (spec §6.9).
 pub const MULTI_HOP_LEN: usize = 3;
 
@@ -143,7 +145,7 @@ mod multihop_offset {
     pub const SALT_COMMITMENT: usize = 2;
 }
 
-/// DexFinal offsets — `DarkDexCircuit`'s 12-instance layout.
+/// DexFinal offsets — `DarkDexCircuit`'s 13-instance layout.
 ///
 /// The chain "head" is `salted_x_start` (event-side, instance [5]) and the
 /// "tail" is `salted_y_end` (anchor-side, instance [6]): the MultiHop chain
@@ -162,6 +164,9 @@ mod dexfinal_offset {
     pub const X_ACCOUNT_ID_LO: usize = 10;
     #[allow(dead_code)]
     pub const X_ACCOUNT_ID_HI: usize = 11;
+    /// BC-011 replay-protection uniquifier: L8 ext-out Merkle slot index.
+    #[allow(dead_code)]
+    pub const X_EXT_OUT_POSITION: usize = 12;
 }
 
 // ---------------------------------------------------------------------------
@@ -370,6 +375,7 @@ mod tests {
             Fr::from(108u64), // [9]  x_account_dapp_id_hi
             Fr::from(109u64), // [10] x_account_id_lo
             Fr::from(110u64), // [11] x_account_id_hi
+            Fr::from(0u64),   // [12] x_ext_out_merkle_proof_position (BC-011)
         ])
     }
 
@@ -614,7 +620,7 @@ mod tests {
 
     #[test]
     fn dex_final_with_wrong_instance_count_rejected() {
-        let bad = BundleProof::new_dex_final(vec![Fr::from(1u64); 6]); // not 7
+        let bad = BundleProof::new_dex_final(vec![Fr::from(1u64); 6]); // not 13
         let b = vec![bad];
         match verify_bundle(&b) {
             Err(BundleError::BadInstanceLen { proof_index, kind, got, .. }) => {

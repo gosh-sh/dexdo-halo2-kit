@@ -404,7 +404,7 @@ inst[1] = salted_end_block_id    =  salted_id( B_H.block_id , bundle_index·H + 
 inst[2] = salt_commitment        =  Poseidon( [ salt ] )
 ```
 
-#### Per-`DexFinalProof` public inputs (12)
+#### Per-`DexFinalProof` public inputs (13)
 
 ```
 inst[0]  = depositIdentifierHash                                      // voucher nullifier
@@ -419,6 +419,7 @@ inst[8]  = x_account_dapp_id_lo   =  LE( x_account_dapp_id[ 0..16] )  // DEX con
 inst[9]  = x_account_dapp_id_hi   =  LE( x_account_dapp_id[16..32] )  // DEX contract dApp ID, hi 128 bits
 inst[10] = x_account_id_lo        =  LE( x_account_id     [ 0..16] )  // DEX contract account ID, lo 128 bits
 inst[11] = x_account_id_hi        =  LE( x_account_id     [16..32] )  // DEX contract account ID, hi 128 bits
+inst[12] = x_ext_out_merkle_proof_position                            // BC-011 replay-protection uniquifier
 ```
 
 Rationale for the four contract-identity pins (inst[8..12]): on TVM every DEX
@@ -430,9 +431,30 @@ emitted by a different account. Each 32-byte address is split into two
 128-bit LE halves (lo = bytes `[0..16]`, hi = bytes `[16..32]`); each half is
 strictly `< 2^128 < p` so no `V < p` canonicality gadget is required.
 
+Rationale for `inst[12] = x_ext_out_merkle_proof_position` (BC-011): the L8
+`tracked_ext_out_messages` tree slot index of the withdrawal event within the
+X block. Two legitimately-distinct events in the same block (same `sk_u`,
+same `voucher_nominal`, same `token_type`, hence identical `inst[0..12)`)
+occupy distinct L8 slots. Without `inst[12]` the on-chain nullifier keyed on
+the instance vector cannot separate a real second event from a replay of the
+first — both fold to the same `depositIdentifierHash`. Exposing the position
+uniquifies the DexFinal instance vector per-event, while still hiding the
+event content (only the tree slot leaks, not the ext-out message hash).
+
+**Soundness of `inst[12]`.** A naïve exposure would let a malicious prover
+publish `position = X` while the internal L8 dense-Merkle walker uses
+direction bits corresponding to slot `Y` — the upstream
+`dense_merkle_root_circuit_padded` accepts free `assert_bit`-only direction
+witnesses. `DarkDexCircuit` therefore bit-decomposes the position via
+`gate.num_to_bits(MAX_EVENTS_TREE_DEPTH)`, forces `pos_bits[j] == 0` for
+`j >= num_active_levels`, and feeds the bound bits into the local
+`dense_merkle_root_padded_bound` walker (see
+`dex-halo2-circuit/src/dense_merkle_bound.rs`; same fix pattern as BC-004 at
+L7 in `multi_hop_proof.rs`).
+
 Source of truth: `dex-halo2-circuit/src/dark_dex_circuit.rs` (`DarkDexCircuit`
 type-level doc) and `dex-halo2-circuit/src/bundle_verifier.rs`
-(`DEX_FINAL_LEN = 12`, `dexfinal_offset::*`).
+(`DEX_FINAL_LEN = 13`, `dexfinal_offset::*`).
 
 ### 7.4 RootPN orchestration
 

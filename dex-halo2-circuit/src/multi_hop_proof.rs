@@ -80,7 +80,7 @@
 //!   tradeoff, not a soundness question.
 
 use gosh_dense_balanced_tree::{
-    bytes_to_fr, cond_swap, fr_to_bytes, preprocess_dense_proof_padded, DenseTreeProof,
+    bytes_to_fr, fr_to_bytes, preprocess_dense_proof_padded,
     R_F, R_P, RATE, T,
 };
 use gosh_sha256_chip::Sha256Chip;
@@ -97,6 +97,7 @@ use halo2_base::{AssignedValue, Context, QuantumCell};
 use std::cell::RefCell;
 
 use crate::boc_helper::SHA256_HASH_LEN;
+use crate::dense_merkle_bound::dense_merkle_root_padded_bound;
 use crate::multi_hop_witness::{
     ref_leaf_hash_native, ref_leaf_ref_tag_chunk0_fr, ref_leaf_ref_tag_chunk1_lo_fr,
     BLOCK_MERKLE_DEPTH, H_HOPS_PER_PROOF, MAX_PROOF_BLOCK_REFS_DEPTH, N_BUNDLE,
@@ -218,93 +219,6 @@ impl MultiHopProofCircuit {
 // Constraints are byte-for-byte equivalent to the pre-refactor inline
 // body; no gate widths, poseidon domains, or gating polynomials changed.
 // ============================================================================
-
-/// In-circuit dense-merkle walk with direction bits bound to an external
-/// position witness (BC-004 fix).
-///
-/// Mirrors upstream `gosh_dense_balanced_tree::dense_merkle_root_circuit_padded`
-/// verbatim except for one change: at each level `j`, the direction bit is
-/// **`pos_bits[j]`** — the caller-supplied bit-decomposition of the position
-/// witness — instead of a fresh unconstrained witness loaded from
-/// `level.direction_bit` and merely `assert_bit`-checked. Semantics are
-/// identical when the caller passes bits that match the preprocessed
-/// `direction_bit`s (which is exactly what the BC-004 outer binding
-/// guarantees: `pos_bits` matches `ref_index`'s bits at real levels and is
-/// zero on padded levels).
-///
-/// Preconditions the caller MUST enforce (see `prove_hop_ref_tree_opening`):
-/// * `pos_bits.len() == proof.levels.len()`.
-/// * Each `pos_bits[j] ∈ {0, 1}` (satisfied automatically when produced by
-///   `gate.num_to_bits`).
-/// * `sum(pos_bits[j] · 2^j) == pos_witness` for whichever `pos_witness` the
-///   caller is binding (satisfied by `gate.num_to_bits`).
-/// * For every `j ≥ num_active_levels`, `pos_bits[j] == 0`. This aligns the
-///   bound direction bit with the preprocessor's `direction_bit = false`
-///   convention on padded levels, so the chunk-decomposition constraints
-///   inside the walk hold uniformly across active/inactive levels.
-fn dense_merkle_root_padded_bound(
-    ctx: &mut Context<Fr>,
-    range: &impl RangeInstructions<Fr>,
-    hasher: &PoseidonHasher<Fr, T, RATE>,
-    proof: &DenseTreeProof,
-    leaf_fr: AssignedValue<Fr>,
-    num_active_levels: AssignedValue<Fr>,
-    pos_bits: &[AssignedValue<Fr>],
-) -> AssignedValue<Fr> {
-    assert_eq!(
-        pos_bits.len(),
-        proof.levels.len(),
-        "pos_bits length must match proof.levels",
-    );
-    let gate = range.gate();
-
-    let pow_248 = ctx.load_constant(Fr::from_raw([0u64, 0u64, 0u64, 1u64 << 56]));
-    let pow_240 = ctx.load_constant(Fr::from_raw([0u64, 0u64, 0u64, 1u64 << 48]));
-    let two56 = ctx.load_constant(Fr::from(256u64));
-
-    let mut cur = leaf_fr;
-
-    for (j, level) in proof.levels.iter().enumerate() {
-        // active = (j < num_active_levels)
-        let j_const = ctx.load_constant(Fr::from(j as u64));
-        let active = range.is_less_than(ctx, j_const, num_active_levels, 4);
-
-        let sibling_fr = ctx.load_witness(bytes_to_fr(&level.sibling));
-
-        // BC-004: direction bit is the bound `pos_bits[j]`, NOT a free witness.
-        // The caller (`prove_hop_ref_tree_opening`) enforces
-        // `pos_bits[j] == 0` for `j >= num_active_levels`, so on padded levels
-        // this matches the preprocessor's `direction_bit = false` convention.
-        let bit = pos_bits[j];
-
-        let (left, right) = cond_swap(ctx, gate, cur, sibling_fr, bit);
-
-        let c0 = ctx.load_witness(level.chunk0);
-        let c1 = ctx.load_witness(level.chunk1);
-        let c2 = ctx.load_witness(level.chunk2);
-        let left_hi = ctx.load_witness(Fr::from(level.left_hi as u64));
-
-        let lhs = gate.mul_add(ctx, left_hi, pow_248, c0);
-        ctx.constrain_equal(&lhs, &left);
-
-        let c2_shifted = gate.mul(ctx, c2, pow_240);
-        let right_low = gate.sub(ctx, right, c2_shifted);
-
-        let rhs = gate.mul_add(ctx, right_low, two56, left_hi);
-        ctx.constrain_equal(&rhs, &c1);
-
-        range.range_check(ctx, c0, 248);
-        range.range_check(ctx, right_low, 240);
-        range.range_check(ctx, left_hi, 8);
-        range.range_check(ctx, c2, 16);
-
-        let computed = hasher.hash_fix_len_array(ctx, gate, &[c0, c1, c2]);
-
-        cur = gate.select(ctx, computed, cur, active);
-    }
-
-    cur
-}
 
 /// Prove one hop's variable-depth L7 ref-tree opening.
 ///

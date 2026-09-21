@@ -25,9 +25,9 @@ use halo2_base::halo2_proofs::halo2curves::bn256::Fr;
 /// Number of MultiHopProofs per spec §6.4 (`N_BUNDLE`).
 const N_BUNDLE: usize = 4;
 
-/// Build a DexFinal instance vector (12 slots per spec §7.3) with the given
+/// Build a DexFinal instance vector (13 slots per spec §7.3) with the given
 /// `salt_commitment`, bundle-head `salted_block_id`, and bundle-tail
-/// `salted_block_id`. Slots [0..=4] and [8..=11] are filled with
+/// `salted_block_id`. Slots [0..=4] and [8..=12] are filled with
 /// distinguishable sentinels — the verifier only reads [5], [6], [7].
 fn make_dex_final_instances(
     salt_commitment: Fr,
@@ -47,6 +47,7 @@ fn make_dex_final_instances(
         Fr::from(0xD9u64),     // [9] x_account_dapp_id_hi
         Fr::from(0xDAu64),     // [10] x_account_id_lo
         Fr::from(0xDBu64),     // [11] x_account_id_hi
+        Fr::from(0u64),        // [12] x_ext_out_merkle_proof_position (BC-011)
     ]
 }
 

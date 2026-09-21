@@ -25,6 +25,7 @@ use std::cell::RefCell;
 
 use crate::block_id_tree::assert_depth4_l8_opening_circuit;
 use crate::boc_helper::*;
+use crate::dense_merkle_bound::dense_merkle_root_padded_bound;
 use crate::poseidon_dex_helper::{poseidon_hash_96_circuit_bytes, poseidon_hash_96_native};
 use crate::multi_hop_witness::{H_HOPS_PER_PROOF, N_BUNDLE};
 use crate::salt::{compute_salt_native, domain_tag_hop_salt_fr, salted_block_id_poseidon_circuit};
@@ -34,8 +35,7 @@ use crate::voucher_event_helper::{
     EVENT_VOUCHER_NOMINAL_END, EVENT_VOUCHER_NOMINAL_FIELD_LEN, EVENT_VOUCHER_NOMINAL_START,
 };
 use gosh_dense_balanced_tree::{
-    bytes_to_fr, compute_root_native, dense_merkle_root_circuit,
-    dense_merkle_root_circuit_padded, fr_to_bytes,
+    bytes_to_fr, compute_root_native, dense_merkle_root_circuit, fr_to_bytes,
     preprocess_dense_proof, preprocess_dense_proof_padded,
     verify_chain_of_dense_proofs, DenseChainLink, MAX_CHAIN_LEN, R_F, R_P, RATE, T,
 };
@@ -60,10 +60,16 @@ pub struct DarkDexCircuitConfig {
 ///     `block_leaf_Y = Poseidon96(...)` → depth-8 Poseidon dense-Merkle →
 ///     dense-chain → `finalLayerHistoricalHashRoot`. Exposes `salted_Y_end`.
 ///
-/// Publics (12): `[depositIdentifierHash, finalLayerHistoricalHashRoot,
+/// Publics (13): `[depositIdentifierHash, finalLayerHistoricalHashRoot,
 /// voucherNominalFr, tokenTypeFr, ephemeralPubkey, salted_X_start,
 /// salted_Y_end, salt_commitment, x_account_dapp_id_lo,
-/// x_account_dapp_id_hi, x_account_id_lo, x_account_id_hi]`.
+/// x_account_dapp_id_hi, x_account_id_lo, x_account_id_hi,
+/// x_ext_out_merkle_proof_position]`. Slot [12] is the L8 ext-out Merkle
+/// leaf index of the withdrawal event within the X block, exposed so that
+/// two legitimately-distinct events in the same block (same account, same
+/// voucher, same amount, hence identical [0..11]) map to distinct DexFinal
+/// instance vectors and the on-chain nullifier can separate them from a
+/// replay of the first (BC-011).
 ///
 /// The last four instances pin the DEX contract's identity: on TVM every
 /// DEX event, by design, comes from a single fixed `RootPN` contract, so
@@ -356,6 +362,7 @@ impl Circuit<Fr> for DarkDexCircuit {
                 x_account_dapp_id_hi,
                 x_account_id_lo,
                 x_account_id_hi,
+                x_ext_out_position_public,
             ) = {
                 let gate = range.gate();
                 let ctx = builder.pool(0).main();
@@ -577,9 +584,49 @@ impl Circuit<Fr> for DarkDexCircuit {
                 let ev_diff = gate.sub(ctx, max_ev_const, x_num_events_levels);
                 range.range_check(ctx, ev_diff, 4);
 
-                let x_l8_ext_out_root = dense_merkle_root_circuit_padded(
+                // BC-011: bind the L8 walker's per-level direction bits to a
+                // range-checked position witness that will be exposed as a
+                // public input below. Without this binding, the upstream
+                // padded walker would use free direction-bit witnesses — so
+                // a malicious prover could claim `position = X` publicly
+                // while the walk actually opens slot `Y`, breaking the
+                // per-event uniqueness / replay-protection guarantee this
+                // public input is meant to provide (same-block same-content
+                // events resolve to distinct slots and must not collide).
+                let x_ext_out_position_assigned =
+                    ctx.load_witness(Fr::from(self.x_ext_out_merkle_proof_position as u64));
+                range.range_check(ctx, x_ext_out_position_assigned, MAX_EVENTS_TREE_DEPTH);
+                let x_ext_out_pos_bits =
+                    gate.num_to_bits(ctx, x_ext_out_position_assigned, MAX_EVENTS_TREE_DEPTH);
+                // Force high bits (j >= x_num_events_levels) to zero. Combined
+                // with the num_to_bits binding, this constrains
+                // `position < 2^x_num_events_levels`, matching
+                // `preprocess_dense_proof_padded`'s `direction_bit = false`
+                // convention on padded levels so the chunk-decomposition
+                // constraints inside the walk hold uniformly.
+                for (j, bit) in x_ext_out_pos_bits.iter().enumerate() {
+                    let j_const = ctx.load_constant(Fr::from(j as u64));
+                    let active_j = range.is_less_than(ctx, j_const, x_num_events_levels, 4);
+                    let inactive_j = {
+                        let one = ctx.load_constant(Fr::one());
+                        gate.sub(
+                            ctx,
+                            QuantumCell::Existing(one),
+                            QuantumCell::Existing(active_j),
+                        )
+                    };
+                    let prod = gate.mul(
+                        ctx,
+                        QuantumCell::Existing(*bit),
+                        QuantumCell::Existing(inactive_j),
+                    );
+                    gate.assert_is_const(ctx, &prod, &Fr::zero());
+                }
+
+                let x_l8_ext_out_root = dense_merkle_root_padded_bound(
                     ctx, &range, &hasher, &x_events_proof_padded,
                     x_ext_msg_leaf_fr, x_num_events_levels,
+                    &x_ext_out_pos_bits,
                 );
 
                 // Reusable LE powers of 256 up to 31 (matches `inner_product`
@@ -884,6 +931,7 @@ impl Circuit<Fr> for DarkDexCircuit {
                     x_account_dapp_id_hi,
                     x_account_id_lo,
                     x_account_id_hi,
+                    x_ext_out_position_assigned,
                 )
             };
 
@@ -916,6 +964,16 @@ impl Circuit<Fr> for DarkDexCircuit {
             builder.assigned_instances[0].push(x_account_dapp_id_hi);
             builder.assigned_instances[0].push(x_account_id_lo);
             builder.assigned_instances[0].push(x_account_id_hi);
+            // BC-011: expose the L8 ext-out Merkle slot index so two
+            // legitimately-distinct events in the same block (identical
+            // sk_u / voucher_nominal / token_type / x_block_id, hence
+            // identical [0..11] publics) map to distinct DexFinal instance
+            // vectors. Without this the on-chain nullifier keyed on the
+            // instance-vector cannot separate a real second event from a
+            // replay of the first. The position is soundness-bound to the
+            // walker's direction bits via the num_to_bits + zero-on-inactive
+            // gating above.
+            builder.assigned_instances[0].push(x_ext_out_position_public);
         }
 
         // Synthesize base circuit builder to materialize virtual constraints.
@@ -1011,17 +1069,21 @@ mod tests {
         )
     }
 
-    /// Build the 12-instance §7.3 publics vector for a DexFinalProof:
+    /// Build the 13-instance §7.3 publics vector for a DexFinalProof:
     /// `[depositIdentifierHash, finalLayerHistoricalHashRoot,
     /// voucherNominalFr, tokenTypeFr, ephemeralPubkey, salted_X_start,
     /// salted_Y_end, salt_commitment, x_account_dapp_id_lo,
-    /// x_account_dapp_id_hi, x_account_id_lo, x_account_id_hi]`.
+    /// x_account_dapp_id_hi, x_account_id_lo, x_account_id_hi,
+    /// x_ext_out_merkle_proof_position]`.
     ///
     /// Works for both the uniform t=0 case (`x_block_id == y_block_id`) and
     /// the cross-thread case (`x_block_id ≠ y_block_id`). BC-005 anonymity
     /// fix: `salted_X_start` and `salted_Y_end` now include distinct
     /// bundle-global position tags (0 and `N_BUNDLE * H_HOPS_PER_PROOF`),
     /// so they no longer collide even when `x_block_id == y_block_id`.
+    /// BC-011 replay-protection fix: slot [12] carries the L8 ext-out slot
+    /// index so same-block same-content events map to distinct instance
+    /// vectors.
     #[cfg(test)]
     fn make_instances(
         v: &VoucherFields,
@@ -1052,6 +1114,7 @@ mod tests {
             dapp_hi,
             acct_lo,
             acct_hi,
+            Fr::from(tw.x_ext_out_pos as u64),
         ]
     }
 

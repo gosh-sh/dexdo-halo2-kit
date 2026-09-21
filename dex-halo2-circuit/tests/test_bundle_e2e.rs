@@ -51,7 +51,7 @@ fn bundle_circuit_params() -> BaseCircuitParams {
     }
 }
 
-/// Build a `DexFinalProof`-shaped `BundleProof` (12 instances per spec §7.3)
+/// Build a `DexFinalProof`-shaped `BundleProof` (13 instances per spec §7.3)
 /// from the synth chain's bundle-wide values. Slots that the bundle verifier
 /// doesn't read are filled with distinguishable sentinels.
 fn synthetic_dex_final(
