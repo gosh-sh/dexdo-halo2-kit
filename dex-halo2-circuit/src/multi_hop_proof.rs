@@ -23,12 +23,13 @@
 //!   terminal salted value.
 //! - `ref_block_id`, `block_id`, `l7`, `block_merkle_leaf_proof_l7`,
 //!   `ref_index`, `proof_block_ref_inner_path`: per-hop reference-tree
-//!   opening data. `ref_index` is a private
-//!   per-hop witness in `1..MAX_PROOF_BLOCK_REFS` selecting which slot of
-//!   the on-chain `proof_block_refs` list holds `ref_block_id`. Slot 0
-//!   (parent) is same-thread by producer construction (spec §2.3) and
-//!   excluded from the L7 walk (spec §5.1); only
-//!   `REFERENCED_REF_BLOCK_TAG` (34 B) is used.
+//!   opening data. `ref_index` is a private per-hop witness in
+//!   `0..MAX_PROOF_BLOCK_REFS` selecting which slot of the on-chain
+//!   `proof_block_refs` list holds `ref_block_id`. Both slot kinds are
+//!   valid hop edges (spec §2.3, §4.1): slot 0 = `parent_block_id`
+//!   (`REFERENCED_PARENT_BLOCK_TAG`, 37 B, same-thread parent chain);
+//!   slots ≥ 1 = cross-thread refs (`REFERENCED_REF_BLOCK_TAG`, 34 B).
+//!   The leaf tag is selected in-circuit by `is_zero(ref_index)`.
 //! - `salted_start_block_id`, `salted_end_block_id`: explicit authoritative
 //!   endpoints (the synth chain's terminal values for inactive padding,
 //!   matching `compute_salted_block_id_native` for active hops).
@@ -44,7 +45,10 @@
 //! Per hop:
 //! - `is_active` is range-constrained to `{0, 1}` via `gate.assert_bit`.
 //! - **Ref-tree** — `ref_leaf = Poseidon([c0, c1, c2])` (byte-flat chunks of
-//!   `REFERENCED_REF_BLOCK_TAG (34 B) ‖ ref_block_id`) is walked through
+//!   `tag_bytes ‖ ref_block_id`, where `tag_bytes` is picked in-circuit by
+//!   `is_zero(ref_index)`: `REFERENCED_PARENT_BLOCK_TAG` (37 B, chunking 31+31+7)
+//!   when `ref_index == 0`, `REFERENCED_REF_BLOCK_TAG` (34 B, chunking 31+31+4)
+//!   otherwise) is walked through
 //!   `dense_merkle_root_circuit_padded` to produce `computed_l7_fr`. The walk
 //!   is always `MAX_PROOF_BLOCK_REFS_DEPTH` levels wide; per-hop
 //!   `refs_tree_depth: u8` (spec §5.2 & §12.4) gates each level with
@@ -99,8 +103,9 @@ use std::cell::RefCell;
 use crate::boc_helper::SHA256_HASH_LEN;
 use crate::dense_merkle_bound::dense_merkle_root_padded_bound;
 use crate::multi_hop_witness::{
-    ref_leaf_hash_native, ref_leaf_ref_tag_chunk0_fr, ref_leaf_ref_tag_chunk1_lo_fr,
-    BLOCK_MERKLE_DEPTH, H_HOPS_PER_PROOF, MAX_PROOF_BLOCK_REFS_DEPTH, N_BUNDLE,
+    ref_leaf_hash_native, ref_leaf_parent_tag_chunk0_fr, ref_leaf_parent_tag_chunk1_lo_fr,
+    ref_leaf_ref_tag_chunk0_fr, ref_leaf_ref_tag_chunk1_lo_fr, BLOCK_MERKLE_DEPTH,
+    H_HOPS_PER_PROOF, MAX_PROOF_BLOCK_REFS_DEPTH, N_BUNDLE,
 };
 use crate::salt::{compute_salt_native, domain_tag_hop_salt_fr, salted_block_id_poseidon_circuit};
 
@@ -122,10 +127,12 @@ pub struct MultiHopWitness {
     pub l7: [u8; 32],
     pub block_merkle_leaf_proof_l7: [[u8; 32]; BLOCK_MERKLE_DEPTH],
     /// Position of `ref_block_id` within the on-chain `proof_block_refs` list
-    /// (`1..MAX_PROOF_BLOCK_REFS`). Slot 0 is the same-thread `parent_block_id`
-    /// (spec §2.3) and never opened as a cross-thread hop edge (spec §5.1), so
-    /// `ref_index == 0` is rejected in-circuit. Drives the orientation bits
-    /// inside `dense_merkle_root_circuit`.
+    /// (`0..MAX_PROOF_BLOCK_REFS`). Both slot kinds are valid hop edges
+    /// (spec §2.3, §4.1): slot 0 = `parent_block_id` (`REFERENCED_PARENT_BLOCK_TAG`,
+    /// same-thread parent chain); slots ≥ 1 = cross-thread refs
+    /// (`REFERENCED_REF_BLOCK_TAG`). The in-circuit tag mux picks between the
+    /// two by `is_zero(ref_index)`. Drives the orientation bits inside
+    /// `dense_merkle_root_circuit`.
     pub ref_index: usize,
     /// Real depth of this hop's L7 dense-merkle tree, matching the chain's
     /// variable-width convention (`proof_block_refs.len().next_power_of_two()
@@ -223,8 +230,10 @@ impl MultiHopProofCircuit {
 /// Prove one hop's variable-depth L7 ref-tree opening.
 ///
 /// Layers the following constraints onto `ctx`:
-/// * `ref_index ∈ (0, 2^MAX_PROOF_BLOCK_REFS_DEPTH)` — unconditional.
-///   Slot 0 (same-thread parent, spec §2.3/§5.1) is excluded.
+/// * `ref_index ∈ [0, 2^MAX_PROOF_BLOCK_REFS_DEPTH)` — unconditional
+///   (range enforced by `num_to_bits`). Slot 0 is a legal hop edge
+///   (same-thread parent, spec §2.3/§4.1); the leaf tag is picked by
+///   `is_zero(ref_index)`.
 /// * `refs_tree_depth ∈ [0, 16)` — unconditional 4-bit range check (values
 ///   in `[8, 16)` collapse to "all levels active" via the library's
 ///   internal `is_less_than`, so no cheating window).
@@ -237,9 +246,14 @@ impl MultiHopProofCircuit {
 ///   binding the direction bits inside `dense_merkle_root_circuit_padded`
 ///   were free `assert_bit` witnesses, so `ref_index_assigned`'s range
 ///   check was dead and a malicious prover could choose any leaf position.
-/// * `ref_leaf_fr = Poseidon([c0, c1, c2])` derived from the byte-flat
+/// * `ref_leaf_fr = select( parent_leaf_fr , ref_leaf_fr , is_zero(ref_index) )`
+///   where `parent_leaf_fr` is built from the byte-flat
+///   `REFERENCED_PARENT_BLOCK_TAG (37 B) ‖ ref_block_id` layout
+///   (chunks 31+31+7) and `ref_leaf_fr` from the byte-flat
 ///   `REFERENCED_REF_BLOCK_TAG (34 B) ‖ ref_block_id` layout
-///   (chunks 31+31+4).
+///   (chunks 31+31+4). Both candidate Poseidons are computed
+///   unconditionally and the final leaf Fr is picked by the tag selector —
+///   this is the slot-agnostic hop gadget of spec §4.1 / §4.2 constraint 2.
 /// * `computed_l7_fr = dense_merkle_root_padded_bound(...)` — 8-level walk,
 ///   gated per-level by `refs_tree_depth` (spec §5.2, §12.4), with direction
 ///   bits bound to `ref_index_pos_bits`.
@@ -250,20 +264,27 @@ impl MultiHopProofCircuit {
 ///   SHA-256 walk).
 /// * `ref_block_id_bytes` — 32 range-checked (8-bit) cells (consumed by
 ///   the salted-endpoint gadget).
+#[allow(clippy::too_many_arguments)]
 fn prove_hop_ref_tree_opening(
     ctx: &mut Context<Fr>,
     range: &RangeChip<Fr>,
     hasher: &PoseidonHasher<Fr, T, RATE>,
     hop: &MultiHopWitness,
     is_active: AssignedValue<Fr>,
+    parent_leaf_c0_const: AssignedValue<Fr>,
+    parent_leaf_c1_tag_const: AssignedValue<Fr>,
     ref_leaf_c0_const: AssignedValue<Fr>,
     ref_leaf_c1_tag_const: AssignedValue<Fr>,
     pow_256_3: AssignedValue<Fr>,
+    pow_256_6: AssignedValue<Fr>,
     powers_le_32: &[QuantumCell<Fr>],
 ) -> (Vec<AssignedValue<Fr>>, Vec<AssignedValue<Fr>>) {
     let gate = range.gate();
 
-    // ref_index witness (1..MAX_PROOF_BLOCK_REFS).
+    // ref_index witness (0..MAX_PROOF_BLOCK_REFS). Both slot kinds are
+    // legal hop edges: slot 0 = parent_block_id, slots ≥ 1 = refs
+    // (spec §2.3, §4.1). The leaf tag is selected below by
+    // `is_zero(ref_index)`.
     //
     // BC-004 fix: `num_to_bits` doubles as the range check (0..2^N) and
     // returns the little-endian bit decomposition. Those bits are re-used
@@ -273,10 +294,7 @@ fn prove_hop_ref_tree_opening(
     let ref_index_assigned = ctx.load_witness(Fr::from(hop.ref_index as u64));
     let ref_index_pos_bits =
         gate.num_to_bits(ctx, ref_index_assigned, MAX_PROOF_BLOCK_REFS_DEPTH);
-    {
-        let is_zero_ref_index = gate.is_zero(ctx, ref_index_assigned);
-        gate.assert_is_const(ctx, &is_zero_ref_index, &Fr::zero());
-    }
+    let is_zero_ref_index = gate.is_zero(ctx, ref_index_assigned);
 
     // L7 bytes + LE Fr packing.
     let l7_bytes: Vec<AssignedValue<Fr>> = hop
@@ -302,7 +320,10 @@ fn prove_hop_ref_tree_opening(
         range.range_check(ctx, *cell, 8);
     }
 
-    // Byte-flat ref-leaf chunks — ref-tag layout only (34 B tag): 31+31+4.
+    // Byte-flat ref-leaf chunks — compute BOTH candidate Poseidons unconditionally
+    // and select the final leaf Fr by `is_zero(ref_index)` (spec §4.1).
+    //
+    // Ref-tag layout (34 B tag ‖ 32 B id): chunks 31+31+4.
     //   c0 = tag_r_hi (31 B)               ← ref_leaf_c0_const
     //   c1 = tag_r_lo (3 B) + ref_block_id_lo28 · 256^3
     //   c2 = LE(ref_block_id[28..32])
@@ -330,10 +351,52 @@ fn prove_hop_ref_tree_opening(
             .collect();
         gate.inner_product(ctx, cells, powers_le_32[..4].iter().cloned())
     };
-    let ref_leaf_fr = hasher.hash_fix_len_array(
+    let ref_leaf_fr_cand = hasher.hash_fix_len_array(
         ctx,
         gate,
         &[ref_leaf_c0_const, ref_leaf_c1, ref_leaf_c2],
+    );
+
+    // Parent-tag layout (37 B tag ‖ 32 B id): chunks 31+31+7.
+    //   c0 = tag_p_hi (31 B)               ← parent_leaf_c0_const
+    //   c1 = tag_p_lo (6 B) + ref_block_id_lo25 · 256^6
+    //   c2 = LE(ref_block_id[25..32])
+    let ref_block_id_lo25 = {
+        let cells: Vec<QuantumCell<Fr>> = ref_block_id_bytes[0..25]
+            .iter()
+            .map(|c| QuantumCell::Existing(*c))
+            .collect();
+        gate.inner_product(ctx, cells, powers_le_32[..25].iter().cloned())
+    };
+    let ref_block_id_lo25_shifted = gate.mul(
+        ctx,
+        QuantumCell::Existing(ref_block_id_lo25),
+        QuantumCell::Existing(pow_256_6),
+    );
+    let parent_leaf_c1 = gate.add(
+        ctx,
+        QuantumCell::Existing(parent_leaf_c1_tag_const),
+        QuantumCell::Existing(ref_block_id_lo25_shifted),
+    );
+    let parent_leaf_c2 = {
+        let cells: Vec<QuantumCell<Fr>> = ref_block_id_bytes[25..32]
+            .iter()
+            .map(|c| QuantumCell::Existing(*c))
+            .collect();
+        gate.inner_product(ctx, cells, powers_le_32[..7].iter().cloned())
+    };
+    let parent_leaf_fr_cand = hasher.hash_fix_len_array(
+        ctx,
+        gate,
+        &[parent_leaf_c0_const, parent_leaf_c1, parent_leaf_c2],
+    );
+
+    // Tag mux: slot 0 ⇒ parent-tag leaf, slot ≥ 1 ⇒ ref-tag leaf.
+    let ref_leaf_fr = gate.select(
+        ctx,
+        QuantumCell::Existing(parent_leaf_fr_cand),
+        QuantumCell::Existing(ref_leaf_fr_cand),
+        is_zero_ref_index,
     );
 
     // Byte-flat ref-tree walk — gated variable-depth fold.
@@ -585,13 +648,15 @@ impl Circuit<Fr> for MultiHopProofCircuit {
             block_id: [0u8; 32],
             l7: [0u8; 32],
             block_merkle_leaf_proof_l7: [[0u8; 32]; BLOCK_MERKLE_DEPTH],
-            // Slot 0 is same-thread parent — excluded from L7 walk (spec §5.1).
-            // Even for inactive padding, ref_index must be ≥ 1 since the
-            // range/nonzero constraint on ref_index is unconditional.
-            ref_index: 1,
-            // Matches synth_chain inactive-padding convention: depth=1 covers
-            // ref_index=1 without triggering an out-of-range live-flag; the
-            // gated fold's output is discarded by `is_active` anyway.
+            // Slot 0 is a legal hop edge (same-thread parent, spec §2.3/§4.1).
+            // For inactive padding we pick `ref_index: 0` so the padded fold's
+            // position bits are all zero — matches
+            // `preprocess_dense_proof_padded`'s dummy-level convention. The
+            // final L7 equality is gated by `is_active`, so the fold's output
+            // is discarded for padding anyway.
+            ref_index: 0,
+            // depth=1 keeps `refs_tree_depth` in-range on padding without
+            // affecting the gated final equality.
             refs_tree_depth: 1,
             proof_block_ref_inner_path: [[0u8; 32]; MAX_PROOF_BLOCK_REFS_DEPTH],
             salted_start_block_id: Fr::zero(),
@@ -666,12 +731,20 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                     hasher.hash_fix_len_array(ctx, gate, &[salt_assigned]);
 
                 // === Byte-flat constants (reused across all hops) ===
-                // Ref-tag (34 B) chunk constants. Slot 0 (parent) is same-thread
-                // by producer construction (spec §2.3) and excluded from the
-                // L7 walk (spec §5.1), so only the ref-tag layout is used.
+                // Slot 0 (parent) and slots ≥ 1 (refs) are both legal hop edges
+                // (spec §2.3, §4.1). We pre-load the high (tag-only) chunks for
+                // both leaf tag layouts; the per-hop gadget computes both
+                // candidate Poseidons unconditionally and `gate.select`s on
+                // `is_zero(ref_index)`.
+                //   parent-tag (37 B): chunks 31+31+7 → c1 shift = 256^6
+                //   ref-tag    (34 B): chunks 31+31+4 → c1 shift = 256^3
+                let parent_leaf_c0_const = ctx.load_constant(ref_leaf_parent_tag_chunk0_fr());
+                let parent_leaf_c1_tag_const =
+                    ctx.load_constant(ref_leaf_parent_tag_chunk1_lo_fr());
                 let ref_leaf_c0_const = ctx.load_constant(ref_leaf_ref_tag_chunk0_fr());
                 let ref_leaf_c1_tag_const = ctx.load_constant(ref_leaf_ref_tag_chunk1_lo_fr());
                 let pow_256_3 = ctx.load_constant(Fr::from(256u64).pow([3u64]));
+                let pow_256_6 = ctx.load_constant(Fr::from(256u64).pow([6u64]));
                 let pow_248 =
                     ctx.load_constant(Fr::from_raw([0u64, 0u64, 0u64, 1u64 << 56]));
                 // LE byte→Fr power-of-256 table, shared by every inner_product in
@@ -751,16 +824,21 @@ impl Circuit<Fr> for MultiHopProofCircuit {
                     );
 
                     // Gadget 1: L7 ref-tree opening (byte-flat Poseidon +
-                    // variable-depth dense fold, spec §5.2).
+                    // variable-depth dense fold, spec §5.2). Both tag layouts
+                    // are computed and muxed by `is_zero(ref_index)` so slot 0
+                    // (same-thread parent) is a legal hop edge.
                     let (l7_bytes, ref_block_id_bytes) = prove_hop_ref_tree_opening(
                         ctx,
                         &range,
                         &hasher,
                         hop,
                         is_active,
+                        parent_leaf_c0_const,
+                        parent_leaf_c1_tag_const,
                         ref_leaf_c0_const,
                         ref_leaf_c1_tag_const,
                         pow_256_3,
+                        pow_256_6,
                         &powers_le_32,
                     );
 

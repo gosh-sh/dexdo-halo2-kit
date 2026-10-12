@@ -6,23 +6,66 @@ This document describes the cryptographic mechanism for proving, in zero knowled
 
 ## 0. Terminology
 
+### 0.1 Notation convention — the `→` arrow
+
+Throughout this document, an arrow
+
+```
+A  →  B
+```
+
+means **"A is a leaf in B's L7 Poseidon dense-Merkle tree, i.e.
+`A.block_id` appears in `B.proof_block_refs` at some slot `k ≥ 0`"**.
+The tail of the arrow is the *older* block (the leaf of the per-block
+L7 tree); the head is the *newer* block (the root direction, which
+Merkle-commits to the leaf through its L7 opening).
+
+This matches the standard Merkle-tree convention: `leaf → root` folds
+upward. The convention is uniform across both scales in this document:
+
+- **Within a block** — folding L7 (or L8) up to `block_id` goes
+  `leaf → root`, e.g. `L8 → h89 → h8..11 → h8..15 → block_id`.
+- **Between blocks** — a hop step `A → B` points from the leaf side
+  (older block, referenced inside B.L7) to the root side (newer block,
+  containing A as a ref).
+
+Reading a walk chain left-to-right therefore reads **oldest → newest**.
+Because acki-nacki `proof_block_refs` always point at strictly older
+blocks (slot 0 = same-thread parent, slots ≥ 1 = cross-thread older
+blocks — see §2.3), the oldest-to-newest direction is well-defined.
+
+**Walk chain.** The walk starts at the event block **X** (thread t,
+oldest / leaf side) and terminates at the anchored thread-0 block
+**Y** (newest / root side) — Y is where the chain of leaf-to-root
+openings finally hits a thread-0 block whose `block_leaf` lands inside
+`GlobalHistoricalData[thread 0][N]`. Written left-to-right:
+
+```
+X  →  B_{L-1}  →  …  →  B_1  →  Y
+```
+
+i.e. "X is a ref inside `B_{L-1}.L7`, which is a ref inside
+`B_{L-2}.L7`, …, which is a ref inside `Y.L7`".
+
+### 0.2 Terminology table
+
 | Term | Meaning |
 |------|---------|
 | **BWS** | Batch Window Size = **128**. (`HISTORY_PROOF_WINDOW_SIZE` in `node/libs/history-proof/src/lib.rs`.) |
 | **Batch M** (within thread 0) | The contiguous range of blocks at heights `[M·BWS, (M+1)·BWS − 1]` within thread 0. |
 | **`#L<N>(M)`** | Layer-N batch hash for batch M of thread 0. Layer-1 is built over the blocks of batch M; layer-(N+1) is built over `BWS` consecutive layer-N hashes. |
-| **X** | The **event block** — the block, in some thread t (t may or may not be 0), in which the `VoucherGenerated` event was emitted. Hidden witness. |
-| **Y** | The **anchor block** — a block **in thread 0** that lies at the tail of a chain of cross-thread reference edges emanating from X. When t = 0, Y = X (uniformity case). Hidden witness. |
-| **X-side / Y-side** | The portions of the DEX proof concerned with block X (event binding, in thread t) and block Y (thread-0 anchor) respectively. When t ≠ 0 they are separate; when t = 0 they collapse onto the same block. |
+| **X** | The **event block** — the AN block, in some thread t (t may be 0 or ≠ 0), that emitted the `VoucherGenerated` event. Hidden witness. X is the walk's leaf-side endpoint (older). |
+| **Y** | The **anchor block** — a block in **thread 0**, *newer* than X, whose transitive `refs` closure reaches X within ≤ L cross-thread (slot ≥ 1) and/or same-thread (slot 0) hops. Y's `block_leaf` folds into a `finalLayerHistoricalHashRoot` populated inside `GlobalHistoricalData[thread 0][N]`, so Y is the trust root the walk begins at. When t = 0, Y = X and L = 0. Hidden witness. |
+| **X-side / Y-side** | The portions of the DEX proof concerned with X (event binding, in thread t) and Y (thread-0 anchor). When t ≠ 0 they are separate; when t = 0 they collapse onto the same block. |
 | **`event_hash`** | 32-byte hash of the voucher event message. Included as a leaf of X's `tracked_ext_out_messages` Merkle tree. |
 | **Block leaf** (thread 0, layer-1) | `block_leaf = Poseidon96(block_id ‖ envelope_hash ‖ tracked_ext_out_messages_root)`. Feeds the per-batch layer-1 Poseidon dense-Merkle tree in thread 0. |
 | **GlobalHistoricalData** | Node-side per-thread map (`HashMap<ThreadIdentifier, HistoryLayerData>`) of layer-N window hashes queried by the contract via `gosh.check_layer_hash(root, N)`. Under this protocol only thread 0's entry is populated. |
 | **`finalLayerHistoricalHashRoot`** | The layer-N batch hash the prover anchors against — exposed as public input `inst[1]` of the DEX proof (see §9 for the full 13-slot layout). Must belong to thread 0's window. |
 | **`layerNumber`** | Contract argument naming the layer N that `finalLayerHistoricalHashRoot` belongs to. |
-| **L** | True chain length in hops from X to Y. `L = 0` when t = 0 (X = Y); `L > 0` in the multi-thread case. |
-| **`L_MAX`** | Circuit-side upper bound on L. **Production target = 300** (specified by the node team as the cross-thread walk-length ceiling under the current threading design). Current prototyping point is **20**; `N_BUNDLE = ceil(L_MAX / H)` scales linearly — moving to prod raises `N_BUNDLE` to 60, no change to per-snark K. |
-| **`H`** | Hops packed per `MultiHopProof` snark. Locked at **5**. |
-| **`N_BUNDLE`** | Number of `MultiHopProof` snarks per bundle. Currently **4** (prototyping `L_MAX = 20`); production **60** (`L_MAX = 300`). May be made dynamic per §6.5 dispatch. |
+| **L** | True chain length in hops between X and Y (`X → … → Y`, oldest → newest, leaf → root). `L = 0 ⇔ t = 0`. |
+| **`L_MAX`** | Circuit-side upper bound on L — a **worst-case ceiling**, not a target. The node team has announced **300** as the hard worst-case for cross-thread walks under the current threading design; with slot-0 (same-thread parent) edges a walk can also run up to **~128** same-thread hops. Both numbers are already punishing for the prover (see §4.3 cell costs). The **desired average** we design for is **10–20** hops, ideally **1–5**; longer walks are tolerated but should be the exception, not the plan. Prototyping cap = **20**. |
+| **`H`** | Hops packed per `MultiHopProof` snark. Locked at **5** (DEX-specific; see §6.4 sizing). |
+| **`N_BUNDLE_MAX`** | Upper bound on the number of `MultiHopProof` snarks per claim. `N_BUNDLE_MAX = ⌈L_MAX / H⌉`. Prototype cap = **4** (`L_MAX = 20`); worst-case production cap = **60** (`L_MAX = 300`). May be made dynamic per §6.5 dispatch. |
 
 **Poseidon input convention (reminder).** Poseidon here operates on BN254 Fr (`|p| ≈ 254 bits`). A byte stream is packed into Fr in **31-byte chunks** (little-endian, high byte implicitly zero) so every chunk is unambiguously `< p` and no modular reduction is needed. An N-byte input consumes `⌈N/31⌉` Fr elements. This applies uniformly to every `Poseidon(...)` in this spec — the tagged L7 leaves, the Poseidon96 block-leaf, dense-Merkle combines, and the salted-endpoint hashes.
 
@@ -38,7 +81,7 @@ The **anchor**, in contrast, must land in **thread 0**. Under this protocol only
 
 When `t = 0`, event and anchor coincide (`X = Y`) and no cross-thread bridging is needed. This is the "single-thread" case. 
 
-When `t ≠ 0`, the proof must chain the event's block X, via cross-thread L7 reference edges (§4), to some thread-0 block Y that transitively references X. Only Y — a thread-0 block — can be anchored to `GlobalHistoricalData[thread 0]`.
+When `t ≠ 0`, the proof chains X (thread t, event) to Y (thread 0, anchored) via L7 reference edges (§4). The walk is drawn `X → … → Y` (leaf → root): each step opens the newer block's L7 and exposes the older block as one of its refs (slot 0 = same-thread parent; slots ≥ 1 = cross-thread). Y is the trust root — its `block_leaf` folds into `finalLayerHistoricalHashRoot ∈ GlobalHistoricalData[thread 0]` — and X inherits that trust transitively through the chain of L7 openings.
 
 ### 1.2 The contract-side check
 
@@ -147,7 +190,7 @@ leaf[i] = Poseidon( tag_i ‖ proof_block_refs[i] )    (32 bytes out)
 
 The chain imposes **no hard ref-count ceiling** — `refs` is a plain `Vec<BlockIdentifier>`, so real blocks have variable-depth L7 (observed depths 0..8; e.g. Michael's `test-multithread-cross-thread --threads 2` produces blocks with 1 or 2 L7 leaves → depth 0 or 1). The DEX circuit therefore witnesses the actual per-hop tree depth (`refs_tree_depth`) and walks an 8-step gated fold sized to `MAX_PROOF_BLOCK_REFS = 256` (depth 8); see §4.2 for the depth-witness handling.
 
-**Slot-0 (`parent_block_id`) is same-thread by construction.** The producer for thread `t` selects its parent via `select_thread_last_finalized_block(&thread_id)` and sets the child's block height as `parent_height.next(&thread_id)` (`node/src/block/producer/producer_service/block_producer.rs:534,576,992`). The parent is therefore always in thread `t` itself. The only exception is the *spawn edge* — the first block of a newly-spawned thread T′ has as its parent the split block on the parent thread (`is_spawning_block(...)` at the same file, and `preprocessing.rs:162-190`). Spawn edges are irrelevant to voucher proofs: a producer that wants to witness such an edge for cross-thread anchoring can always add it to `refs`. **Consequence for §4:** the DEX circuit's L7 walk only opens `refs[0..n]` (slots `1..n`), never slot 0.
+**Chain-side: slot 0 vs slots ≥ 1.** The producer for thread `t` selects its parent via `select_thread_last_finalized_block(&thread_id)` and sets the child's block height as `parent_height.next(&thread_id)` (`node/src/block/producer/producer_service/block_producer.rs:534,576,992`), so under normal operation `parent_block_id` is same-thread and `refs[0..n]` are cross-thread. The *spawn edge* is the one exception — the first block of a newly-spawned thread T′ has as its parent the split block on the parent thread; a producer that wants to anchor across such an edge can also add it to `refs`. **The DEX circuit treats both leaf kinds uniformly** (see §4 and the slot-agnostic hop gadget): both leaves live inside the same L7 Poseidon tree, the leaf tag is picked in-circuit by `is_zero(ref_index)` between `REFERENCED_PARENT_BLOCK_TAG` (37 B) and `REFERENCED_REF_BLOCK_TAG` (34 B), and `ref_index` is range-checked to `[0, 2^refs_tree_depth)`. Opening a slot-0 edge amounts to a same-thread parent walk-back, which the shortest-path witness builder may use freely to shorten a bundle whenever a same-thread parent is cheaper than a cross-thread ref.
 
 L7 is populated for **every** block and provides the outgoing edges the L7 walk (§4) follows.
 
@@ -225,13 +268,15 @@ Y's `envelope_hash` and `tracked_ext_out_messages_root` are **unconstrained witn
 
 ### 4.1 The hop primitive
 
-A **hop** is the atomic cross-thread step. One hop proves:
+A **hop** is the atomic walk step. One hop proves:
 
-> *Block A's block_id appears in block B's L7 as one of `refs[0..n]` (slots `1..n`).*
+> *Block A's block_id appears in block B's L7 as one of `proof_block_refs[k]` (slot `k ∈ [0, refs.len())`).*
 
-That is, **block B references block A cross-thread** via its `refs` list. The hop's "current" block is B (the one whose L7 we open), the "next" block is A (the one we hop to). Because `refs` point to **older** blocks in other threads, repeated hops walk **into the past across threads**. Starting from X (thread t) and following backward `refs` edges, we land on some block Y in thread 0.
+Per the §0.1 arrow convention this is written **`A → B`** (A on the left, older, is a leaf in B.L7; B on the right, newer, opens its L7 to expose A). The hop's `hop_start` is B (the block whose L7 we open — root side); `hop_end` is A (the ref exposed inside B's L7 — leaf side). The arrow is drawn leaf → root (oldest → newest), consistent with every other Merkle fold in this doc.
 
-Slot 0 of L7 (`parent_block_id`) is **not** used as a hop edge: per §2.3 it is same-thread by producer construction and therefore never crosses a thread boundary. The circuit consequently only handles the `refs` case, and `ref_index` is range-checked to `1..=MAX_PROOF_BLOCK_REFS`.
+At the walk-chain level, the walk starts at the event block **X** (thread t, oldest, leaf-most) and terminates at **Y** (thread 0, newest, anchored): `X → … → Y`, oldest → newest, left to right.
+
+**Both slot kinds are valid hop edges** (see §2.3): slot 0 (`parent_block_id`, same-thread parent chain) and slots ≥ 1 (cross-thread refs) live inside the same L7 Poseidon tree and open identically. The hop gadget is slot-agnostic — the circuit selects the leaf tag by `is_zero(ref_index)` between `REFERENCED_PARENT_BLOCK_TAG` and `REFERENCED_REF_BLOCK_TAG`, and `ref_index` is range-checked to `[0, 2^refs_tree_depth)`.
 
 ### 4.2 What one hop constrains
 
@@ -239,7 +284,7 @@ The hop is a **building block, not a standalone snark** — it has no public inp
 
 **Shape-witnessing preamble.** The L7 tree on the chain side is variable-depth (§2.3). Since Halo2 constraints are a fixed circuit, we size the inner path array to the worst case (`MAX_PROOF_BLOCK_REFS_DEPTH = 8`) and carry a per-hop witness `refs_tree_depth ∈ [0, 8]` that tells the circuit how many combine steps of the pre-allocated 8-step fold are *live* for this hop. The remaining steps are gated off. This mirrors the pattern already used in `DarkDexCircuit` for the variable-depth ext-out-messages tree opening (`num_ext_out_levels`).
 
-Inputs for a hop B → A (all private witnesses at the hop level):
+Inputs for a hop `A → B` (A leaf/older, B root/newer — all private witnesses at the hop level):
 
 ```
 current_block_id   = B.block_id                          (32 bytes)
@@ -247,7 +292,7 @@ next_block_id      = A.block_id                          (32 bytes)
 B.L7_root                                                (32 bytes; the L7 root being opened against B.block_id)
 outer_siblings     = [L6, h45, h0..3, h8..15]            (4 × 32 bytes; depth-4 SHA path from L7 up to block_id — all opaque, incl. h8..15)
 refs_tree_depth    (u8; range-checked to [0, MAX_PROOF_BLOCK_REFS_DEPTH = 8])
-ref_index          (u32; range-checked to [1, 2^refs_tree_depth); slot 0 excluded per §4.1)
+ref_index          (u32; range-checked to [0, 2^refs_tree_depth) — slot 0 = parent, slots ≥ 1 = refs)
 L7_inner_path      ([[u8; 32]; 8]; fixed-length array — entries beyond refs_tree_depth are padding, ignored)
 ```
 
@@ -256,14 +301,16 @@ An `is_active` flag also lives at the hop level, but only makes sense inside `Mu
 Constraints (single hop; the enclosing `MultiHopProof` gates them by its own `is_active[h]`):
 
 1. **SHA-256 depth-4 Merkle path.** Open `B.L7_root` against `B.block_id` via the 4-step path `L7 → h67 → h4..7 → h0..7 → block_id` using witness siblings `[L6, h45, h0..3, h8..15]`. Total **4 SHA-256 compressions**. `h8..15` is an opaque witness — a hop does not bind `L8`, so no derivation from L8 or from the L9..L15 zero-constants is needed here (that only happens in `DexFinalProof`, §6.7).
-2. **Tagged leaf hash for A.** Since only `refs` slots (index ≥ 1) are opened, the tag is fixed:
+2. **Tagged leaf hash for A — slot-agnostic.** The tag is selected in-circuit by `is_zero(ref_index)`:
    ```
-   tag_bytes = REFERENCED_REF_BLOCK_TAG
+   tag_bytes = REFERENCED_PARENT_BLOCK_TAG   if ref_index == 0   (37 B — slot 0 is parent_block_id)
+             = REFERENCED_REF_BLOCK_TAG      otherwise           (34 B — slots ≥ 1 are refs)
    tag_hash  = Poseidon(tag_bytes ‖ A.block_id)
    ```
+   Both tags produce the same `Poseidon(32B)` output shape; realisation computes both candidate leaf chunk layouts (31+31+7 for parent, 31+31+4 for ref) and picks the final `leaf_fr` by `gate.select(parent_leaf_fr, ref_leaf_fr, is_zero(ref_index))`. See the matching tag constants `ref_leaf_parent_tag_chunk0_fr`, `ref_leaf_parent_tag_chunk1_lo_fr`, `ref_leaf_ref_tag_chunk0_fr`, `ref_leaf_ref_tag_chunk1_lo_fr` in `multi_hop_witness.rs`.
 3. **Depth-witness sanity.**
    - Range-check `refs_tree_depth ∈ [0, 8]` (a lookup or 4-bit decomposition).
-   - Range-check `ref_index ∈ [1, 2^refs_tree_depth)` — i.e. the high `(8 - refs_tree_depth)` bits of `ref_index` are zero. This prevents the prover from opening a padding slot at any depth. Realisation: decompose `ref_index` into 8 bits `b0..b7`; unary-decompose `refs_tree_depth` into `d0..d7` where `dk = 1{k < refs_tree_depth}` (monotone-decreasing); assert `bk · (1 − dk) == 0` for `k = 0..7`.
+   - Range-check `ref_index ∈ [0, 2^refs_tree_depth)` — i.e. the high `(8 - refs_tree_depth)` bits of `ref_index` are zero. This prevents the prover from opening a padding slot at any depth. Realisation: decompose `ref_index` into 8 bits `b0..b7`; unary-decompose `refs_tree_depth` into `d0..d7` where `dk = 1{k < refs_tree_depth}` (monotone-decreasing); assert `bk · (1 − dk) == 0` for `k = 0..7`. Slot 0 is now a legal hop edge (see §2.3 and the tag mux in constraint 2) and is **not** separately excluded.
 4. **Variable-depth Poseidon dense-Merkle opening.** Verify `B.L7_root == open(tag_hash, ref_index, L7_inner_path, refs_tree_depth)`. Implemented as an unconditional 8-step fold with per-step live-flag:
    ```
    acc_0     = tag_hash
@@ -293,25 +340,50 @@ At `gosh-sha256-chip`'s measured ≈ 354 K advice cells per SHA compression: **�
 
 ### 4.4 The full L7 walk
 
-A chain of L hops `[hop_0, hop_1, ..., hop_{L-1}]` collectively proves:
+The walk starts at **X** (the event block, thread t, older) and
+terminates at **Y** (the anchor block, thread 0, newer, anchored in
+`GlobalHistoricalData[thread 0]`). A chain of L hops
+`[hop_0, hop_1, …, hop_{L-1}]` collectively proves:
 
 ```
-X  =  B_0  →  B_1  →  B_2  →  ...  →  B_L  =  Y
-       ^                                          ^
-       thread t (event block)                     thread 0 (anchor)
+X  =  B_L  →  B_{L-1}  →  ...  →  B_1  →  B_0  =  Y   (oldest → newest, leaf → root)
+       ^                                              ^
+       thread t (event block)                         thread 0 (anchor)
 ```
 
-with the gluing constraint `hop_i.next_block_id == hop_{i+1}.current_block_id` for all i.
+with the per-hop endpoint convention `hop_i.hop_start = B_i` (the newer
+block whose L7 is opened — the **root** side of the arrow) and
+`hop_i.hop_end = B_{i+1}` (the older ref extracted from
+`B_i.proof_block_refs` — the **leaf** side) and the gluing constraint
+`hop_i.hop_end == hop_{i+1}.hop_start` for all i.
 
-**Production bound: `L_MAX = 300`** (specified by the node team as the cross-thread walk-length ceiling under the current threading design). The current design point of `L_MAX = 20` used in the phone-budget sizing of §6 is a **temporary** working target for early prototyping; the multi-proof composition of §6 scales `N_BUNDLE = ceil(L_MAX / H)` linearly with `L_MAX`, so raising it to 300 grows the bundle to `N_BUNDLE = 60` snarks (already stress-tested — see `test_bundle_stress_l300.rs`) without changing the per-snark K.
+Reading the diagram: `hop_0.hop_start = B_0 = Y`, `hop_{L-1}.hop_end =
+B_L = X`. Bundle ordering is thus **right-to-left** in the diagram:
+`snarks[0]` handles the rightmost arrow `B_1 → Y`, `snarks[N_BUNDLE-1]`
+handles the leftmost arrow `X → B_{L-1}`.
 
-Reference off-chain implementation: `helpers/proof_helper/src/gql_proof.rs`. In-circuit hop logic mirrors `verify_proof_block_ref_proof` (Poseidon inner) + `verify_block_merkle_leaf_proof` (SHA outer, updated to depth 4).
+**Worst-case ceiling: `L_MAX = 300`** — the hard upper bound the node team announced for cross-thread walks under the current threading design, not a design target. Slot-0 (same-thread parent) edges add a separate ceiling of ~128 same-thread hops. Both are expensive: at ≈ 1.47 M advice cells per hop (§4.3), 300 hops ≈ 440 M cells of SHA work alone. The **desired average** is **10–20** hops, ideally **1–5**; the circuit tolerates longer walks but each extra hop costs real prover wall time. Prototyping cap `L_MAX = 20`. `N_BUNDLE_MAX = ⌈L_MAX / H⌉` scales linearly — at `H = 5` this yields 4 hop snarks (prototype) or 60 hop snarks (worst-case production). Per-snark K is unchanged by `L_MAX`.
+
+Reference off-chain implementation: `helpers/proof_helper/src/gql_proof.rs`. In-circuit hop logic mirrors `verify_proof_block_ref_proof` (Poseidon inner) + `verify_block_merkle_leaf_proof` (SHA outer, at depth 4).
 
 ---
 
 ## 5. Full protocol binding scheme
 
-Reading the chain from the event back to the anchor:
+**Diagram convention below.** The vertical `↓` arrows in the flow
+diagram that follows denote **cryptographic reduction** (each step is a
+hash opening: `child_bytes → hash(child_bytes) = parent_root`), read
+top-to-bottom as "event data reduces to `finalLayerHistoricalHashRoot`".
+This is orthogonal to the walk-chain arrow convention of §0.1 / §4.4 —
+the L7-walk row inside the diagram compresses L hops in the
+oldest → newest / leaf → root order (`X → … → Y`) into a single "walk"
+step for readability. Because the surrounding diagram flows
+top-to-bottom from `X.block_id` down to `Y.block_id`, the embedded walk
+is drawn pointing **downward** (X at the top, Y at the bottom); each
+inner `↓` is one hop's L7 opening (`refs[k]` at some slot k ∈ [0, 2^refs_tree_depth),
+exposing the older ref inside the newer block's L7).
+
+Reading the chain from the event block (X, older/leaf) down to the anchor (Y, newer/root):
 
 ```
 voucher_event(X)  →  event_hash
@@ -319,7 +391,7 @@ voucher_event(X)  →  event_hash
 X.tracked_ext_out_messages_root                       (= X.L8)
    ↓ (Merkle path inside X's block-id tree, depth 4, opening L8; three sibling constants + one witness sibling h0..7)
 X.block_id
-   ↓ (L7 walk: L hops, L ∈ [0, L_MAX])
+   ↓ (L7 walk: L hops, L ∈ [0, L_MAX]; walk order is leaf → root = older → newer)
 Y.block_id                                            (Y in thread 0; when t=0, Y = X and L = 0)
    ↓ (Poseidon96)
 block_leaf(Y)  =  Poseidon(Y.block_id ‖ Y.envelope_hash ‖ Y.tracked_ext_out_messages_root)

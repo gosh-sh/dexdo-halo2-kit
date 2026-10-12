@@ -100,19 +100,17 @@ pub const REFERENCED_PARENT_BLOCK_TAG: &[u8] = b"acki-nacki:referenced-block:par
 /// Must equal `history-proof::REFERENCED_REF_BLOCK_TAG`.
 pub const REFERENCED_REF_BLOCK_TAG: &[u8] = b"acki-nacki:referenced-block:ref:v1";
 
-/// Assert that a hop's `ref_index` targets a cross-thread `refs` slot
-/// (index ≥ 1). Slot 0 (`parent_block_id`) is same-thread by producer
-/// construction (spec §2.3, §5.1); the DEX L7 walk never opens it.
+/// Assert that a hop's `ref_index` is a legal L7 slot
+/// (`0 ≤ ref_index < MAX_PROOF_BLOCK_REFS`). Both kinds of leaf are valid
+/// hop edges (spec §2.3, §4.1): slot 0 = `parent_block_id` (same-thread
+/// parent chain, `REFERENCED_PARENT_BLOCK_TAG`); slots ≥ 1 = cross-thread
+/// `refs` (`REFERENCED_REF_BLOCK_TAG`). The in-circuit tag mux picks
+/// between the two by `is_zero(ref_index)`.
 ///
 /// Called by `test_helpers::synth_chain*` on every active hop so that
-/// mis-populated witnesses fail loudly *before* the circuit's stricter
-/// in-gate check fires (`ref_index != 0` in `multi_hop_proof.rs`).
-pub fn assert_ref_index_is_cross_thread(ref_index: usize) {
-    assert!(
-        ref_index >= 1,
-        "hop ref_index must be ≥ 1 (slot 0 is same-thread parent, excluded per spec §5.1); got {}",
-        ref_index,
-    );
+/// out-of-range witnesses fail loudly before the in-circuit
+/// `num_to_bits` range check fires.
+pub fn assert_ref_index_in_range(ref_index: usize) {
     assert!(
         ref_index < MAX_PROOF_BLOCK_REFS,
         "hop ref_index {} exceeds MAX_PROOF_BLOCK_REFS {}",
@@ -188,9 +186,14 @@ pub struct HopWitness {
     /// each level, cf. `gql_proof.rs::block_merkle_leaf_proof`.
     pub block_merkle_leaf_proof_l7: [[u8; 32]; BLOCK_MERKLE_DEPTH],
 
-    /// Index of the *referenced parent* block within `block.proof_block_refs`.
-    /// In practice this is 0 (the parent slot) for sequential chains, but the
-    /// inner-ref Merkle tree is general.
+    /// Index of the opened leaf within `block.proof_block_refs` — the slot
+    /// of L7 whose Poseidon leaf resolves to the hop's predecessor
+    /// (`block.proof_block_refs[ref_index]`). Both slot kinds are legal
+    /// hop edges (spec §2.3, §4.1): slot 0 = `parent_block_id`
+    /// (`REFERENCED_PARENT_BLOCK_TAG`, same-thread parent chain);
+    /// slots ≥ 1 = cross-thread refs (`REFERENCED_REF_BLOCK_TAG`). The
+    /// in-circuit tag mux picks between the two by `is_zero(ref_index)`.
+    /// Range `[0, MAX_PROOF_BLOCK_REFS)`.
     pub ref_index: usize,
 
     /// Real depth of the L7 dense-merkle tree for this hop, matching the

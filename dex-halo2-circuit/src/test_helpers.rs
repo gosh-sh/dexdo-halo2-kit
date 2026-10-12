@@ -1,5 +1,5 @@
 use crate::multi_hop_witness::{
-    assert_ref_index_is_cross_thread, block_merkle_leaf_proof, block_merkle_root,
+    assert_ref_index_in_range, block_merkle_leaf_proof, block_merkle_root,
     proof_block_ref_inner_path_native, proof_block_refs_root_native, BlockWitness, HopWitness,
     MultiHopProofWitness, BLOCK_MERKLE_DEPTH, BLOCK_MERKLE_LEAF_COUNT, H_HOPS_PER_PROOF,
     N_BUNDLE,
@@ -396,7 +396,7 @@ pub fn synth_chain(seed: u64, k_hops: usize) -> SynthChain {
 
         let block_merkle_leaf_proof_l7 = block_merkle_leaf_proof(&leaves, 7);
         let ref_index = 1usize;
-        assert_ref_index_is_cross_thread(ref_index);
+        assert_ref_index_in_range(ref_index);
         let (proof_block_ref_inner_path, refs_tree_depth) =
             proof_block_ref_inner_path_native(&proof_block_refs, ref_index);
 
@@ -552,7 +552,7 @@ pub fn synth_chain_n(seed: u64, k_hops: usize, n_bundle: usize) -> SynthChain {
 
         let block_merkle_leaf_proof_l7 = block_merkle_leaf_proof(&leaves, 7);
         let ref_index = 1usize;
-        assert_ref_index_is_cross_thread(ref_index);
+        assert_ref_index_in_range(ref_index);
         let (proof_block_ref_inner_path, refs_tree_depth) =
             proof_block_ref_inner_path_native(&proof_block_refs, ref_index);
 
