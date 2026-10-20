@@ -40,7 +40,9 @@ private.
    historical-hash proofs from a node, and writes a `dex_fixture_*.json` file.
 2. **Generate proof.** `halo2-proover <fixture.json>` builds the circuit
    witness, computes / caches the proving and verification keys, and prints the
-   proof bytes together with the public-input bytes as JSON.
+   proof bytes together with the public-input bytes as JSON. It first checks
+   that the fixture is anchored to the layer given by `--anchor-layer`
+   (default `1`) and prints that layer as `final_layer_number`.
 3. **Verify on chain.** The `proof` and `pub_inputs_hex` fields are passed
    directly to the `ZKHALO2VERIFY` TVM instruction inside the DEX.DO contract.
 
@@ -56,6 +58,9 @@ The circuit exposes five public field elements (concatenated into
 | 2 | `voucher_nominal` | Voucher amount, revealed. |
 | 3 | `token_type` | Token type, revealed. |
 | 4 | `ephemeral_pubkey` | Ephemeral pubkey committed to the voucher, revealed. |
+
+The layer of root 1 is not a public input. RootPN takes it as the
+`layerNumber` argument, which the prover prints as `final_layer_number`.
 
 ## Building
 
@@ -74,13 +79,16 @@ cargo test --release -p dex-halo2-circuit -- --nocapture
 
 ## Quick start: generating a proof
 
-A handful of pre-collected fixtures live in `halo2-proover/` so the prover can
-be exercised without standing up a node:
+A handful of synthetic fixtures live in `halo2-proover/` so the prover can be
+exercised without standing up a node:
 
 ```bash
 cd halo2-proover
-cargo run --release -- dex_fixture_live_L1_H277_S0.json
+cargo run --release -- dex_fixture_synth_L0.json
 ```
+
+The `_L<n>` suffix counts chain steps, so `dex_fixture_synth_L1.json` is
+anchored to layer 2 and needs `--anchor-layer 2`.
 
 The first run performs KZG SRS generation and writes `pk_cache.bin`,
 `break_points_cache.bin`, and `vk_cache.bin` into the working directory; later

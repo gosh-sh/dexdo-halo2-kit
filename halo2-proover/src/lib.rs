@@ -35,6 +35,10 @@ use std::path::{Path, PathBuf};
 
 const K: u32 = 19;
 
+/// Highest history layer a proof can be anchored to: L1 plus `MAX_CHAIN_LEN`
+/// chain links.
+pub const MAX_ANCHOR_LAYER: u32 = MAX_CHAIN_LEN as u32 + 1;
+
 const PK_CACHE_FILE: &str = "pk_cache.bin";
 const BP_CACHE_FILE: &str = "break_points_cache.bin";
 const VK_CACHE_FILE: &str = "vk_cache.bin";
@@ -101,6 +105,33 @@ pub struct InstanceValues {
     pub ephemeral_pubkey: String,
 }
 
+/// [`ProofOutput`] plus the anchor it was produced for: the `layerNumber`
+/// RootPN must pass for `final_layer_historical_hash_root`, and the anchor
+/// block heights the exporter recorded (`None` for fixtures without them).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnchoredProofOutput {
+    #[serde(flatten)]
+    pub output: ProofOutput,
+    pub final_layer_number: u32,
+    pub event_block_height: Option<u64>,
+    pub anchor_block_height: Option<u64>,
+    pub anchor_expires_at_height: Option<u64>,
+}
+
+/// The history layer a fixture's proof is anchored to, as checked by
+/// [`fixture_anchor_from_json`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FixtureAnchor {
+    /// `num_active_chain_steps + 1`: the `layerNumber` RootPN must pass to
+    /// `gosh.check_layer_hash`.
+    pub final_layer_number: u32,
+    /// The root the proof exposes as public input 1.
+    pub final_layer_historical_hash_root: String,
+    pub event_block_height: Option<u64>,
+    pub anchor_block_height: Option<u64>,
+    pub anchor_expires_at_height: Option<u64>,
+}
+
 // ---------------------------------------------------------------------------
 // Public fixture types (consumers can construct programmatically)
 // ---------------------------------------------------------------------------
@@ -129,6 +160,17 @@ pub struct DexFixtureJson {
     pub block_proof_position: usize,
     pub num_active_chain_steps: usize,
     pub dense_chain: Vec<ChainLinkJson>,
+}
+
+/// Anchor metadata `dex_data_exporter` writes next to the proof data.
+/// Synthetic and older fixtures lack it, so every field is optional.
+#[derive(Deserialize)]
+struct FixtureAnchorJson {
+    final_layer_number: Option<u32>,
+    final_layer_historical_hash_root_hex: Option<String>,
+    event_block_height: Option<u64>,
+    anchor_block_height: Option<u64>,
+    anchor_expires_at_height: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -778,6 +820,24 @@ impl Prover {
         })
     }
 
+    /// [`Prover::generate_proof`] after the anchor checks of
+    /// [`fixture_anchor_from_json`]. The output also carries the layer number
+    /// RootPN expects and the anchor block heights.
+    pub fn generate_proof_anchored(
+        &mut self,
+        fixture_json: &str,
+        expected_layer: Option<u32>,
+    ) -> Result<AnchoredProofOutput, ProverError> {
+        let anchor = fixture_anchor_from_json(fixture_json, expected_layer)?;
+        let output = self.generate_proof(fixture_json)?;
+        Ok(AnchoredProofOutput {
+            output,
+            final_layer_number: anchor.final_layer_number,
+            event_block_height: anchor.event_block_height,
+            anchor_block_height: anchor.anchor_block_height,
+            anchor_expires_at_height: anchor.anchor_expires_at_height,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -905,6 +965,82 @@ pub fn compute_fr_instances_from_json(fixture_json: &str) -> Result<Vec<Fr>, Pro
     Ok(compute_instances(&parsed))
 }
 
+/// Reads which history layer a fixture's proof is anchored to and checks the
+/// fixture against it, without generating a proof:
+///
+/// * the dense chain must consist of `num_active_chain_steps` active links
+///   (layer = steps + 1), followed only by inactive ones;
+/// * with `expected_layer`, the layer must equal it;
+/// * a declared `final_layer_number` must equal the layer, and a declared
+///   `final_layer_historical_hash_root_hex` must equal the root the proof
+///   would expose. Otherwise the event BOC, events proof and chain do not
+///   describe the root the exporter checked against the node.
+///
+/// Fixtures without the declared fields (synthetic or older ones) pass those
+/// two checks.
+pub fn fixture_anchor_from_json(
+    fixture_json: &str,
+    expected_layer: Option<u32>,
+) -> Result<FixtureAnchor, ProverError> {
+    let json: DexFixtureJson = serde_json::from_str(fixture_json)
+        .map_err(|e| ProverError::Fixture(format!("JSON parse: {e}")))?;
+    let declared: FixtureAnchorJson = serde_json::from_str(fixture_json)
+        .map_err(|e| ProverError::Fixture(format!("anchor fields: {e}")))?;
+
+    let steps = json.num_active_chain_steps;
+    let active_prefix = json
+        .dense_chain
+        .iter()
+        .take_while(|link| link.active)
+        .count();
+    let active_total = json.dense_chain.iter().filter(|link| link.active).count();
+    if steps > MAX_CHAIN_LEN || steps != active_prefix || active_total != active_prefix {
+        return Err(ProverError::Fixture(format!(
+            "num_active_chain_steps = {steps} does not match the dense chain: {active_total} \
+             active link(s), the first {active_prefix} of them in a row (MAX_CHAIN_LEN = \
+             {MAX_CHAIN_LEN})"
+        )));
+    }
+    let layer = steps as u32 + 1;
+
+    if let Some(expected) = expected_layer {
+        if expected != layer {
+            return Err(ProverError::Fixture(format!(
+                "the fixture is anchored to layer {layer} ({steps} chain step(s)), not layer \
+                 {expected}: prove it with --anchor-layer {layer}, or re-export it with \
+                 --anchor-layer {expected}"
+            )));
+        }
+    }
+    if let Some(declared_layer) = declared.final_layer_number {
+        if declared_layer != layer {
+            return Err(ProverError::Fixture(format!(
+                "final_layer_number = {declared_layer}, but the dense chain has {steps} chain \
+                 step(s), i.e. layer {layer}"
+            )));
+        }
+    }
+
+    let values = compute_instances_from_json(fixture_json)?;
+    if let Some(declared_root) = &declared.final_layer_historical_hash_root_hex {
+        if !declared_root.eq_ignore_ascii_case(&values.final_layer_historical_hash_root) {
+            return Err(ProverError::Fixture(format!(
+                "the proof would expose root {}, but the fixture declares {declared_root}: the \
+                 event BOC, events proof and chain do not lead to the declared root",
+                values.final_layer_historical_hash_root
+            )));
+        }
+    }
+
+    Ok(FixtureAnchor {
+        final_layer_number: layer,
+        final_layer_historical_hash_root: values.final_layer_historical_hash_root,
+        event_block_height: declared.event_block_height,
+        anchor_block_height: declared.anchor_block_height,
+        anchor_expires_at_height: declared.anchor_expires_at_height,
+    })
+}
+
 /// The `BaseCircuitParams` shape used by `DarkDexCircuitNew` at K=19.
 /// Mirrors `dark_dex_w128_config_params` in
 /// `tvm_vm/src/executor/zk_halo2_utils.rs`.
@@ -993,5 +1129,149 @@ mod tests {
         json["sk_u_hex"] = serde_json::Value::String("zzzz".into());
         let result = compute_instances_from_json(&json.to_string());
         assert!(result.is_err());
+    }
+
+    // --- anchor layer ---
+
+    const FIXTURE_L0: &str = include_str!("../dex_fixture_synth_L0.json");
+    const FIXTURE_L11: &str = include_str!("../dex_fixture_synth_L11.json");
+
+    fn with_fields(fixture: &str, fields: serde_json::Value) -> String {
+        let mut json: serde_json::Value = serde_json::from_str(fixture).unwrap();
+        for (key, value) in fields.as_object().unwrap() {
+            json[key] = value.clone();
+        }
+        json.to_string()
+    }
+
+    #[test]
+    fn synthetic_fixtures_are_anchored_one_layer_above_their_chain_length() {
+        // The file names count chain steps, so `_L1` is anchored to layer 2.
+        for (fixture, layer) in [
+            (FIXTURE_L0, 1),
+            (FIXTURE_L1, 2),
+            (FIXTURE_L2, 3),
+            (FIXTURE_L11, 12),
+        ] {
+            let anchor = fixture_anchor_from_json(fixture, None).unwrap();
+            assert_eq!(anchor.final_layer_number, layer);
+            assert_eq!(
+                anchor.final_layer_historical_hash_root,
+                compute_instances_from_json(fixture)
+                    .unwrap()
+                    .final_layer_historical_hash_root
+            );
+            assert_eq!(anchor.anchor_block_height, None);
+            assert_eq!(
+                fixture_anchor_from_json(fixture, Some(layer)).unwrap(),
+                anchor
+            );
+        }
+    }
+
+    // Written by `dex_data_exporter` against the mock node of its
+    // `tests/event_selection.rs`: event at height 7, anchored to layers 1 and 2.
+    const EXPORTER_LAYER1: &str = include_str!("../tests/fixtures/exporter_mock_layer1.json");
+    const EXPORTER_LAYER2: &str = include_str!("../tests/fixtures/exporter_mock_layer2.json");
+
+    #[test]
+    fn exporter_fixtures_pass_the_anchor_check() {
+        // The root the prover recomputes must equal the one the exporter
+        // checked against the node, in the same hex encoding.
+        for (fixture, layer, anchor_block, expiry) in [
+            (EXPORTER_LAYER1, 1, 128, 16_512),
+            (EXPORTER_LAYER2, 2, 16_384, 2_113_536),
+        ] {
+            let anchor = fixture_anchor_from_json(fixture, Some(layer)).unwrap();
+            assert_eq!(anchor.final_layer_number, layer);
+            assert_eq!(anchor.event_block_height, Some(7));
+            assert_eq!(anchor.anchor_block_height, Some(anchor_block));
+            assert_eq!(anchor.anchor_expires_at_height, Some(expiry));
+        }
+    }
+
+    #[test]
+    fn a_different_expected_layer_is_refused() {
+        let error = fixture_anchor_from_json(FIXTURE_L1, Some(1))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("anchored to layer 2"), "{error}");
+        assert!(error.contains("--anchor-layer 2"), "{error}");
+    }
+
+    #[test]
+    fn declared_anchor_fields_must_match_the_chain() {
+        let root = compute_instances_from_json(FIXTURE_L1)
+            .unwrap()
+            .final_layer_historical_hash_root;
+        let fixture = with_fields(
+            FIXTURE_L1,
+            serde_json::json!({
+                "final_layer_number": 2,
+                "final_layer_historical_hash_root_hex": root,
+                "event_block_height": 7,
+                "anchor_block_height": 16384,
+                "anchor_expires_at_height": null,
+            }),
+        );
+        let anchor = fixture_anchor_from_json(&fixture, Some(2)).unwrap();
+        assert_eq!(anchor.event_block_height, Some(7));
+        assert_eq!(anchor.anchor_block_height, Some(16384));
+        assert_eq!(anchor.anchor_expires_at_height, None);
+
+        let wrong_layer = with_fields(&fixture, serde_json::json!({ "final_layer_number": 1 }));
+        let error = fixture_anchor_from_json(&wrong_layer, None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("final_layer_number = 1"), "{error}");
+
+        let wrong_root = with_fields(
+            &fixture,
+            serde_json::json!({ "final_layer_historical_hash_root_hex": "00".repeat(32) }),
+        );
+        let error = fixture_anchor_from_json(&wrong_root, None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("declares"), "{error}");
+    }
+
+    #[test]
+    fn chain_step_count_must_match_the_active_links() {
+        // `compute_instances` would panic on this fixture; the anchor check refuses it.
+        let fixture = with_fields(
+            FIXTURE_L1,
+            serde_json::json!({ "num_active_chain_steps": 2 }),
+        );
+        let error = fixture_anchor_from_json(&fixture, None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("num_active_chain_steps = 2"), "{error}");
+    }
+
+    #[test]
+    fn anchored_output_is_a_superset_of_proof_output() {
+        let output = AnchoredProofOutput {
+            output: ProofOutput {
+                proof: "ab".into(),
+                pub_inputs_hex: "cd".into(),
+                deposit_identifier_hash: "01".into(),
+                final_layer_historical_hash_root: "02".into(),
+                voucher_nominal: "03".into(),
+                token_type: "04".into(),
+                ephemeral_pubkey: "05".into(),
+            },
+            final_layer_number: 2,
+            event_block_height: Some(7),
+            anchor_block_height: Some(16384),
+            anchor_expires_at_height: Some(2_113_536),
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["proof"], "ab");
+        assert_eq!(json["final_layer_historical_hash_root"], "02");
+        assert_eq!(json["final_layer_number"], 2);
+        assert_eq!(json["anchor_block_height"], 16384);
+        // Consumers of the old output still read it as a plain ProofOutput.
+        let plain: ProofOutput = serde_json::from_value(json).unwrap();
+        assert_eq!(plain.proof, "ab");
     }
 }

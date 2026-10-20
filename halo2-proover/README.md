@@ -18,15 +18,25 @@ anchor is checked before use.
 `Prover::new_with_hermez(cache_dir)` loads the SRS;
 `Prover::generate_proof(fixture_json)` produces a proof against the supplied
 fixture JSON (see `DexFixtureJson` schema).
+`Prover::generate_proof_anchored(fixture_json, expected_layer)` first checks
+which history layer the fixture is anchored to (see `fixture_anchor_from_json`)
+and adds that layer to the output.
 
 Exemplary call (from `halo2-proover/`):
 
 ```
-cargo run --release --bin halo2-proover -- dex_fixture_synth_L1.json
+cargo run --release --bin halo2-proover -- --anchor-layer 2 dex_fixture_synth_L1.json
 ```
 
 (`--bin halo2-proover` selects this crate's main prover binary — the crate
 also ships a `dump_synthetic_fixtures` bin, see below.)
+
+`--anchor-layer` (default `1`) is the layer RootPN's `layerNumber` will name:
+a fixture with `n` chain steps is anchored to layer `n + 1`, so
+`dex_fixture_synth_L1.json` needs `--anchor-layer 2`. The prover refuses a
+fixture anchored to another layer, or one whose declared
+`final_layer_historical_hash_root_hex` differs from the root the proof would
+expose. `--anchor-layer auto` accepts the fixture's own layer.
 
 Reads the synthetic W=128 fixture, runs Hermez keygen (first call only — PK +
 break_points cached to `--cache-dir`, default `.`), then proves. Output:
@@ -39,9 +49,18 @@ break_points cached to `--cache-dir`, default `.`), then proves. Output:
   "final_layer_historical_hash_root": "<32-byte LE Fr>",
   "voucher_nominal": "<32-byte LE Fr>",
   "token_type": "<32-byte LE Fr>",
-  "ephemeral_pubkey": "<32-byte LE Fr>"
+  "ephemeral_pubkey": "<32-byte LE Fr>",
+  "final_layer_number": 2,
+  "event_block_height": null,
+  "anchor_block_height": null,
+  "anchor_expires_at_height": null
 }
 ```
+
+`final_layer_number` is the `layerNumber` to pass to RootPN together with
+`final_layer_historical_hash_root`. The three heights come from fixtures
+written by `dex_data_exporter`: the event block, the block that publishes the
+root, and the first block from which the node no longer accepts it.
 
 Given the same fixture, output is bit-reproducible. Feed `proof` +
 `pub_inputs_hex` into the TVM `ZKHALO2VERIFY` instruction.
@@ -49,7 +68,8 @@ Given the same fixture, output is bit-reproducible. Feed `proof` +
 ### Included fixtures
 
 `dex_fixture_synth_L{0,1,2,11}.json` — synthetic W=128 fixtures at chain
-lengths 0, 1, 2, and 11 (`MAX_CHAIN_LEN`). All derived from
+lengths 0, 1, 2, and 11 (`MAX_CHAIN_LEN`), i.e. anchored to layers 1, 2, 3 and
+12. All derived from
 `../dex-halo2-circuit/vouchers.txt[0]` + `seed = 99` via `W128Fixture::synth`.
 Sibling counts match production tree geometry: events depth 7, block-tree
 depth 8, per-chain-link depth 8. To regenerate (e.g. after a circuit-shape
