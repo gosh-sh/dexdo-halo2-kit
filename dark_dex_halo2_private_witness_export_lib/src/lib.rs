@@ -99,6 +99,13 @@ fn bytes_to_hex(b: &[u8; 32]) -> String {
 pub async fn make_private_witness_and_public_data(
     params: &ExportParams,
 ) -> anyhow::Result<String> {
+    let event_bytes = tvm_types::base64_decode(&params.event_boc)
+        .map_err(|e| anyhow::anyhow!("Invalid event_boc base64: {e}"))?;
+    let event_msg_hash = tvm_types::read_single_root_boc(event_bytes)
+        .map_err(|e| anyhow::anyhow!("Invalid event_boc: {e}"))?
+        .repr_hash()
+        .inner();
+
     let client = create_client(&params.network)?;
     let thread_id = ThreadIdentifier::default();
 
@@ -140,8 +147,13 @@ pub async fn make_private_witness_and_public_data(
     let (target_routing, target_msg_hash) = ext_messages
         .iter()
         .flat_map(|(routing, msgs)| msgs.iter().map(move |m| (*routing, *m)))
-        .next()
-        .ok_or(anyhow::anyhow!("No ext messages in block"))?;
+        .find(|(_, msg_hash)| *msg_hash == event_msg_hash)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Event BOC message hash {} not found in block tracked ext_out_messages",
+                hex::encode(event_msg_hash)
+            )
+        })?;
 
     let (dapp_id, account_id) = target_routing.unpack_for_hash();
     tracing::info!(

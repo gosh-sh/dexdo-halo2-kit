@@ -104,6 +104,8 @@ cargo run --release -p dark_dex_halo2_private_witness_export_lib --bin dex_data_
 
 Pass either `--block-height` or `--block-id`. `--max-layers` makes the layer
 collection strict (the exporter errors instead of returning a partial chain).
+The exporter selects the tracked message matching the representation hash of
+`--event-boc`; an invalid BOC or a message absent from the block is an error.
 
 ## Runtime context
 
