@@ -102,8 +102,19 @@ cargo run --release -p dark_dex_halo2_private_witness_export_lib --bin dex_data_
   --output          dex_fixture.json
 ```
 
-Pass either `--block-height` or `--block-id`. `--max-layers` makes the layer
-collection strict (the exporter errors instead of returning a partial chain).
+Pass either `--block-height` or `--block-id`.
+
+By default the proof is anchored to the layer-1 (block tree) root.
+`--anchor-layer 2` (or higher) anchors it to that layer's root, and
+`--anchor-layer auto` to the highest layer the chain has already produced.
+RootPN's `layerNumber` must equal the anchor layer, which the fixture records as
+`final_layer_number`. At ~3 blocks/s the node accepts an L1 root for ~43 s to
+~91 min after publishing it, and an L2 root for ~91 min to ~8 days, so late
+claims need L2. If the anchor block does not exist yet, the exporter fails, or
+polls for it with `--wait-for-anchor`. If the node has already evicted the root,
+it fails and suggests the next layer. `--max-layers N` is the older spelling of
+`--anchor-layer N+1`.
+
 The exporter selects the tracked message matching the representation hash of
 `--event-boc`; an invalid BOC or a message absent from the block is an error.
 

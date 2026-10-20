@@ -120,6 +120,29 @@ pub async fn query_block_by_height(
     parse_proof_block(value)
 }
 
+/// Like [`query_block_by_height`], but `Ok(None)` when the node has no block
+/// at that height (yet) instead of an error.
+pub async fn try_query_block_by_height(
+    context: TvmClient,
+    thread_id: ThreadIdentifier,
+    height: u64,
+) -> anyhow::Result<Option<GqlProofBlock>> {
+    let thread_id_hex = format!("{thread_id:x}");
+    tracing::trace!("try_query_block_by_height thread_id={thread_id_hex} height={height}");
+    let query = format!(
+        r#"query BlockByHeight($threadId: String!, $height: Int!) {{ blockchain {{ block_by_height: blockByHeight(thread_id: $threadId, height: $height) {{ ...ProofBlockFields }} }} }}{PROOF_BLOCK_FRAGMENT}"#
+    );
+    let data =
+        gql_query(&context, &query, json!({ "threadId": thread_id_hex, "height": height })).await?;
+    let value = data
+        .pointer("/data/blockchain/block_by_height")
+        .ok_or_else(|| anyhow::format_err!("block_by_height key not found"))?;
+    if value.is_null() {
+        return Ok(None);
+    }
+    parse_proof_block(value).map(Some)
+}
+
 pub async fn query_latest_block_height(
     context: TvmClient,
     thread_id: ThreadIdentifier,

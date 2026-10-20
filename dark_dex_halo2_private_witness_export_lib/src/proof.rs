@@ -70,6 +70,33 @@ pub fn generate_layer_n_proof(
     Ok((root, proof, pos))
 }
 
+/// Like [`generate_layer_n_proof`], but proves the leaf at a known `position`
+/// (see [`crate::anchor::rung_position`]) and fails unless that leaf is
+/// `expected_leaf`, instead of searching the leaves for it. Returns
+/// `(root, proof)`.
+pub fn generate_layer_n_proof_at(
+    layer_root_hashes: &[[u8; 32]],
+    expected_leaf: [u8; 32],
+    position: usize,
+    same_layer_root: Option<[u8; 32]>,
+    higher_layer_root: Option<[u8; 32]>,
+) -> anyhow::Result<([u8; 32], Vec<[u8; 32]>)> {
+    let hasher = PoseidonHasher::new();
+    let leaves = build_leaves(layer_root_hashes, same_layer_root, higher_layer_root);
+    let leaf = leaves.get(position).ok_or_else(|| {
+        anyhow::anyhow!("leaf position {position} is outside the {} leaves", leaves.len())
+    })?;
+    anyhow::ensure!(
+        *leaf == expected_leaf,
+        "leaf {position} is {}, expected {}",
+        hex::encode(leaf),
+        hex::encode(expected_leaf)
+    );
+    let root = dense_merkle_root(&hasher, &leaves);
+    let proof = dense_merkle_proof(&hasher, &leaves, position);
+    Ok((root, proof))
+}
+
 pub fn verify_dense_proof(
     root: &[u8; 32],
     leaf: &[u8; 32],
