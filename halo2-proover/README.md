@@ -19,24 +19,30 @@ anchor is checked before use.
 `Prover::generate_proof(fixture_json)` produces a proof against the supplied
 fixture JSON (see `DexFixtureJson` schema).
 `Prover::generate_proof_anchored(fixture_json, expected_layer)` first checks
-which history layer the fixture is anchored to (see `fixture_anchor_from_json`)
-and adds that layer to the output.
+which history layer the fixture is anchored to (see `fixture_anchor_from_json`;
+`expected_layer = None` accepts the fixture's own layer) and adds that layer to
+the output.
 
 Exemplary call (from `halo2-proover/`):
 
 ```
-cargo run --release --bin halo2-proover -- --anchor-layer 2 dex_fixture_synth_L1.json
+cargo run --release --bin halo2-proover -- dex_fixture_synth_L1.json
 ```
 
 (`--bin halo2-proover` selects this crate's main prover binary — the crate
 also ships a `dump_synthetic_fixtures` bin, see below.)
 
-`--anchor-layer` (default `1`) is the layer RootPN's `layerNumber` will name:
-a fixture with `n` chain steps is anchored to layer `n + 1`, so
-`dex_fixture_synth_L1.json` needs `--anchor-layer 2`. The prover refuses a
-fixture anchored to another layer, or one whose declared
-`final_layer_historical_hash_root_hex` differs from the root the proof would
-expose. `--anchor-layer auto` accepts the fixture's own layer.
+The prover reads the anchor layer from the fixture. A fixture with `n` chain
+steps is anchored to layer `n + 1`, and the output reports that layer as
+`final_layer_number`, the `layerNumber` RootPN expects. The layer is chosen when
+exporting (`dex_data_exporter --anchor-layer`), so the prover needs no flag:
+`dex_fixture_synth_L1.json` above is anchored to layer 2.
+
+`--anchor-layer N` (1 to 12) adds a check. A fixture anchored to any other layer
+is refused before the SRS is loaded. The default, `auto`, accepts the fixture's
+own layer. Either way, the prover refuses a fixture whose declared
+`final_layer_number` or `final_layer_historical_hash_root_hex` differs from what
+the proof would expose.
 
 Reads the synthetic W=128 fixture, runs Hermez keygen (first call only — PK +
 break_points cached to `--cache-dir`, default `.`), then proves. Output:

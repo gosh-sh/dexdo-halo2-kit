@@ -53,11 +53,12 @@ struct Args {
     cache_dir: PathBuf,
 
     /// History layer the fixture must be anchored to, i.e. RootPN's
-    /// `layerNumber`: 1 (default), 2, ... up to 12, or `auto` to take the
-    /// fixture's own. A fixture anchored to another layer, or whose declared
-    /// root differs from the one the proof would expose, is refused before
-    /// proving.
-    #[arg(long, value_name = "LAYER", default_value = "1")]
+    /// `layerNumber`: `auto` (default) takes the fixture's own layer, chosen by
+    /// `dex_data_exporter --anchor-layer`; 1, 2, ... up to 12 also refuse a
+    /// fixture anchored to another layer. A fixture whose declared layer or
+    /// root differs from the one the proof would expose is always refused
+    /// before proving.
+    #[arg(long, value_name = "LAYER", default_value = "auto")]
     anchor_layer: AnchorLayerArg,
 }
 
@@ -96,5 +97,36 @@ fn main() {
             eprintln!("Error: {e}");
             process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn anchor_layer(flags: &[&str]) -> Result<AnchorLayerArg, clap::Error> {
+        let mut argv = vec!["halo2-proover"];
+        argv.extend_from_slice(flags);
+        argv.push("fixture.json");
+        Args::try_parse_from(argv).map(|args| args.anchor_layer)
+    }
+
+    #[test]
+    fn without_the_flag_the_fixture_layer_is_taken() {
+        assert!(matches!(anchor_layer(&[]).unwrap(), AnchorLayerArg::Auto));
+    }
+
+    #[test]
+    fn an_explicit_layer_is_required_exactly() {
+        assert!(matches!(
+            anchor_layer(&["--anchor-layer", "2"]).unwrap(),
+            AnchorLayerArg::Layer(2)
+        ));
+        assert!(matches!(
+            anchor_layer(&["--anchor-layer", "AUTO"]).unwrap(),
+            AnchorLayerArg::Auto
+        ));
+        assert!(anchor_layer(&["--anchor-layer", "0"]).is_err());
+        assert!(anchor_layer(&["--anchor-layer", "13"]).is_err());
     }
 }
