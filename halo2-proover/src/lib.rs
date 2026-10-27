@@ -1274,4 +1274,54 @@ mod tests {
         let plain: ProofOutput = serde_json::from_value(json).unwrap();
         assert_eq!(plain.proof, "ab");
     }
+
+    // RootPN's `VK_BLOB` (VKBLOB v1, 991 bytes, sha256 f997bde5…), copied from
+    // tvm-sdk `tvm_vm/halo2_test_data/dark_dex_w128_vk_blob.bin`. Its last
+    // bytes are the raw verifying key.
+    const ROOTPN_VK_BLOB: &[u8] = include_bytes!("../tests/fixtures/dark_dex_w128_vk_blob.bin");
+
+    /// Keygen on fixtures anchored to layers 1, 2 and 12 reproduces the VK
+    /// RootPN verifies against: the anchor layer is a witness, not part of the
+    /// circuit shape. Slow (one K=19 keygen per fixture) and needs the Hermez
+    /// K=19 SRS in halo2 raw format:
+    /// `DARK_DEX_SRS=<hermez_kzg_bn254_19.srs> cargo test -p halo2-proover --lib vk_ -- --ignored`
+    #[test]
+    #[ignore]
+    fn vk_does_not_depend_on_the_anchor_layer() {
+        let path =
+            std::env::var("DARK_DEX_SRS").expect("DARK_DEX_SRS: path to the Hermez K=19 SRS");
+        let raw = fs::read(path).unwrap();
+        let mut cursor: &[u8] = &raw;
+        let srs =
+            ParamsKZG::<Bn256>::read_custom(&mut cursor, SerdeFormat::RawBytesUnchecked).unwrap();
+        for fixture in [EXPORTER_LAYER1, EXPORTER_LAYER2, FIXTURE_L11] {
+            let json: DexFixtureJson = serde_json::from_str(fixture).unwrap();
+            let parsed = parse_fixture(&json).unwrap();
+            let layer = parsed.num_active_chain_steps + 1;
+            let circuit = DarkDexCircuitNew::new(
+                parsed.sk_u,
+                parsed.ephemeral_pubkey,
+                parsed.entries,
+                parsed.events_proof_siblings,
+                parsed.events_proof_position,
+                parsed.account_dapp_id,
+                parsed.account_id,
+                parsed.block_id,
+                parsed.envelope_hash_bytes,
+                parsed.block_proof_siblings,
+                parsed.block_proof_position,
+                parsed.dense_chain,
+                parsed.num_active_chain_steps,
+                base_circuit_params(),
+            );
+            let vk = keygen_vk(&srs, &circuit).unwrap();
+            let mut vk_bytes = Vec::new();
+            vk.write(&mut vk_bytes, SerdeFormat::RawBytesUnchecked)
+                .unwrap();
+            assert!(
+                ROOTPN_VK_BLOB.ends_with(&vk_bytes),
+                "the VK of the layer-{layer} fixture differs from RootPN's"
+            );
+        }
+    }
 }
