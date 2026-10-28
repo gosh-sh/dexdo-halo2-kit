@@ -2,29 +2,46 @@
 //! a running acki-nacki node and produces JSON fixtures for the
 //! gosh-dark-dex-halo2-new-circuit witness/public-input generation.
 //!
-//! Library entry point: [`make_private_witness_and_public_data`], driven by
-//! the [`ExportParams`] struct.
+//! Library entry points: [`make_private_witness_with_anchor`], which takes the
+//! anchor layer explicitly (see [`anchor`]), and the older
+//! [`make_private_witness_and_public_data`]. Both are driven by the
+//! [`ExportParams`] struct.
 
+pub mod anchor;
 pub mod blockchain;
 pub mod poseidon;
 pub mod proof;
 pub mod types;
 
 use anyhow::ensure;
+use anyhow::Context;
 use serde::Serialize;
 
 use crate::poseidon::HISTORY_PROOF_WINDOW_SIZE;
 use crate::types::ThreadIdentifier;
 
+use crate::anchor::anchor_block_height;
+use crate::anchor::anchor_expiry_height;
+use crate::anchor::approx_duration;
+use crate::anchor::rung_position;
+use crate::anchor::validate_layer;
+use crate::anchor::AnchorLayerMode;
+use crate::anchor::AnchorOptions;
+use crate::anchor::WaitOptions;
+use crate::anchor::MAX_ANCHOR_LAYER;
+use crate::anchor::NOMINAL_BLOCKS_PER_SECOND;
 use crate::blockchain::create_client;
 use crate::blockchain::get_layer_0_data;
 use crate::blockchain::get_layer_n_data;
 use crate::blockchain::query_block_by_height;
 use crate::blockchain::query_block_by_id;
 use crate::blockchain::query_latest_block_height;
+use crate::blockchain::try_query_block_by_height;
+use crate::blockchain::GqlProofBlock;
+use crate::blockchain::TvmClient;
 use crate::proof::generate_ext_message_proof;
 use crate::proof::generate_layer0_proof;
-use crate::proof::generate_layer_n_proof;
+use crate::proof::generate_layer_n_proof_at;
 use crate::proof::verify_dense_proof;
 
 // ---------------------------------------------------------------------------
@@ -46,7 +63,11 @@ pub struct ExportParams {
     pub ephemeral_pubkey: String,
     /// Output JSON file path
     pub output: String,
-    /// Maximum number of chain layers to collect (strict requirement if set)
+    /// Legacy layer selector, counted in chain steps above L1: `Some(n)`
+    /// anchors to layer `n + 1`. [`make_private_witness_and_public_data`]
+    /// reads `None` as "highest layer already produced";
+    /// [`make_private_witness_with_anchor`] takes the layer from its `anchor`
+    /// argument and only checks that a `Some` here agrees with it.
     pub max_layers: Option<u32>,
 }
 
@@ -86,6 +107,14 @@ pub struct DexFixtureJson {
     /// CONTRACT-FACING layer index corresponding to
     /// `final_layer_historical_hash_root_hex`. Equals `num_active_chain_steps + 1`.
     pub final_layer_number: u32,
+    /// Height of the block that holds the event.
+    pub event_block_height: u64,
+    /// Block that publishes `final_layer_historical_hash_root_hex` (`T_n`, see
+    /// [`anchor`]). A claim can use the root from the next block on.
+    pub anchor_block_height: u64,
+    /// First block whose history cursor no longer holds that root (`E_n`), or
+    /// `null` if beyond `u64`. Once it exists, the chain rejects the proof.
+    pub anchor_expires_at_height: Option<u64>,
 }
 
 fn bytes_to_hex(b: &[u8; 32]) -> String {
@@ -96,9 +125,44 @@ fn bytes_to_hex(b: &[u8; 32]) -> String {
 // Main public API
 // ---------------------------------------------------------------------------
 
+/// Legacy entry point. The anchor layer comes from `params.max_layers`
+/// (`Some(n)` is layer `n + 1`, `None` the highest layer already produced);
+/// it does not wait for the anchor block and rejects evicted anchors. See
+/// [`make_private_witness_with_anchor`].
 pub async fn make_private_witness_and_public_data(
     params: &ExportParams,
 ) -> anyhow::Result<String> {
+    let anchor = AnchorOptions {
+        layer: AnchorLayerMode::from_max_layers(params.max_layers),
+        ..AnchorOptions::default()
+    };
+    make_private_witness_with_anchor(params, &anchor).await
+}
+
+/// Builds the fixture for the event in `params`, anchored to the history
+/// layer chosen by `anchor`, writes it to `params.output` and returns it.
+///
+/// Nothing is written if the anchor block does not exist yet (unless
+/// `anchor.wait` is set and it appears in time), if the node has already
+/// evicted the anchor root (unless `anchor.allow_expired`), or if a rebuilt
+/// root differs from the one the node published.
+pub async fn make_private_witness_with_anchor(
+    params: &ExportParams,
+    anchor: &AnchorOptions,
+) -> anyhow::Result<String> {
+    if let AnchorLayerMode::Explicit(layer) = anchor.layer {
+        validate_layer(layer)?;
+    }
+    if let Some(steps) = params.max_layers {
+        let legacy = AnchorLayerMode::from_max_layers(Some(steps));
+        ensure!(
+            legacy == anchor.layer,
+            "max_layers = {steps} selects anchor layer {legacy}, which conflicts with anchor \
+             layer {}",
+            anchor.layer
+        );
+    }
+
     let event_bytes = tvm_types::base64_decode(&params.event_boc)
         .map_err(|e| anyhow::anyhow!("Invalid event_boc base64: {e}"))?;
     let event_msg_hash = tvm_types::read_single_root_boc(event_bytes)
@@ -125,9 +189,6 @@ pub async fn make_private_witness_and_public_data(
 
     let block_height = block.height;
     tracing::info!("Got block at height {}", block_height);
-
-    let last_block_height = query_latest_block_height(client.clone(), thread_id).await?;
-    tracing::info!("Latest block height: {}", last_block_height);
 
     // --- ext_out_message proof ---
     let ext_messages = &block.tracked_ext_out_messages;
@@ -180,6 +241,17 @@ pub async fn make_private_witness_and_public_data(
         inner_proof.len()
     );
 
+    // --- anchor: which layer, and is its root published and still accepted ---
+    let resolved = resolve_anchor(&client, thread_id, block_height, anchor).await?;
+    let layer = resolved.layer;
+    let anchor_block = &resolved.anchor_block;
+    tracing::info!(
+        "Anchor layer {}: root published in block {}, usable until block {}",
+        layer,
+        anchor_block.height,
+        resolved.expires_at.map_or_else(|| "beyond u64".to_string(), |h| h.to_string())
+    );
+
     // --- block proof (L0) ---
     let block_id_bytes = block.block_id;
     let env_hash_bytes = block.envelope_hash;
@@ -207,105 +279,36 @@ pub async fn make_private_witness_and_public_data(
         hex::encode(root_layer_0)
     );
 
-    // --- chain of higher-layer proofs ---
-    let upper_cap = params.max_layers.unwrap_or(u32::MAX);
-    let mut available_max_layer = 0u32;
-    loop {
-        if available_max_layer >= upper_cap {
-            break;
-        }
-        let Some(denominator) =
-            (HISTORY_PROOF_WINDOW_SIZE as u64).checked_pow(available_max_layer + 1)
-        else {
-            break;
-        };
-        let Some(next_layer_height) =
-            block_height.div_ceil(denominator).checked_mul(denominator)
-        else {
-            break;
-        };
-        if next_layer_height > last_block_height {
-            tracing::info!(
-                "Layer {} next height {} > last block height {}, stopping",
-                available_max_layer + 1,
-                next_layer_height,
-                last_block_height
-            );
-            break;
-        }
-        available_max_layer += 1;
-    }
-    while available_max_layer > 0 {
-        let Some(denom) =
-            (HISTORY_PROOF_WINDOW_SIZE as u64).checked_pow(available_max_layer + 1)
-        else {
-            available_max_layer -= 1;
-            continue;
-        };
-        let Some(boundary) = block_height.div_ceil(denom).checked_mul(denom) else {
-            available_max_layer -= 1;
-            continue;
-        };
-        if boundary > last_block_height {
-            tracing::info!(
-                "Layer {} boundary {} > last block height {}, reducing available_max_layer",
-                available_max_layer,
-                boundary,
-                last_block_height
-            );
-            available_max_layer -= 1;
-        } else {
-            break;
-        }
-    }
-    tracing::info!("Max available layers above L0: {}", available_max_layer);
-
-    let max_layer = match params.max_layers {
-        Some(requested) => {
-            anyhow::ensure!(
-                available_max_layer >= requested,
-                "requested max_layers = {} but only {} layer(s) are available on-chain \
-                 (last_block_height = {}, block_height = {}). Wait for the chain to \
-                 reach height {} before re-running.",
-                requested,
-                available_max_layer,
-                last_block_height,
-                block_height,
-                block_height
-                    .div_ceil(
-                        (HISTORY_PROOF_WINDOW_SIZE as u64)
-                            .checked_pow(requested + 1)
-                            .unwrap_or(u64::MAX)
-                    )
-                    .saturating_mul(
-                        (HISTORY_PROOF_WINDOW_SIZE as u64)
-                            .checked_pow(requested + 1)
-                            .unwrap_or(u64::MAX)
-                    )
-            );
-            requested
-        }
-        None => available_max_layer,
-    };
-
+    // --- chain of higher-layer proofs: one rung per layer above L1 ---
     let mut chain: Vec<ChainLinkJson> = Vec::new();
     let mut root_cursor = root_layer_0;
 
-    for layer in 1..=max_layer {
-        tracing::info!("Collecting layer {} data...", layer);
+    for lower in 1..layer {
+        let upper = lower + 1;
+        tracing::info!("Collecting layer {} tree data...", upper);
         let (layer_data, sl_root, hl_root) =
-            get_layer_n_data(client.clone(), thread_id, block_height, layer as u8).await?;
+            get_layer_n_data(client.clone(), thread_id, block_height, lower as u8).await?;
 
-        let (root_layer_n, proof_layer_n, pos_layer_n) =
-            generate_layer_n_proof(&layer_data, root_cursor, sl_root, hl_root)?;
+        // The data leaves come from the node, so finding our lower-layer root
+        // at its computed position also checks it against the node's.
+        let position = rung_position(block_height, lower)
+            .ok_or_else(|| anyhow::anyhow!("layer {lower} rung position does not fit in u64"))?;
+        let (root_layer_n, proof_layer_n) =
+            generate_layer_n_proof_at(&layer_data, root_cursor, position, sl_root, hl_root)
+                .with_context(|| {
+                    format!(
+                        "the layer-{lower} root rebuilt for the event is not the one the node \
+                         published in block {}",
+                        anchor_block_height(block_height, lower).unwrap_or_default()
+                    )
+                })?;
 
-        let valid =
-            verify_dense_proof(&root_layer_n, &root_cursor, pos_layer_n, &proof_layer_n);
-        ensure!(valid, "Layer {} proof is invalid", layer);
+        let valid = verify_dense_proof(&root_layer_n, &root_cursor, position, &proof_layer_n);
+        ensure!(valid, "Layer {} proof is invalid", upper);
         tracing::info!(
             "Layer {} proof verified: pos={}, siblings={}, root={}",
-            layer,
-            pos_layer_n,
+            upper,
+            position,
             proof_layer_n.len(),
             hex::encode(root_layer_n)
         );
@@ -313,7 +316,7 @@ pub async fn make_private_witness_and_public_data(
         chain.push(ChainLinkJson {
             active: true,
             siblings_hex: proof_layer_n.iter().map(bytes_to_hex).collect(),
-            position: pos_layer_n,
+            position,
             leaf_hex: bytes_to_hex(&root_cursor),
         });
 
@@ -323,10 +326,33 @@ pub async fn make_private_witness_and_public_data(
     let num_active_chain_steps = chain.len();
     let final_layer_historical_hash_root = root_cursor;
 
+    // --- the final root must be the one the node published ---
+    let node_root = anchor_block.history_proofs.get(&(layer as u8)).ok_or_else(|| {
+        anyhow::anyhow!(
+            "block {} reports no layer-{} history root (it lists layers {:?})",
+            anchor_block.height,
+            layer,
+            anchor_block.history_proofs.keys().collect::<Vec<_>>()
+        )
+    })?;
+    ensure!(
+        *node_root == final_layer_historical_hash_root,
+        "rebuilt layer-{} root {} differs from the root {} the node published in block {}; \
+         refusing to write a fixture the chain would reject",
+        layer,
+        hex::encode(final_layer_historical_hash_root),
+        hex::encode(node_root),
+        anchor_block.height
+    );
+
     let fixture = DexFixtureJson {
         description: format!(
-            "L{} test case: {} chain step(s), block height {}, W={}",
-            max_layer, num_active_chain_steps, block_height, HISTORY_PROOF_WINDOW_SIZE
+            "anchor layer {}: {} chain step(s), event block {}, anchor block {}, W={}",
+            layer,
+            num_active_chain_steps,
+            block_height,
+            anchor_block.height,
+            HISTORY_PROOF_WINDOW_SIZE
         ),
         sk_u_hex: params.sk_u.clone(),
         ephemeral_pubkey_hex: params.ephemeral_pubkey.clone(),
@@ -342,7 +368,10 @@ pub async fn make_private_witness_and_public_data(
         num_active_chain_steps,
         dense_chain: chain,
         final_layer_historical_hash_root_hex: bytes_to_hex(&final_layer_historical_hash_root),
-        final_layer_number: max_layer + 1,
+        final_layer_number: layer,
+        event_block_height: block_height,
+        anchor_block_height: anchor_block.height,
+        anchor_expires_at_height: resolved.expires_at,
     };
 
     let json_str = serde_json::to_string_pretty(&fixture)?;
@@ -350,4 +379,132 @@ pub async fn make_private_witness_and_public_data(
     tracing::info!("Fixture written to {}", params.output);
 
     Ok(json_str)
+}
+
+// ---------------------------------------------------------------------------
+// Anchor resolution
+// ---------------------------------------------------------------------------
+
+struct ResolvedAnchor {
+    layer: u32,
+    /// Block `T_n`, which publishes the layer-`layer` root.
+    anchor_block: GqlProofBlock,
+    /// `E_n`; `None` if beyond `u64`.
+    expires_at: Option<u64>,
+}
+
+/// Picks the layer, makes sure its anchor block exists (waiting for it if
+/// allowed) and that the node still accepts its root.
+async fn resolve_anchor(
+    client: &TvmClient,
+    thread_id: ThreadIdentifier,
+    event_height: u64,
+    options: &AnchorOptions,
+) -> anyhow::Result<ResolvedAnchor> {
+    let mut layer = match options.layer {
+        AnchorLayerMode::Explicit(layer) => layer,
+        AnchorLayerMode::Auto => 1,
+    };
+    let mut anchor_block =
+        wait_for_anchor_block(client, thread_id, event_height, layer, options.wait).await?;
+
+    if options.layer == AnchorLayerMode::Auto {
+        while layer < MAX_ANCHOR_LAYER {
+            let Some(next_height) = anchor_block_height(event_height, layer + 1) else {
+                break;
+            };
+            if next_height != anchor_block.height {
+                match try_query_block_by_height(client.clone(), thread_id, next_height).await? {
+                    Some(block) => anchor_block = block,
+                    None => break,
+                }
+            }
+            layer += 1;
+        }
+        tracing::info!("Anchor layer auto: layer {} is the highest one produced", layer);
+    }
+
+    let expires_at = anchor_expiry_height(event_height, layer);
+    let next_height = anchor_block_height(event_height, layer + 1);
+    if let Some(expiry) = expires_at {
+        if try_query_block_by_height(client.clone(), thread_id, expiry).await?.is_some() {
+            let hint = match next_height {
+                Some(next) if layer < MAX_ANCHOR_LAYER => {
+                    format!("use --anchor-layer {} (its root is in block {next})", layer + 1)
+                }
+                _ => "no higher layer is available".to_string(),
+            };
+            let message = format!(
+                "anchor layer {layer}: block {expiry} exists, so the node no longer accepts the \
+                 layer-{layer} root from block {}; {hint}, or pass --allow-expired for an \
+                 offline fixture",
+                anchor_block.height
+            );
+            ensure!(options.allow_expired, "{message}");
+            tracing::warn!("{message}; continuing because expired anchors are allowed");
+        } else if let Some(next) = next_height {
+            let next_exists = next == anchor_block.height
+                || try_query_block_by_height(client.clone(), thread_id, next).await?.is_some();
+            if next_exists {
+                let head = query_latest_block_height(client.clone(), thread_id).await.ok();
+                let (blocks_left, counted_from) = match head {
+                    Some(head) => (expiry.saturating_sub(head), "after the current head"),
+                    None => (expiry - next, "at most, after that block"),
+                };
+                tracing::warn!(
+                    "anchor layer {layer}: block {next} exists, so the node accepts this root \
+                     only until block {expiry}: {blocks_left} block(s) {counted_from}, {} at \
+                     ~{NOMINAL_BLOCKS_PER_SECOND} blocks/s. Submit the proof promptly or use \
+                     --anchor-layer {}",
+                    approx_duration(blocks_left),
+                    layer + 1
+                );
+            }
+        }
+    }
+
+    Ok(ResolvedAnchor { layer, anchor_block, expires_at })
+}
+
+/// Returns block `T_layer` for the event, polling per `wait` while the chain
+/// has not produced it yet.
+async fn wait_for_anchor_block(
+    client: &TvmClient,
+    thread_id: ThreadIdentifier,
+    event_height: u64,
+    layer: u32,
+    wait: Option<WaitOptions>,
+) -> anyhow::Result<GqlProofBlock> {
+    let height = anchor_block_height(event_height, layer).ok_or_else(|| {
+        anyhow::anyhow!("anchor layer {layer}: its anchor block height does not fit in u64")
+    })?;
+    let started = std::time::Instant::now();
+    loop {
+        if let Some(block) = try_query_block_by_height(client.clone(), thread_id, height).await? {
+            return Ok(block);
+        }
+        let head = query_latest_block_height(client.clone(), thread_id).await.ok();
+        let to_go = match head {
+            Some(head) => {
+                format!("{} block(s) after the current head {head}", height.saturating_sub(head))
+            }
+            None => format!("at most {} block(s) after the event block", height - event_height),
+        };
+        let eta = approx_duration(height.saturating_sub(head.unwrap_or(event_height)));
+        let status = format!(
+            "block {height}, which publishes the layer-{layer} root covering event block \
+             {event_height}, has not been produced yet: {to_go}, {eta} at \
+             ~{NOMINAL_BLOCKS_PER_SECOND} blocks/s"
+        );
+        let Some(wait) = wait else {
+            anyhow::bail!("anchor layer {layer}: {status}; re-run later or pass --wait-for-anchor");
+        };
+        let elapsed = started.elapsed();
+        ensure!(
+            elapsed < wait.timeout,
+            "anchor layer {layer}: gave up after {elapsed:.0?}: {status}"
+        );
+        tracing::info!("Waiting for the layer-{layer} anchor: {status}");
+        tokio::time::sleep(wait.poll_interval.min(wait.timeout - elapsed)).await;
+    }
 }

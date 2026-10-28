@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use dark_dex_halo2_private_witness_export_lib::{
-    make_private_witness_and_public_data,
+    anchor::{AnchorLayerMode, AnchorOptions, WaitOptions},
+    make_private_witness_and_public_data, make_private_witness_with_anchor,
     poseidon::{compute_block_leaf_hash, HISTORY_PROOF_WINDOW_SIZE},
     proof::{generate_ext_message_proof, generate_layer0_proof, generate_layer_n_proof},
     types::AccountRouting,
@@ -110,6 +112,14 @@ impl Node {
             }));
         }
         let root1 = generate_layer_n_proof(&roots, root0, None, None).unwrap().0;
+        // A block lists the root of every layer whose window closes at it, so
+        // the L2 boundary carries the L2 root too.
+        blocks
+            .get_mut(&((HISTORY_PROOF_WINDOW_SIZE * HISTORY_PROOF_WINDOW_SIZE) as u64))
+            .unwrap()["history_proofs"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"layer": 2, "root_hash": hex::encode(root1)}));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let network = format!("http://{}", listener.local_addr().unwrap());
         let task = tokio::spawn(async move {
@@ -268,4 +278,127 @@ async fn rejects_invalid_event_base64() {
 #[tokio::test]
 async fn rejects_invalid_event_boc() {
     assert_rejected("bm90IGEgYm9j", "event_boc").await;
+}
+
+// --- anchor layer selection (the mock head is 128², so L1 and L2 exist) ---
+
+const W: u64 = HISTORY_PROOF_WINDOW_SIZE as u64;
+
+fn anchor(layer: AnchorLayerMode) -> AnchorOptions {
+    AnchorOptions {
+        layer,
+        ..AnchorOptions::default()
+    }
+}
+
+async fn export_with_anchor(
+    node: &Node,
+    output: &std::path::Path,
+    anchor: AnchorOptions,
+) -> anyhow::Result<Value> {
+    let params = ExportParams {
+        max_layers: None,
+        ..node.params(EVENT_A, 0, output)
+    };
+    let fixture = make_private_witness_with_anchor(&params, &anchor).await?;
+    Ok(serde_json::from_str(&fixture)?)
+}
+
+#[tokio::test]
+async fn explicit_anchor_layers_report_their_blocks() {
+    let node = Node::start(&messages(false)).await;
+    let directory = tempfile::tempdir().unwrap();
+    let output = directory.path().join("fixture.json");
+    for (layer, anchor_height, expiry) in [(1u32, W, W * W + W), (2, W * W, W * W * W + W * W)] {
+        let fixture = export_with_anchor(&node, &output, anchor(AnchorLayerMode::Explicit(layer)))
+            .await
+            .unwrap();
+        assert_eq!(fixture["final_layer_number"], layer);
+        assert_eq!(fixture["num_active_chain_steps"], layer - 1);
+        assert_eq!(
+            fixture["final_layer_historical_hash_root_hex"],
+            hex::encode(node.roots[layer as usize - 1])
+        );
+        assert_eq!(fixture["event_block_height"], EVENT_HEIGHT);
+        assert_eq!(fixture["anchor_block_height"], anchor_height);
+        assert_eq!(fixture["anchor_expires_at_height"], expiry);
+    }
+}
+
+#[tokio::test]
+async fn auto_anchor_takes_the_highest_produced_layer_like_legacy_none() {
+    let node = Node::start(&messages(false)).await;
+    let directory = tempfile::tempdir().unwrap();
+    let output = directory.path().join("fixture.json");
+    let fixture = export_with_anchor(&node, &output, anchor(AnchorLayerMode::Auto))
+        .await
+        .unwrap();
+    assert_eq!(fixture["final_layer_number"], 2);
+    let legacy = make_private_witness_and_public_data(&ExportParams {
+        max_layers: None,
+        ..node.params(EVENT_A, 0, &output)
+    })
+    .await
+    .unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&legacy).unwrap(), fixture);
+}
+
+#[tokio::test]
+async fn missing_anchor_block_fails_or_times_out() {
+    let node = Node::start(&messages(false)).await;
+    let directory = tempfile::tempdir().unwrap();
+    let output = directory.path().join("fixture.json");
+    // T_3 = 128³ is far beyond the mock head.
+    let error = export_with_anchor(&node, &output, anchor(AnchorLayerMode::Explicit(3)))
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("has not been produced yet"),
+        "unexpected error: {error:#}"
+    );
+
+    let timeout = Duration::from_millis(300);
+    let started = std::time::Instant::now();
+    let error = export_with_anchor(
+        &node,
+        &output,
+        AnchorOptions {
+            wait: Some(WaitOptions {
+                timeout,
+                poll_interval: Duration::from_millis(100),
+            }),
+            ..anchor(AnchorLayerMode::Explicit(3))
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("gave up"),
+        "unexpected error: {error:#}"
+    );
+    assert!(started.elapsed() >= timeout);
+    assert!(
+        !output.exists(),
+        "a failed export must not produce a fixture"
+    );
+}
+
+#[tokio::test]
+async fn max_layers_must_agree_with_the_anchor_layer() {
+    let node = Node::start(&messages(false)).await;
+    let directory = tempfile::tempdir().unwrap();
+    let output = directory.path().join("fixture.json");
+    // max_layers = 0 selects layer 1.
+    let params = node.params(EVENT_A, 0, &output);
+    let error = make_private_witness_with_anchor(&params, &anchor(AnchorLayerMode::Explicit(2)))
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("conflicts"),
+        "unexpected error: {error:#}"
+    );
+    assert!(!output.exists());
+    make_private_witness_with_anchor(&params, &anchor(AnchorLayerMode::Explicit(1)))
+        .await
+        .unwrap();
 }

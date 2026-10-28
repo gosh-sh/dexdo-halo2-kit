@@ -40,7 +40,9 @@ private.
    historical-hash proofs from a node, and writes a `dex_fixture_*.json` file.
 2. **Generate proof.** `halo2-proover <fixture.json>` builds the circuit
    witness, computes / caches the proving and verification keys, and prints the
-   proof bytes together with the public-input bytes as JSON.
+   proof bytes together with the public-input bytes as JSON. It takes the
+   anchor layer from the fixture and prints it as `final_layer_number`, the
+   `layerNumber` RootPN expects.
 3. **Verify on chain.** The `proof` and `pub_inputs_hex` fields are passed
    directly to the `ZKHALO2VERIFY` TVM instruction inside the DEX.DO contract.
 
@@ -56,6 +58,9 @@ The circuit exposes five public field elements (concatenated into
 | 2 | `voucher_nominal` | Voucher amount, revealed. |
 | 3 | `token_type` | Token type, revealed. |
 | 4 | `ephemeral_pubkey` | Ephemeral pubkey committed to the voucher, revealed. |
+
+The layer of root 1 is not a public input. RootPN takes it as the
+`layerNumber` argument, which the prover prints as `final_layer_number`.
 
 ## Building
 
@@ -74,13 +79,16 @@ cargo test --release -p dex-halo2-circuit -- --nocapture
 
 ## Quick start: generating a proof
 
-A handful of pre-collected fixtures live in `halo2-proover/` so the prover can
-be exercised without standing up a node:
+A handful of synthetic fixtures live in `halo2-proover/` so the prover can be
+exercised without standing up a node:
 
 ```bash
 cd halo2-proover
-cargo run --release -- dex_fixture_live_L1_H277_S0.json
+cargo run --release -- dex_fixture_synth_L0.json
 ```
+
+The `_L<n>` suffix counts chain steps, so `dex_fixture_synth_L1.json` is
+anchored to layer 2 and the prover reports `"final_layer_number": 2` for it.
 
 The first run performs KZG SRS generation and writes `pk_cache.bin`,
 `break_points_cache.bin`, and `vk_cache.bin` into the working directory; later
@@ -102,10 +110,71 @@ cargo run --release -p dark_dex_halo2_private_witness_export_lib --bin dex_data_
   --output          dex_fixture.json
 ```
 
-Pass either `--block-height` or `--block-id`. `--max-layers` makes the layer
-collection strict (the exporter errors instead of returning a partial chain).
-The exporter selects the tracked message matching the representation hash of
-`--event-boc`; an invalid BOC or a message absent from the block is an error.
+Pass either `--block-height` or `--block-id`. The exporter selects the tracked
+message matching the representation hash of `--event-boc`; an invalid BOC or a
+message absent from the block is an error.
+
+### Choosing the anchor layer
+
+The anchor layer is chosen here, in the exporter, and nowhere else. Without a
+flag the proof is anchored to the layer-1 (block tree) root:
+
+| Exporter flag | Anchored to | Chain steps | RootPN `layerNumber` |
+| --- | --- | --- | --- |
+| none, or `--anchor-layer 1` | L1 root (block tree) | 0 | 1 |
+| `--anchor-layer 2` | L2 root | 1 | 2 |
+| `--anchor-layer N`, up to 12 | L(N) root | N − 1 | N |
+| `--anchor-layer auto` | highest layer the chain has already produced | varies | the fixture's `final_layer_number` |
+
+`--max-layers N` is the older spelling of `--anchor-layer N+1`. The fixture
+records the layer as `final_layer_number`. The prover reads it from there and
+needs no flag; its own `--anchor-layer N` only adds a check that the fixture is
+anchored to layer N.
+
+The node accepts each layer root only for a limited time. At ~3 blocks/s an L1
+root is accepted for ~43 s to ~91 min after it is published, and an L2 root for
+~91 min to ~8 days, so a voucher claimed later needs L2. The L(N) root that
+covers the event is published by the block at the next multiple of 128^N above
+the event's height, so an L2 root appears up to ~91 min after the event. Before
+it writes the fixture, the exporter checks against the node:
+
+- **The anchor block is not produced yet.** It fails right away, or with
+  `--wait-for-anchor` polls until the block appears (`--wait-timeout`, default
+  7200 s; `--wait-poll-interval`, default 10 s).
+- **The node has already evicted the root.** It fails and suggests the next
+  layer. `--allow-expired` writes the fixture anyway, for offline tests only:
+  the chain rejects such a proof.
+- **The rebuilt root differs from the node's.** It fails, and no fixture is
+  written.
+
+The fixture also records `event_block_height`, `anchor_block_height` and
+`anchor_expires_at_height`, the first height at which the node no longer
+accepts the root.
+
+### Full L2 run
+
+With the binaries built by `cargo build --release` (in `target/release/`):
+
+1. Export, anchored to L2. `--wait-for-anchor` waits for the L2 root if it is
+   not published yet:
+
+   ```bash
+   dex_data_exporter --network http://127.0.0.1:80 --block-id <block id> \
+     --event-boc <base64 BOC> --sk-u <hex sk_u> --ephemeral-pubkey <hex pubkey> \
+     --output dex_fixture.json --anchor-layer 2 --wait-for-anchor
+   ```
+
+2. Prove. No flag is needed, because the layer comes from the fixture:
+
+   ```bash
+   halo2-proover dex_fixture.json > proof.json
+   ```
+
+3. Call RootPN `deployPrivateNote` with the values from `proof.json`, passing
+   its `final_layer_number` (here `2`) as `layerNumber`. RootPN checks the root
+   with `gosh.check_layer_hash(finalLayerHistoricalHashRoot, layerNumber)`.
+
+For L1, drop `--anchor-layer 2`; everything else stays the same.
 
 ## Runtime context
 
