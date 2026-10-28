@@ -5,13 +5,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 uses [Semantic Versioning](https://semver.org/). Release tags are named
 `dark_dex_halo2_private_witness_export_lib-v<version>`.
 
-## [0.3.0] - 2026-10-27
+## [0.3.0] - 2026-10-28
 
 ### Changed
 
 - `dex_data_exporter` without a layer flag now anchors the proof to layer 1, the
   block-tree root. It used to climb to the highest layer the chain had produced; that is
-  now `--anchor-layer auto`. `--max-layers N` stays as an alias for `--anchor-layer N+1`.
+  now `--anchor-layer auto`. `--max-layers N` stays as an alias for `--anchor-layer N+1`
+  (#11).
 - Before it writes a fixture, the exporter checks the anchor against the node. A missing
   anchor block is an error, and so is a root the node has already evicted; the error
   suggests the next layer. The rebuilt root must equal the node's `history_proofs[n]` in
@@ -39,7 +40,7 @@ uses [Semantic Versioning](https://semver.org/). Release tags are named
 ### Fixed
 
 - An event in a block whose height is a multiple of 128^n is anchored to the next
-  boundary block. It used to be anchored to its own block, one window too early.
+  boundary block. It used to be anchored to its own block, one window too early (#11).
 
 ## [0.2.0] - 2026-10-20
 
